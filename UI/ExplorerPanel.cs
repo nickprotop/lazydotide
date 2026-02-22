@@ -60,8 +60,7 @@ public class ExplorerPanel
 
     private void AddNode(FileNode fileNode, TreeNode? parent)
     {
-        string icon = GetIcon(fileNode);
-        string label = $"{icon} {fileNode.Name}";
+        string label = fileNode.Name;
         TreeNode treeNode;
         if (parent == null)
         {
@@ -86,22 +85,6 @@ public class ExplorerPanel
         {
             treeNode.TextColor = GetFileColor(fileNode.Name);
         }
-    }
-
-    private static string GetIcon(FileNode node)
-    {
-        if (node.IsDirectory) return "📁";
-        return Path.GetExtension(node.Name).ToLowerInvariant() switch
-        {
-            ".cs" => "📝",
-            ".csproj" => "⚙",
-            ".sln" => "🔧",
-            ".json" => "📋",
-            ".md" => "📖",
-            ".yaml" or ".yml" => "📋",
-            ".txt" => "📄",
-            _ => "📄"
-        };
     }
 
     private static Color GetFileColor(string name) =>
