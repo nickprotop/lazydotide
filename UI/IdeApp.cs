@@ -49,6 +49,10 @@ public class IdeApp : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
 
+    // Split layout state
+    private double _splitRatio = 0.68;   // mainH / totalHeight
+    private bool _resizeCoupling = false; // re-entrancy guard for coupled resize
+
     public IdeApp(string projectPath)
     {
         _ws = new ConsoleWindowSystem(
@@ -84,11 +88,17 @@ public class IdeApp : IDisposable
     private void CreateLayout()
     {
         var desktop = _ws.DesktopDimensions;
-        int mainH = (int)(desktop.Height * 0.68);
+        int mainH = (int)(desktop.Height * _splitRatio);
         int outH = desktop.Height - mainH;
 
         _explorer = new ExplorerPanel(_ws, _projectService);
-        _editorManager = new EditorManager(_ws);
+
+        var pipeline = new FileMiddlewarePipeline();
+        pipeline.Register(new CSharpFileMiddleware());
+        pipeline.Register(new MarkdownFileMiddleware());
+        pipeline.Register(new DefaultFileMiddleware());
+
+        _editorManager = new EditorManager(_ws, pipeline);
         _outputPanel = new OutputPanel(_ws);
 
         BuildMainWindow(desktop.Width, mainH);
@@ -114,7 +124,7 @@ public class IdeApp : IDisposable
             .HideTitleButtons()
             .WithSize(width, height)
             .AtPosition(0, 0)
-            .Resizable(false)
+            .WithResizeDirections(ResizeBorderDirections.Bottom)
             .Movable(false)
             .Minimizable(false)
             .Maximizable(false)
@@ -144,6 +154,13 @@ public class IdeApp : IDisposable
                 .AddItem("Refresh Explorer", () => _explorer?.Refresh())
                 .AddSeparator()
                 .AddItem("Exit", "Alt+F4", () => _ws.Shutdown(0)))
+            .AddItem("Edit", m => m
+                .AddItem("Word Wrap", () => SetWrapMode(WrapMode.WrapWords))
+                .AddItem("Wrap (character)", () => SetWrapMode(WrapMode.Wrap))
+                .AddItem("No Wrap", () => SetWrapMode(WrapMode.NoWrap))
+                .AddSeparator()
+                .AddItem("Find...",    "Ctrl+F", () => ShowFindReplace())
+                .AddItem("Replace...", "Ctrl+H", () => ShowFindReplace()))
             .AddItem("Build", m => m
                 .AddItem("Build", "F6", () => _ = BuildProjectAsync())
                 .AddItem("Test", "F7", () => _ = TestProjectAsync())
@@ -269,7 +286,7 @@ public class IdeApp : IDisposable
             .Closable(false)
             .WithSize(width, height)
             .AtPosition(0, topOffset)
-            .Resizable(false)
+            .WithResizeDirections(ResizeBorderDirections.Top)
             .Movable(false)
             .Minimizable(false)
             .Maximizable(false)
@@ -308,7 +325,12 @@ public class IdeApp : IDisposable
             _dashboard!.Visible = !hasFiles;
         };
 
+        _editorManager.ValidationWarnings += (_, warnings) =>
+            _outputPanel!.ShowWarnings(warnings);
+
         _mainWindow!.KeyPressed += OnMainWindowKeyPressed;
+        _mainWindow!.OnResize   += OnMainWindowResized;
+        _outputWindow!.OnResize += OnOutputWindowResized;
     }
 
     private void InitBottomStatus()
@@ -329,18 +351,64 @@ public class IdeApp : IDisposable
     private void OnScreenResized(object? sender, SharpConsoleUI.Helpers.Size size)
     {
         var desktop = _ws.DesktopDimensions;
-        if (_outputVisible)
+        _resizeCoupling = true;
+        try
         {
-            int mainH = (int)(desktop.Height * 0.68);
-            int outH = desktop.Height - mainH;
-            _mainWindow?.SetSize(desktop.Width, mainH);
-            _outputWindow?.SetSize(desktop.Width, outH);
-            _outputWindow?.SetPosition(new Point(0, mainH));
+            if (_outputVisible)
+            {
+                int mainH = (int)(desktop.Height * _splitRatio);
+                int outH  = desktop.Height - mainH;
+                _mainWindow?.SetSize(desktop.Width, mainH);
+                _outputWindow?.SetSize(desktop.Width, outH);
+                _outputWindow?.SetPosition(new Point(0, mainH));
+            }
+            else
+            {
+                _mainWindow?.SetSize(desktop.Width, desktop.Height);
+            }
         }
-        else
+        finally { _resizeCoupling = false; }
+    }
+
+    // Minimum usable height for each panel (rows)
+    private const int MinMainHeight   = 8;
+    private const int MinOutputHeight = 4;
+
+    private void OnMainWindowResized(object? sender, EventArgs e)
+    {
+        if (_resizeCoupling || !_outputVisible || _mainWindow == null || _outputWindow == null) return;
+        _resizeCoupling = true;
+        try
         {
-            _mainWindow?.SetSize(desktop.Width, desktop.Height);
+            var desktop    = _ws.DesktopDimensions;
+            int newDivider = Math.Clamp(_mainWindow.Height,
+                                        MinMainHeight,
+                                        desktop.Height - MinOutputHeight);
+            int newOutH = desktop.Height - newDivider;
+            _mainWindow.SetSize(desktop.Width, newDivider);
+            _outputWindow.SetPosition(new Point(0, newDivider));
+            _outputWindow.SetSize(desktop.Width, newOutH);
+            _splitRatio = newDivider / (double)desktop.Height;
         }
+        finally { _resizeCoupling = false; }
+    }
+
+    private void OnOutputWindowResized(object? sender, EventArgs e)
+    {
+        if (_resizeCoupling || !_outputVisible || _mainWindow == null || _outputWindow == null) return;
+        _resizeCoupling = true;
+        try
+        {
+            var desktop    = _ws.DesktopDimensions;
+            int newDivider = Math.Clamp(_outputWindow.Top,
+                                        MinMainHeight,
+                                        desktop.Height - MinOutputHeight);
+            _mainWindow.SetSize(desktop.Width, newDivider);
+            _outputWindow.SetPosition(new Point(0, newDivider));
+            _outputWindow.SetSize(desktop.Width, desktop.Height - newDivider);
+            _splitRatio = newDivider / (double)desktop.Height;
+        }
+        finally { _resizeCoupling = false; }
     }
 
     private void OnMainWindowKeyPressed(object? sender, KeyPressedEventArgs e)
@@ -401,6 +469,16 @@ public class IdeApp : IDisposable
         else if (key == ConsoleKey.Spacebar && mods == ConsoleModifiers.Control)
         {
             _ = ShowCompletionAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.F && mods == ConsoleModifiers.Control)
+        {
+            ShowFindReplace();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.H && mods == ConsoleModifiers.Control)
+        {
+            ShowFindReplace();
             e.Handled = true;
         }
     }
@@ -629,10 +707,10 @@ public class IdeApp : IDisposable
             var fileName = _editorManager.CurrentFilePath != null
                 ? Path.GetFileName(_editorManager.CurrentFilePath)
                 : "Untitled";
-            ConfirmSaveDialog.Show(_ws, fileName, result =>
+            _ = ConfirmSaveDialog.ShowAsync(_ws, fileName).ContinueWith(t =>
             {
-                if (result == DialogResult.Cancel) return;
-                if (result == DialogResult.Save) _editorManager.SaveCurrent();
+                if (t.Result == DialogResult.Cancel) return;
+                if (t.Result == DialogResult.Save) _editorManager.SaveCurrent();
                 _editorManager.CloseCurrentTab();
             });
             return;
@@ -643,9 +721,9 @@ public class IdeApp : IDisposable
 
     private void ShowNuGetDialog()
     {
-        NuGetDialog.Show(_ws, result =>
+        _ = NuGetDialog.ShowAsync(_ws).ContinueWith(t =>
         {
-            var (packageName, version) = result;
+            var (packageName, version) = t.Result;
             if (string.IsNullOrEmpty(packageName)) return;
 
             var target = _projectService.FindBuildTarget();
@@ -657,6 +735,16 @@ public class IdeApp : IDisposable
 
             _ = RunNuGetAsync(cmdArgs);
         });
+    }
+
+    private bool _findReplaceOpen = false;
+
+    private void ShowFindReplace()
+    {
+        if (_findReplaceOpen || _editorManager == null) return;
+        _findReplaceOpen = true;
+        _ = FindReplaceDialog.ShowAsync(_ws, _editorManager)
+            .ContinueWith(_ => _findReplaceOpen = false);
     }
 
     private async Task RunNuGetAsync(string args)
@@ -674,6 +762,12 @@ public class IdeApp : IDisposable
     // Panel toggle
     // ──────────────────────────────────────────────────────────────
 
+    private void SetWrapMode(WrapMode mode)
+    {
+        if (_editorManager != null)
+            _editorManager.WrapMode = mode;
+    }
+
     private void ToggleExplorer()
     {
         _explorerVisible = !_explorerVisible;
@@ -689,19 +783,24 @@ public class IdeApp : IDisposable
     {
         _outputVisible = !_outputVisible;
         var desktop = _ws.DesktopDimensions;
-        if (_outputVisible)
+        _resizeCoupling = true;
+        try
         {
-            int mainH = (int)(desktop.Height * 0.68);
-            int outH = desktop.Height - mainH;
-            _mainWindow?.SetSize(desktop.Width, mainH);
-            _outputWindow?.SetSize(desktop.Width, outH);
-            _outputWindow?.SetPosition(new Point(0, mainH));
+            if (_outputVisible)
+            {
+                int mainH = (int)(desktop.Height * _splitRatio);
+                int outH  = desktop.Height - mainH;
+                _mainWindow?.SetSize(desktop.Width, mainH);
+                _outputWindow?.SetSize(desktop.Width, outH);
+                _outputWindow?.SetPosition(new Point(0, mainH));
+            }
+            else
+            {
+                _mainWindow?.SetSize(desktop.Width, desktop.Height);
+                _outputWindow?.SetPosition(new Point(0, desktop.Height + 100));
+            }
         }
-        else
-        {
-            _mainWindow?.SetSize(desktop.Width, desktop.Height);
-            _outputWindow?.SetPosition(new Point(0, desktop.Height + 100));
-        }
+        finally { _resizeCoupling = false; }
     }
 
     // ──────────────────────────────────────────────────────────────

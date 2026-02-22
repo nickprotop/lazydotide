@@ -1,66 +1,54 @@
 using SharpConsoleUI;
-using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
 
-public static class NuGetDialog
+public class NuGetDialog : DialogBase<(string? PackageName, string? Version)>
 {
-    public static void Show(ConsoleWindowSystem ws, Action<(string? PackageName, string? Version)> onResult)
-    {
-        bool fired = false;
-        void FireResult(string? pkg, string? ver) { if (fired) return; fired = true; onResult((pkg, ver)); }
+    private PromptControl _namePrompt    = null!;
+    private PromptControl _versionPrompt = null!;
 
-        var namePrompt    = new PromptControl { Prompt = "Package name: ",      InputWidth = 30 };
-        var versionPrompt = new PromptControl { Prompt = "Version (optional): ", InputWidth = 20 };
+    private NuGetDialog() { }
+
+    public static new Task<(string? PackageName, string? Version)> ShowAsync(ConsoleWindowSystem ws)
+    {
+        DialogBase<(string? PackageName, string? Version)> dlg = new NuGetDialog();
+        return dlg.ShowAsync(ws);
+    }
+
+    protected override string GetTitle() => "Add NuGet Package";
+    protected override (int width, int height) GetSize() => (52, 10);
+    protected override (string? PackageName, string? Version) GetDefaultResult() => (null, null);
+
+    protected override void BuildContent()
+    {
+        _namePrompt    = new PromptControl { Prompt = "Package name: ",       InputWidth = 30 };
+        _versionPrompt = new PromptControl { Prompt = "Version (optional): ", InputWidth = 20 };
+
         var addBtn    = new ButtonControl { Text = "Add",    Width = 8 };
         var cancelBtn = new ButtonControl { Text = "Cancel", Width = 8 };
 
-        Window? dialog = null;
-
         addBtn.Click += (_, _) =>
         {
-            var pkg = namePrompt.Input.Trim();
-            var ver = versionPrompt.Input.Trim();
-            FireResult(string.IsNullOrWhiteSpace(pkg) ? null : pkg,
-                       string.IsNullOrWhiteSpace(ver) ? null : ver);
-            dialog?.Close();
+            var pkg = _namePrompt.Input.Trim();
+            var ver = _versionPrompt.Input.Trim();
+            CloseWithResult((
+                string.IsNullOrWhiteSpace(pkg) ? null : pkg,
+                string.IsNullOrWhiteSpace(ver) ? null : ver));
         };
-        cancelBtn.Click += (_, _) => { FireResult(null, null); dialog?.Close(); };
+        cancelBtn.Click += (_, _) => CloseWithResult((null, null));
 
         var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
         var addCol    = new ColumnContainer(buttonRow); addCol.AddContent(addBtn);    buttonRow.AddColumn(addCol);
         var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
         buttonRow.StickyPosition = StickyPosition.Bottom;
 
-        dialog = new WindowBuilder(ws)
-            .WithTitle("Add NuGet Package")
-            .WithSize(52, 10)
-            .Centered()
-            .AsModal()
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .AddControl(new MarkupControl(new List<string> { "" }))
-            .AddControl(namePrompt)
-            .AddControl(versionPrompt)
-            .AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom })
-            .AddControl(buttonRow)
-            .Build();
-
-        // X button or Escape = Cancel
-        dialog.OnClosed += (_, _) => FireResult(null, null);
-        dialog.KeyPressed += (_, e) =>
-        {
-            if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                dialog.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(dialog);
+        Dialog.AddControl(new MarkupControl(new List<string> { "" }));
+        Dialog.AddControl(_namePrompt);
+        Dialog.AddControl(_versionPrompt);
+        Dialog.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
+        Dialog.AddControl(buttonRow);
     }
 }

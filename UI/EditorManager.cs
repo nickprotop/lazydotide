@@ -15,8 +15,23 @@ public class EditorManager
     private readonly Dictionary<string, int> _openFiles = new();
     private readonly Dictionary<int, (string Path, MultilineEditControl Editor, bool IsDirty)> _tabData = new();
 
+    private readonly FileMiddlewarePipeline _pipeline;
+    private WrapMode _wrapMode = WrapMode.Wrap;
+
+    public WrapMode WrapMode
+    {
+        get => _wrapMode;
+        set
+        {
+            _wrapMode = value;
+            foreach (var (_, editor, _) in _tabData.Values)
+                editor.WrapMode = value;
+        }
+    }
+
     public event EventHandler<(int Line, int Column)>? CursorChanged;
     public event EventHandler<string?>? ActiveFileChanged;
+    public event EventHandler<IReadOnlyList<string>>? ValidationWarnings;
 
     public string? CurrentFilePath =>
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.Path : null;
@@ -29,9 +44,10 @@ public class EditorManager
     public bool HasOpenFiles => _tabControl.TabCount > 0;
     public event EventHandler? OpenFilesStateChanged;
 
-    public EditorManager(ConsoleWindowSystem ws)
+    public EditorManager(ConsoleWindowSystem ws, FileMiddlewarePipeline pipeline)
     {
         _ws = ws;
+        _pipeline = pipeline;
         _tabControl = new TabControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -71,7 +87,7 @@ public class EditorManager
         string fileContent;
         try
         {
-            fileContent = FileService.ReadFile(path);
+            fileContent = _pipeline.ProcessLoad(FileService.ReadFile(path), path);
         }
         catch (Exception ex)
         {
@@ -113,16 +129,13 @@ public class EditorManager
         {
             ShowLineNumbers = true,
             HighlightCurrentLine = true,
-            WrapMode = WrapMode.NoWrap,
+            WrapMode = _wrapMode,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
 
         editor.Content = content;
-
-        var ext = FileService.GetExtension(path);
-        if (ext == ".cs")
-            editor.SyntaxHighlighter = new CSharpSyntaxHighlighter();
+        editor.SyntaxHighlighter = _pipeline.GetHighlighter(path);
 
         editor.CursorPositionChanged += (_, pos) =>
         {
@@ -155,7 +168,12 @@ public class EditorManager
 
         try
         {
-            FileService.WriteFile(data.Path, data.Editor.Content);
+            var editorContent = data.Editor.Content;
+            var warnings = _pipeline.Validate(editorContent, data.Path);
+            if (warnings?.Count > 0)
+                ValidationWarnings?.Invoke(this, warnings);
+
+            FileService.WriteFile(data.Path, _pipeline.ProcessSave(editorContent, data.Path));
             _tabData[_tabControl.ActiveTabIndex] = (data.Path, data.Editor, false);
             _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.Path));
         }
@@ -241,5 +259,143 @@ public class EditorManager
     private void OnTabChanged(object? sender, TabChangedEventArgs args)
     {
         ActiveFileChanged?.Invoke(this, CurrentFilePath);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Search / Replace
+    // ──────────────────────────────────────────────────────────────
+
+    public bool FindNext(string query, bool caseSensitive)
+    {
+        var editor = CurrentEditor;
+        if (editor == null || string.IsNullOrEmpty(query)) return false;
+
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var lines = editor.Content.Split('\n');
+
+        int startLine = editor.CurrentLine - 1;
+        int startCol  = editor.CurrentColumn - 1;
+
+        // Two-pass search: from cursor forward, then wrap from start
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int fromLine = pass == 0 ? startLine : 0;
+            for (int i = fromLine; i < lines.Length; i++)
+            {
+                int fromCol = (pass == 0 && i == startLine) ? startCol : 0;
+                int idx = lines[i].IndexOf(query, fromCol, comparison);
+                if (idx >= 0)
+                {
+                    editor.SelectRange(i, idx, i, idx + query.Length);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public bool FindPrevious(string query, bool caseSensitive)
+    {
+        var editor = CurrentEditor;
+        if (editor == null || string.IsNullOrEmpty(query)) return false;
+
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var lines = editor.Content.Split('\n');
+
+        int curLine = editor.CurrentLine - 1;
+        int curCol  = editor.CurrentColumn - 1;
+
+        // Collect all matches
+        var matches = new List<(int Line, int Col)>();
+        for (int i = 0; i < lines.Length; i++)
+        {
+            int from = 0;
+            while (true)
+            {
+                int idx = lines[i].IndexOf(query, from, comparison);
+                if (idx < 0) break;
+                matches.Add((i, idx));
+                from = idx + 1;
+            }
+        }
+        if (matches.Count == 0) return false;
+
+        // Find last match before cursor
+        int target = -1;
+        for (int m = matches.Count - 1; m >= 0; m--)
+        {
+            var (ml, mc) = matches[m];
+            if (ml < curLine || (ml == curLine && mc < curCol - query.Length + 1))
+            {
+                target = m;
+                break;
+            }
+        }
+        if (target < 0) target = matches.Count - 1; // wrap
+
+        var (line, col) = matches[target];
+        editor.SelectRange(line, col, line, col + query.Length);
+        return true;
+    }
+
+    public int ReplaceAll(string query, string replacement, bool caseSensitive)
+    {
+        var editor = CurrentEditor;
+        if (editor == null || string.IsNullOrEmpty(query)) return 0;
+
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        string content = editor.Content;
+
+        int count = 0;
+        int idx = 0;
+        var sb = new System.Text.StringBuilder();
+        while (true)
+        {
+            int found = content.IndexOf(query, idx, comparison);
+            if (found < 0)
+            {
+                sb.Append(content, idx, content.Length - idx);
+                break;
+            }
+            sb.Append(content, idx, found - idx);
+            sb.Append(replacement);
+            idx = found + query.Length;
+            count++;
+        }
+
+        if (count > 0)
+            editor.Content = sb.ToString();
+
+        return count;
+    }
+
+    public bool ReplaceNext(string query, string replacement, bool caseSensitive)
+    {
+        var editor = CurrentEditor;
+        if (editor == null || string.IsNullOrEmpty(query)) return false;
+
+        // FindNext to select the match
+        if (!FindNext(query, caseSensitive)) return false;
+
+        // After FindNext cursor is at end of match; replace match at (currentLine-1, currentColumn-1-queryLength)
+        var lines = editor.Content.Split('\n');
+        int matchLine = editor.CurrentLine - 1;
+        int matchCol  = editor.CurrentColumn - 1 - query.Length;
+
+        if (matchLine < 0 || matchLine >= lines.Length || matchCol < 0) return false;
+
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        string line = lines[matchLine];
+        if (matchCol + query.Length > line.Length) return false;
+
+        // Verify the match still exists at expected position
+        if (!line.Substring(matchCol, query.Length).Equals(query, comparison)) return false;
+
+        lines[matchLine] = line[..matchCol] + replacement + line[(matchCol + query.Length)..];
+        editor.Content = string.Join('\n', lines);
+
+        // Advance to next match
+        FindNext(query, caseSensitive);
+        return true;
     }
 }

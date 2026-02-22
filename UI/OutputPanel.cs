@@ -165,6 +165,17 @@ public class OutputPanel
         PopulateProblems(diagnostics);
     }
 
+    public void ShowWarnings(IReadOnlyList<string> warnings)
+    {
+        _buildPanel.AddControl(new MarkupControl(new List<string>
+            { "[yellow]── Markdown Warnings ──[/]" }));
+        foreach (var w in warnings)
+            _buildPanel.AddControl(new MarkupControl(new List<string>
+                { $"[yellow]▲ {Markup.Escape(w)}[/]" }));
+        _buildPanel.ScrollToBottom();
+        SwitchToBuildTab();
+    }
+
     private void OnProblemActivated(object? sender, ListItem item)
     {
         if (item.Tag is BuildDiagnostic diag)
