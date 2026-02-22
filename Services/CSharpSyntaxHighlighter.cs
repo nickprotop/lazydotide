@@ -4,6 +4,8 @@ using Spectre.Console;
 
 namespace DotNetIDE;
 
+public record CSharpLineState(bool InBlockComment = false) : SyntaxLineState;
+
 public class CSharpSyntaxHighlighter : ISyntaxHighlighter
 {
     private static readonly Color KeywordColor = Color.DodgerBlue2;
@@ -40,71 +42,127 @@ public class CSharpSyntaxHighlighter : ISyntaxHighlighter
         @"|\b[a-zA-Z_]\w*\b",               // Identifiers/keywords
         RegexOptions.Compiled | RegexOptions.Multiline);
 
-    public IReadOnlyList<SyntaxToken> Tokenize(string line, int lineIndex)
+    public (IReadOnlyList<SyntaxToken> Tokens, SyntaxLineState EndState)
+        Tokenize(string line, int lineIndex, SyntaxLineState startState)
     {
+        var state = startState as CSharpLineState ?? new CSharpLineState();
         var tokens = new List<SyntaxToken>();
-        int commentStart = -1;
+        bool inBlockComment = state.InBlockComment;
 
-        // First pass: find comment start position
-        var commentMatch = Regex.Match(line, @"//");
-        if (commentMatch.Success)
+        if (inBlockComment)
         {
-            // Verify it's not inside a string
-            bool inString = false;
-            for (int i = 0; i < commentMatch.Index; i++)
+            int closeIdx = line.IndexOf("*/", StringComparison.Ordinal);
+            if (closeIdx < 0)
             {
-                if (line[i] == '"' && (i == 0 || line[i - 1] != '\\'))
-                    inString = !inString;
+                if (line.Length > 0)
+                    tokens.Add(new SyntaxToken(0, line.Length, CommentColor));
+                return (tokens, new CSharpLineState(InBlockComment: true));
             }
+            tokens.Add(new SyntaxToken(0, closeIdx + 2, CommentColor));
+            inBlockComment = false;
+            TokenizeCodeRange(tokens, line, closeIdx + 2, ref inBlockComment);
+            return (tokens, new CSharpLineState(InBlockComment: inBlockComment));
+        }
+
+        TokenizeCodeRange(tokens, line, 0, ref inBlockComment);
+        return (tokens, new CSharpLineState(InBlockComment: inBlockComment));
+    }
+
+    private void TokenizeCodeRange(List<SyntaxToken> tokens, string line, int start, ref bool inBlockComment)
+    {
+        if (start >= line.Length) return;
+
+        int blockOpen = FindBlockCommentOpen(line, start);
+        int lineCommentPos = FindLineComment(line, start);
+
+        if (blockOpen >= 0 && (lineCommentPos < 0 || blockOpen < lineCommentPos))
+        {
+            // Block comment starts before any line comment
+            if (blockOpen > start)
+                AddCodeTokens(tokens, line, start, blockOpen);
+
+            int closeIdx = line.IndexOf("*/", blockOpen + 2, StringComparison.Ordinal);
+            if (closeIdx < 0)
+            {
+                tokens.Add(new SyntaxToken(blockOpen, line.Length - blockOpen, CommentColor));
+                inBlockComment = true;
+            }
+            else
+            {
+                tokens.Add(new SyntaxToken(blockOpen, closeIdx + 2 - blockOpen, CommentColor));
+                TokenizeCodeRange(tokens, line, closeIdx + 2, ref inBlockComment);
+            }
+            return;
+        }
+
+        // No block comment (or line comment comes first)
+        AddCodeTokens(tokens, line, start, lineCommentPos >= 0 ? lineCommentPos : line.Length);
+        if (lineCommentPos >= 0)
+            tokens.Add(new SyntaxToken(lineCommentPos, line.Length - lineCommentPos, CommentColor));
+    }
+
+    private static int FindBlockCommentOpen(string line, int start)
+    {
+        bool inString = false;
+        for (int i = start; i < line.Length - 1; i++)
+        {
+            char c = line[i];
             if (!inString)
-                commentStart = commentMatch.Index;
+            {
+                if (c == '/' && line[i + 1] == '/') return -1; // line comment comes first
+                if (c == '/' && line[i + 1] == '*') return i;
+                if (c == '@' && i + 1 < line.Length && line[i + 1] == '"') { inString = true; i++; }
+                else if (c == '"') inString = true;
+            }
+            else
+            {
+                if (c == '\\') i++;
+                else if (c == '"') inString = false;
+            }
         }
+        return -1;
+    }
 
-        // If the entire line is a comment, return single token
-        if (commentStart == 0)
+    private static int FindLineComment(string line, int start)
+    {
+        bool inString = false;
+        for (int i = start; i < line.Length - 1; i++)
         {
-            tokens.Add(new SyntaxToken(0, line.Length, CommentColor));
-            return tokens;
+            char c = line[i];
+            if (!inString)
+            {
+                if (c == '/' && line[i + 1] == '/') return i;
+                if (c == '@' && i + 1 < line.Length && line[i + 1] == '"') { inString = true; i++; }
+                else if (c == '"') inString = true;
+            }
+            else
+            {
+                if (c == '\\') i++;
+                else if (c == '"') inString = false;
+            }
         }
+        return -1;
+    }
 
-        // Add comment token if present
-        if (commentStart > 0)
-        {
-            tokens.Add(new SyntaxToken(commentStart, line.Length - commentStart, CommentColor));
-        }
+    private void AddCodeTokens(List<SyntaxToken> tokens, string line, int segStart, int segEnd)
+    {
+        int segLength = segEnd - segStart;
+        if (segLength <= 0) return;
+        string segment = line.Substring(segStart, segLength);
 
-        var matches = TokenPattern.Matches(line);
+        var matches = TokenPattern.Matches(segment);
         foreach (Match match in matches)
         {
-            // Skip tokens that overlap with comment region
-            if (commentStart >= 0 && match.Index >= commentStart)
-                continue;
-
             var text = match.Value;
-
-            if (text.StartsWith("//"))
-            {
-                // Already handled above
-                continue;
-            }
+            if (text.StartsWith("//")) continue;
             else if (text.StartsWith("\"") || text.StartsWith("@\""))
-            {
-                tokens.Add(new SyntaxToken(match.Index, match.Length, StringColor));
-            }
+                tokens.Add(new SyntaxToken(segStart + match.Index, match.Length, StringColor));
             else if (char.IsDigit(text[0]))
-            {
-                tokens.Add(new SyntaxToken(match.Index, match.Length, NumberColor));
-            }
+                tokens.Add(new SyntaxToken(segStart + match.Index, match.Length, NumberColor));
             else if (TypeKeywords.Contains(text))
-            {
-                tokens.Add(new SyntaxToken(match.Index, match.Length, TypeKeywordColor));
-            }
+                tokens.Add(new SyntaxToken(segStart + match.Index, match.Length, TypeKeywordColor));
             else if (Keywords.Contains(text))
-            {
-                tokens.Add(new SyntaxToken(match.Index, match.Length, KeywordColor));
-            }
+                tokens.Add(new SyntaxToken(segStart + match.Index, match.Length, KeywordColor));
         }
-
-        return tokens;
     }
 }
