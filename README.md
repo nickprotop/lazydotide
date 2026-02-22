@@ -1,4 +1,4 @@
-# LazySharpIDE
+# LazyDotIDE
 
 A **very** primitive, Neanderthal-level console IDE for .NET — for when you're SSH'd into a remote server and just need to fix something quickly without spinning up a real editor.
 
@@ -37,22 +37,22 @@ A **very** primitive, Neanderthal-level console IDE for .NET — for when you're
 
 ```bash
 # Run on a project directory
-lazysharpide /path/to/your/dotnet/project
+lazydotide /path/to/your/dotnet/project
 
 # Or just run it in the current directory
-lazysharpide
+lazydotide
 ```
 
 ### Install as a dotnet tool
 
 ```bash
-dotnet tool install --global LazySharpIDE
+dotnet tool install --global LazyDotIDE
 ```
 
 Or from source (with a sibling `ConsoleEx/` directory for live SharpConsoleUI changes):
 
 ```bash
-dotnet run --project /path/to/lazysharpide -- /path/to/your/project
+dotnet run --project /path/to/lazydotide -- /path/to/your/project
 ```
 
 ---
