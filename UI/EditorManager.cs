@@ -12,8 +12,10 @@ public class EditorManager
 {
     private readonly ConsoleWindowSystem _ws;
     private readonly TabControl _tabControl;
+    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty);
+
     private readonly Dictionary<string, int> _openFiles = new();
-    private readonly Dictionary<int, (string Path, MultilineEditControl Editor, bool IsDirty)> _tabData = new();
+    private readonly Dictionary<int, EditorTabData> _tabData = new();
 
     private readonly FileMiddlewarePipeline _pipeline;
     private WrapMode _wrapMode = WrapMode.Wrap;
@@ -24,8 +26,8 @@ public class EditorManager
         set
         {
             _wrapMode = value;
-            foreach (var (_, editor, _) in _tabData.Values)
-                editor.WrapMode = value;
+            foreach (var d in _tabData.Values)
+                if (d.Editor != null) d.Editor.WrapMode = value;
         }
     }
 
@@ -34,7 +36,7 @@ public class EditorManager
     public event EventHandler<IReadOnlyList<string>>? ValidationWarnings;
 
     public string? CurrentFilePath =>
-        _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.Path : null;
+        _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.FilePath : null;
 
     public MultilineEditControl? CurrentEditor =>
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d2) ? d2.Editor : null;
@@ -114,8 +116,7 @@ public class EditorManager
         if (editor != null)
             editor.FocusedBackgroundColor = editor.BackgroundColor;
 
-        var storedEditor = editor ?? new MultilineEditControl();
-        _tabData[tabIndex] = (path, storedEditor, isDirty);
+        _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty);
 
         _tabControl.ActiveTabIndex = tabIndex;
 
@@ -149,8 +150,8 @@ public class EditorManager
             {
                 if (!data.IsDirty)
                 {
-                    _tabData[_tabControl.ActiveTabIndex] = (data.Path, data.Editor, true);
-                    _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.Path) + " *");
+                    _tabData[_tabControl.ActiveTabIndex] = data with { IsDirty = true };
+                    _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.FilePath!) + " *");
                 }
             }
         };
@@ -162,24 +163,25 @@ public class EditorManager
     {
         if (_tabControl.ActiveTabIndex < 0) return;
         if (!_tabData.TryGetValue(_tabControl.ActiveTabIndex, out var data)) return;
+        if (data.Editor == null || data.FilePath == null) return;
 
-        var dir = Path.GetDirectoryName(data.Path);
+        var dir = Path.GetDirectoryName(data.FilePath);
         if (dir != null && !Directory.Exists(dir)) return;
 
         try
         {
             var editorContent = data.Editor.Content;
-            var warnings = _pipeline.Validate(editorContent, data.Path);
+            var warnings = _pipeline.Validate(editorContent, data.FilePath);
             if (warnings?.Count > 0)
                 ValidationWarnings?.Invoke(this, warnings);
 
-            FileService.WriteFile(data.Path, _pipeline.ProcessSave(editorContent, data.Path));
-            _tabData[_tabControl.ActiveTabIndex] = (data.Path, data.Editor, false);
-            _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.Path));
+            FileService.WriteFile(data.FilePath, _pipeline.ProcessSave(editorContent, data.FilePath));
+            _tabData[_tabControl.ActiveTabIndex] = data with { IsDirty = false };
+            _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.FilePath));
         }
         catch (Exception ex)
         {
-            _ws.LogService.LogError($"Failed to save {data.Path}: {ex.Message}");
+            _ws.LogService.LogError($"Failed to save {data.FilePath}: {ex.Message}");
         }
     }
 
@@ -194,15 +196,15 @@ public class EditorManager
         if (_tabControl.ActiveTabIndex < 0) return;
         var idx = _tabControl.ActiveTabIndex;
 
-        if (_tabData.TryGetValue(idx, out var data))
-            _openFiles.Remove(data.Path);
+        if (_tabData.TryGetValue(idx, out var data) && data.FilePath != null)
+            _openFiles.Remove(data.FilePath);
 
         _tabData.Remove(idx);
         _tabControl.RemoveTab(idx);
 
         // Re-index remaining tabs after removal
         var newOpenFiles = new Dictionary<string, int>();
-        var newTabData = new Dictionary<int, (string Path, MultilineEditControl Editor, bool IsDirty)>();
+        var newTabData = new Dictionary<int, EditorTabData>();
 
         foreach (var (path, oldIdx) in _openFiles)
         {
@@ -235,6 +237,37 @@ public class EditorManager
         if (index < 0 || index >= _tabControl.TabCount) return;
         _tabControl.ActiveTabIndex = index;
         CloseCurrentTab();
+    }
+
+    /// <summary>Opens any IWindowControl as a closable editor-area tab.</summary>
+    public int OpenControlTab(string title, IWindowControl control, bool isClosable = true)
+    {
+        bool wasEmpty = _tabControl.TabCount == 0;
+        _tabControl.AddTab(title, control, isClosable);
+        int tabIndex = _tabControl.TabCount - 1;
+        _tabData[tabIndex] = new EditorTabData(FilePath: null, Editor: null, IsDirty: false);
+        _tabControl.ActiveTabIndex = tabIndex;
+
+        if (control is SharpConsoleUI.Controls.Terminal.TerminalControl tc &&
+            (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()))
+            tc.ProcessExited += (_, _) => RemoveTabWithControl(control);
+
+        if (wasEmpty)
+            OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
+
+        return tabIndex;
+    }
+
+    private void RemoveTabWithControl(IWindowControl control)
+    {
+        for (int i = 0; i < _tabControl.TabCount; i++)
+        {
+            if (ReferenceEquals(_tabControl.TabPages[i].Content, control))
+            {
+                CloseTabAt(i);
+                return;
+            }
+        }
     }
 
     private void OnTabCloseRequested(object? sender, SharpConsoleUI.Events.TabEventArgs args)

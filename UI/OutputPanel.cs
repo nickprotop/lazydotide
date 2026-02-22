@@ -122,7 +122,7 @@ public class OutputPanel
 
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    public TerminalControl LaunchShell()
+    public TerminalControl LaunchShell(string? workingDirectory = null)
     {
         // If tab exists but the process exited, replace it
         if (_shellTabIndex >= 0 && (_shellTerminal == null || _shellTerminal.IsDisposed))
@@ -138,7 +138,9 @@ public class OutputPanel
             return _shellTerminal!;
         }
 
-        _shellTerminal = Controls.Terminal().Build();
+        _shellTerminal = Controls.Terminal()
+            .WithWorkingDirectory(workingDirectory)
+            .Build();
         _shellTerminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         _shellTerminal.VerticalAlignment = VerticalAlignment.Fill;
         _tabControl.AddTab("Shell", _shellTerminal);

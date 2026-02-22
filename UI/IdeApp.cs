@@ -53,6 +53,9 @@ public class IdeApp : IDisposable
     private double _splitRatio = 0.68;   // mainH / totalHeight
     private bool _resizeCoupling = false; // re-entrancy guard for coupled resize
 
+    // Tool tab indices
+    private int _lazyNuGetTabIndex = -1;
+
     public IdeApp(string projectPath)
     {
         _ws = new ConsoleWindowSystem(
@@ -111,7 +114,7 @@ public class IdeApp : IDisposable
 
         // Open the shell tab at startup so it's ready immediately
         if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows())
-            _outputPanel!.LaunchShell();
+            _outputPanel!.LaunchShell(_projectService.RootPath);
 
         WireEvents();
     }
@@ -180,7 +183,8 @@ public class IdeApp : IDisposable
             .AddItem("Tools", m => m
                 .AddItem("Add NuGet Package", () => ShowNuGetDialog())
                 .AddSeparator()
-                .AddItem("Shell", "F8", () => OpenShell()))
+                .AddItem("Shell", "F8", () => OpenShell())
+                .AddItem("LazyNuGet", "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }))
             .Build();
 
         menu.StickyPosition = StickyPosition.Top;
@@ -195,6 +199,7 @@ public class IdeApp : IDisposable
             .AddButton("Test F7", (_, _) => _ = TestProjectAsync())
             .AddButton("Stop F4", (_, _) => _buildService.Cancel())
             .AddButton("Shell F8", (_, _) => OpenShell())
+            .AddButton("LazyNuGet F9", (_, _) => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); })
             .AddButton("Explorer", (_, _) => ToggleExplorer())
             .AddButton("Output", (_, _) => ToggleOutput())
             .StickyTop()
@@ -446,6 +451,12 @@ public class IdeApp : IDisposable
             OpenShell();
             e.Handled = true;
         }
+        else if (key == ConsoleKey.F9 && mods == 0)
+        {
+            if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows())
+                OpenLazyNuGetTab();
+            e.Handled = true;
+        }
         else if (key == ConsoleKey.F4 && mods == 0)
         {
             _buildService.Cancel();
@@ -613,11 +624,65 @@ public class IdeApp : IDisposable
     private void OpenShell()
     {
         if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
-        var terminal = _outputPanel?.LaunchShell();
+        var terminal = _outputPanel?.LaunchShell(_projectService.RootPath);
         if (terminal == null || _outputWindow == null) return;
         // Activate the output window so key events flow to it, then focus the terminal
         _ws.SetActiveWindow(_outputWindow);
         _outputWindow.FocusControl(terminal);
+    }
+
+    private static string? DetectLazyNuGet()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(
+                OperatingSystem.IsWindows() ? "where" : "which", "lazynuget")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            var output = proc?.StandardOutput.ReadToEnd().Trim();
+            proc?.WaitForExit();
+            if (!string.IsNullOrEmpty(output))
+                return "lazynuget";
+        }
+        catch { }
+        return null;
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OpenLazyNuGetTab()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+
+        // Switch to existing tab if still alive
+        if (_lazyNuGetTabIndex >= 0 &&
+            _lazyNuGetTabIndex < _editorManager!.TabControl.TabCount)
+        {
+            _editorManager.TabControl.ActiveTabIndex = _lazyNuGetTabIndex;
+            return;
+        }
+
+        string? exe = DetectLazyNuGet();
+        if (exe == null)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "LazyNuGet Not Found",
+                "lazynuget not found in PATH. Install: dotnet tool install -g lazynuget",
+                SharpConsoleUI.Core.NotificationSeverity.Warning);
+            return;
+        }
+
+        var terminal = Controls.Terminal(exe)
+            .WithWorkingDirectory(_projectService.RootPath)
+            .Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        _lazyNuGetTabIndex = _editorManager!.OpenControlTab("LazyNuGet", terminal, isClosable: true);
+        terminal.ProcessExited += (_, _) => _lazyNuGetTabIndex = -1;
     }
 
     private async Task OpenFolderAsync()
