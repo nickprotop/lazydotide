@@ -71,6 +71,7 @@ public class ExplorerPanel
         else
         {
             treeNode = parent.AddChild(label);
+            treeNode.IsExpanded = false;
         }
 
         treeNode.Tag = fileNode.FullPath;
