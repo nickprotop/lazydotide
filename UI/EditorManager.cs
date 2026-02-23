@@ -18,7 +18,7 @@ public class EditorManager
     private readonly Dictionary<int, EditorTabData> _tabData = new();
 
     private readonly FileMiddlewarePipeline _pipeline;
-    private WrapMode _wrapMode = WrapMode.Wrap;
+    private WrapMode _wrapMode = WrapMode.NoWrap;
 
     public WrapMode WrapMode
     {
@@ -34,6 +34,10 @@ public class EditorManager
     public event EventHandler<(int Line, int Column)>? CursorChanged;
     public event EventHandler<string?>? ActiveFileChanged;
     public event EventHandler<IReadOnlyList<string>>? ValidationWarnings;
+    public event EventHandler<(string FilePath, string Content)>? DocumentOpened;
+    public event EventHandler<(string FilePath, string Content)>? DocumentChanged;
+    public event EventHandler<string>? DocumentSaved;
+    public event EventHandler<string>? DocumentClosed;
 
     public string? CurrentFilePath =>
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.FilePath : null;
@@ -45,6 +49,11 @@ public class EditorManager
 
     public bool HasOpenFiles => _tabControl.TabCount > 0;
     public event EventHandler? OpenFilesStateChanged;
+
+    public IEnumerable<(string FilePath, string Content)> GetOpenDocuments() =>
+        _tabData.Values
+            .Where(d => d.FilePath != null && d.Editor != null)
+            .Select(d => (d.FilePath!, d.Editor!.Content));
 
     public EditorManager(ConsoleWindowSystem ws, FileMiddlewarePipeline pipeline)
     {
@@ -120,6 +129,9 @@ public class EditorManager
 
         _tabControl.ActiveTabIndex = tabIndex;
 
+        if (editor != null)
+            DocumentOpened?.Invoke(this, (path, editor.Content));
+
         if (wasEmpty)
             OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -130,13 +142,18 @@ public class EditorManager
         {
             ShowLineNumbers = true,
             HighlightCurrentLine = true,
+            AutoIndent = true,
             WrapMode = _wrapMode,
+            IsEditing = true,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
 
         editor.Content = content;
         editor.SyntaxHighlighter = _pipeline.GetHighlighter(path);
+
+        // Always re-enter editing mode on focus (code editor is always "typing mode")
+        editor.GotFocus += (_, _) => editor.IsEditing = true;
 
         editor.CursorPositionChanged += (_, pos) =>
         {
@@ -153,6 +170,8 @@ public class EditorManager
                     _tabData[_tabControl.ActiveTabIndex] = data with { IsDirty = true };
                     _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.FilePath!) + " *");
                 }
+                if (data.FilePath != null)
+                    DocumentChanged?.Invoke(this, (data.FilePath, editor.Content));
             }
         };
 
@@ -178,6 +197,7 @@ public class EditorManager
             FileService.WriteFile(data.FilePath, _pipeline.ProcessSave(editorContent, data.FilePath));
             _tabData[_tabControl.ActiveTabIndex] = data with { IsDirty = false };
             _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.FilePath));
+            DocumentSaved?.Invoke(this, data.FilePath);
         }
         catch (Exception ex)
         {
@@ -191,13 +211,23 @@ public class EditorManager
         return _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var data) && data.IsDirty;
     }
 
+    public bool IsTabDirty(int index) =>
+        _tabData.TryGetValue(index, out var data) && data.IsDirty;
+
+    public string? GetTabFilePath(int index) =>
+        _tabData.TryGetValue(index, out var data) ? data.FilePath : null;
+
     public void CloseCurrentTab()
     {
         if (_tabControl.ActiveTabIndex < 0) return;
         var idx = _tabControl.ActiveTabIndex;
 
         if (_tabData.TryGetValue(idx, out var data) && data.FilePath != null)
+        {
             _openFiles.Remove(data.FilePath);
+            if (data.Editor != null)
+                DocumentClosed?.Invoke(this, data.FilePath);
+        }
 
         _tabData.Remove(idx);
         _tabControl.RemoveTab(idx);
@@ -270,9 +300,44 @@ public class EditorManager
         }
     }
 
+    public event EventHandler<int>? TabCloseRequested;
+
     private void OnTabCloseRequested(object? sender, SharpConsoleUI.Events.TabEventArgs args)
     {
-        CloseTabAt(args.Index);
+        if (TabCloseRequested != null)
+            TabCloseRequested.Invoke(this, args.Index);
+        else
+            CloseTabAt(args.Index);
+    }
+
+    public bool IsFileOpen(string path) => _openFiles.ContainsKey(path);
+
+    public bool IsFileDirty(string path)
+    {
+        if (!_openFiles.TryGetValue(path, out var tabIndex)) return false;
+        return _tabData.TryGetValue(tabIndex, out var data) && data.IsDirty;
+    }
+
+    public void ReloadFile(string path)
+    {
+        if (!_openFiles.TryGetValue(path, out var tabIndex)) return;
+        if (!_tabData.TryGetValue(tabIndex, out var data)) return;
+        if (data.Editor == null) return;
+        try
+        {
+            var newContent = _pipeline.ProcessLoad(FileService.ReadFile(path), path);
+            data.Editor.Content = newContent;
+            _tabData[tabIndex] = data with { IsDirty = false };
+            _tabControl.SetTabTitle(tabIndex, Path.GetFileName(path));
+        }
+        catch { }
+    }
+
+    public void MarkFileConflict(string path)
+    {
+        if (!_openFiles.TryGetValue(path, out var tabIndex)) return;
+        if (!_tabData.TryGetValue(tabIndex, out var data)) return;
+        _tabControl.SetTabTitle(tabIndex, "⚠ " + Path.GetFileName(path) + " *");
     }
 
     public void GoToLine(int line)
@@ -284,9 +349,15 @@ public class EditorManager
     {
         var editor = CurrentEditor;
         if (editor == null) return new LayoutRect(30, 5, 1, 1);
-        int col = Math.Max(0, editor.CurrentColumn - 1);
-        int line = Math.Max(0, editor.CurrentLine - 1);
-        return new LayoutRect(col + 30, line + 5, 1, 1);
+
+        // ActualX/Y is the top-left of the editor widget in content-area coordinates.
+        // Subtract scroll offsets so we get the screen row/col, not the document row/col.
+        int gutterW = editor.GutterWidth;
+        int col  = Math.Max(0, editor.CurrentColumn - 1 - editor.HorizontalScrollOffset);
+        int line = Math.Max(0, editor.CurrentLine  - 1 - editor.VerticalScrollOffset);
+        int x = editor.ActualX + gutterW + col;
+        int y = editor.ActualY + line;
+        return new LayoutRect(x, y, 1, 1);
     }
 
     private void OnTabChanged(object? sender, TabChangedEventArgs args)

@@ -46,6 +46,10 @@ public class IdeApp : IDisposable
     // Thread-safe queues for streaming build/test output
     private readonly ConcurrentQueue<string> _buildLines = new();
     private readonly ConcurrentQueue<string> _testLines = new();
+    private readonly ConcurrentQueue<Action> _pendingUiActions = new();
+
+    // File system watcher
+    private FileWatcher? _fileWatcher;
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
 
@@ -55,6 +59,32 @@ public class IdeApp : IDisposable
 
     // Tool tab indices
     private int _lazyNuGetTabIndex = -1;
+    private int _shellTabIndex = -1;
+    private readonly Dictionary<int, int> _toolTabIndices = new(); // config tool index → editor tab index
+
+    // Config
+    private IdeConfig _config = new();
+
+    // Dashboard LSP state (set in PostInitAsync)
+    private string? _detectedLspExe;
+    private bool _lspStarted;
+    private bool _lspDetectionDone;
+
+    // Navigation history for Go to Definition / Navigate Back
+    private readonly Stack<(string FilePath, int Line, int Col)> _navHistory = new();
+
+    // LSP portal overlays (rendered inside _mainWindow, not as separate windows)
+    private LspCompletionPortalContent? _completionPortal;
+    private LayoutNode? _completionPortalNode;
+    private LspTooltipPortalContent? _tooltipPortal;
+    private LayoutNode? _tooltipPortalNode;
+
+    // Completion filter tracking — column at which completion was triggered (1-indexed)
+    private int _completionTriggerColumn;
+    private int _completionTriggerLine;
+
+    // Debounce timer for dot-triggered auto-completion
+    private Timer? _dotTriggerDebounce;
 
     public IdeApp(string projectPath)
     {
@@ -80,6 +110,10 @@ public class IdeApp : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
+        _dotTriggerDebounce?.Dispose();
+        _fileWatcher?.Dispose();
+        DismissCompletionPortal();
+        DismissTooltipPortal();
         _ws.ConsoleDriver.ScreenResized -= OnScreenResized;
         _ = _lsp?.DisposeAsync().AsTask();
     }
@@ -90,6 +124,9 @@ public class IdeApp : IDisposable
 
     private void CreateLayout()
     {
+        ConfigService.EnsureDefaultConfig();
+        _config = ConfigService.Load();
+
         var desktop = _ws.DesktopDimensions;
         int mainH = (int)(desktop.Height * _splitRatio);
         int outH = desktop.Height - mainH;
@@ -111,6 +148,11 @@ public class IdeApp : IDisposable
         _ws.AddWindow(_outputWindow!);
 
         _ws.ConsoleDriver.ScreenResized += OnScreenResized;
+
+        _fileWatcher = new FileWatcher();
+        _fileWatcher.FileChanged      += (_, path) => _pendingUiActions.Enqueue(() => HandleExternalFileChanged(path));
+        _fileWatcher.StructureChanged += (_, _)    => _pendingUiActions.Enqueue(() => _explorer?.Refresh());
+        _fileWatcher.Watch(_projectService.RootPath);
 
         // Open the shell tab at startup so it's ready immediately
         if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows())
@@ -180,11 +222,34 @@ public class IdeApp : IDisposable
                 .AddItem("Refresh Status", () => _ = RefreshGitStatusAsync())
                 .AddItem("Pull", () => _ = GitCommandAsync("pull"))
                 .AddItem("Push", () => _ = GitCommandAsync("push")))
-            .AddItem("Tools", m => m
-                .AddItem("Add NuGet Package", () => ShowNuGetDialog())
-                .AddSeparator()
-                .AddItem("Shell", "F8", () => OpenShell())
-                .AddItem("LazyNuGet", "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }))
+            .AddItem("Tools", m =>
+            {
+                m.AddItem("Go to Definition", "F12",            () => _ = ShowGoToDefinitionAsync())
+                 .AddItem("Navigate Back",    "Alt+Left",       () => NavigateBack())
+                 .AddSeparator()
+                 .AddItem("Signature Help",   "Ctrl+P",         () => _ = ShowSignatureHelpAsync())
+                 .AddItem("Format Document",  "Alt+Shift+F",    () => _ = FormatDocumentAsync())
+                 .AddItem("Reload from Disk", "Alt+Shift+R",    () => ReloadCurrentFromDisk())
+                 .AddSeparator()
+                 .AddItem("Add NuGet Package", () => ShowNuGetDialog())
+                 .AddSeparator()
+                 .AddItem("Shell",      "F8", () => OpenShell())
+                 .AddItem("Shell Tab",  "",   () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); })
+                 .AddItem("LazyNuGet",  "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); });
+
+                if (_config.Tools.Count > 0)
+                {
+                    m.AddSeparator();
+                    for (int i = 0; i < _config.Tools.Count; i++)
+                    {
+                        int idx = i;  // capture for lambda
+                        m.AddItem(_config.Tools[i].Name, "", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolTab(idx); });
+                    }
+                }
+
+                m.AddSeparator();
+                m.AddItem("Edit Config", "", () => OpenConfigFile());
+            })
             .Build();
 
         menu.StickyPosition = StickyPosition.Top;
@@ -199,6 +264,7 @@ public class IdeApp : IDisposable
             .AddButton("Test F7", (_, _) => _ = TestProjectAsync())
             .AddButton("Stop F4", (_, _) => _buildService.Cancel())
             .AddButton("Shell F8", (_, _) => OpenShell())
+            .AddButton("Shell Tab", (_, _) => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); })
             .AddButton("LazyNuGet F9", (_, _) => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); })
             .AddButton("Explorer", (_, _) => ToggleExplorer())
             .AddButton("Output", (_, _) => ToggleOutput())
@@ -308,6 +374,30 @@ public class IdeApp : IDisposable
     {
         _explorer!.FileOpenRequested += (_, path) => _editorManager?.OpenFile(path);
 
+        _editorManager!.TabCloseRequested += (_, index) =>
+        {
+            if (_editorManager.IsTabDirty(index))
+            {
+                var fileName = _editorManager.GetTabFilePath(index) is { } p
+                    ? Path.GetFileName(p)
+                    : "Untitled";
+                _ = ConfirmSaveDialog.ShowAsync(_ws, fileName).ContinueWith(t =>
+                {
+                    if (t.Result == DialogResult.Cancel) return;
+                    if (t.Result == DialogResult.Save)
+                    {
+                        _editorManager.TabControl.ActiveTabIndex = index;
+                        _editorManager.SaveCurrent();
+                    }
+                    _editorManager.CloseTabAt(index);
+                });
+            }
+            else
+            {
+                _editorManager.CloseTabAt(index);
+            }
+        };
+
         _editorManager!.CursorChanged += (_, pos) =>
         {
             _cursorStatus?.SetContent(new List<string>
@@ -333,9 +423,37 @@ public class IdeApp : IDisposable
         _editorManager.ValidationWarnings += (_, warnings) =>
             _outputPanel!.ShowWarnings(warnings);
 
-        _mainWindow!.KeyPressed += OnMainWindowKeyPressed;
-        _mainWindow!.OnResize   += OnMainWindowResized;
-        _outputWindow!.OnResize += OnOutputWindowResized;
+        _editorManager.DocumentOpened  += (_, a) => _ = _lsp?.DidOpenAsync(a.FilePath, a.Content);
+        _editorManager.DocumentChanged += (_, a) =>
+        {
+            _ = _lsp?.DidChangeAsync(a.FilePath, a.Content);
+            TryScheduleDotCompletion(a.FilePath, a.Content);
+        };
+        _editorManager.DocumentSaved   += (_, p) => _ = _lsp?.DidSaveAsync(p);
+        _editorManager.DocumentSaved   += (_, savedPath) => _fileWatcher?.SuppressNext(savedPath);
+        _editorManager.DocumentSaved   += (_, savedPath) =>
+        {
+            if (string.Equals(savedPath, ConfigService.GetConfigPath(), StringComparison.OrdinalIgnoreCase))
+            {
+                _config = ConfigService.Load();
+                UpdateDashboard();
+                _ws.NotificationStateService.ShowNotification(
+                    "Config Reloaded",
+                    "Config loaded. New/removed tools will appear after restart.",
+                    SharpConsoleUI.Core.NotificationSeverity.Info);
+            }
+        };
+        _editorManager.DocumentClosed  += (_, p) =>
+        {
+            DismissCompletionPortal();
+            DismissTooltipPortal();
+            _ = _lsp?.DidCloseAsync(p);
+        };
+
+        _mainWindow!.PreviewKeyPressed += OnMainWindowPreviewKey;
+        _mainWindow!.KeyPressed        += OnMainWindowKeyPressed;
+        _mainWindow!.OnResize          += OnMainWindowResized;
+        _outputWindow!.OnResize        += OnOutputWindowResized;
     }
 
     private void InitBottomStatus()
@@ -416,9 +534,98 @@ public class IdeApp : IDisposable
         finally { _resizeCoupling = false; }
     }
 
+    // PreviewKeyPressed fires BEFORE the focused control (editor) processes the key.
+    // Use it to intercept keys that the editor would otherwise consume (arrows, Enter, Tab).
+    private void OnMainWindowPreviewKey(object? sender, KeyPressedEventArgs e)
+    {
+        var key  = e.KeyInfo.Key;
+        var mods = e.KeyInfo.Modifiers;
+
+        // Dismiss tooltip on any key
+        if (_tooltipPortal != null)
+            DismissTooltipPortal();
+
+        // Escape: dismiss portals if open, then swallow — never let the editor exit editing mode
+        if (key == ConsoleKey.Escape && mods == 0)
+        {
+            if (_completionPortal != null)
+                DismissCompletionPortal();
+            e.Handled = true;
+            return;
+        }
+
+        if (_completionPortal == null) return;
+
+        if (mods == 0)
+        {
+            if (key == ConsoleKey.UpArrow)
+            {
+                _completionPortal.SelectPrev();
+                _mainWindow?.Invalidate(false);
+                e.Handled = true;
+                return;
+            }
+            if (key == ConsoleKey.DownArrow)
+            {
+                _completionPortal.SelectNext();
+                _mainWindow?.Invalidate(false);
+                e.Handled = true;
+                return;
+            }
+            if (key == ConsoleKey.Enter || key == ConsoleKey.Tab)
+            {
+                var accepted = _completionPortal.GetSelected();
+                int filterLen = _completionPortal.FilterText.Length;
+                DismissCompletionPortal();
+                if (accepted != null)
+                {
+                    var editor = _editorManager?.CurrentEditor;
+                    if (editor != null)
+                    {
+                        // Delete the prefix the user typed since completion opened,
+                        // then insert the full accepted text.
+                        // Note: DeleteCharsBefore may temporarily place the cursor on a '.'
+                        // which arms _dotTriggerDebounce — we cancel it after the full insert.
+                        if (filterLen > 0)
+                            editor.DeleteCharsBefore(filterLen);
+                        editor.InsertText(accepted.InsertText ?? accepted.Label);
+
+                        // Cancel any dot-trigger scheduled during the intermediate state
+                        _dotTriggerDebounce?.Dispose();
+                        _dotTriggerDebounce = null;
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+            if (key == ConsoleKey.Escape)
+            {
+                DismissCompletionPortal();
+                e.Handled = true;
+                return;
+            }
+
+            // Printable characters and Backspace: let them through to the editor.
+            // The ContentChanged handler (OnEditorContentChangedForCompletion) will
+            // update the filter automatically after the keystroke is processed.
+            char ch = e.KeyInfo.KeyChar;
+            bool isTypingKey = (ch != '\0' && !char.IsControl(ch)) || key == ConsoleKey.Backspace;
+            if (isTypingKey)
+                return; // Do NOT handle — editor processes the key, filter updates via ContentChanged
+        }
+
+        // Any other key or modifier combo: dismiss unless it's a completion shortcut.
+        bool isCompletionShortcut =
+            (key == ConsoleKey.Spacebar && mods == ConsoleModifiers.Control) ||
+            (key == ConsoleKey.P        && mods == ConsoleModifiers.Control) ||
+            key == ConsoleKey.F12;
+        if (!isCompletionShortcut)
+            DismissCompletionPortal();
+    }
+
     private void OnMainWindowKeyPressed(object? sender, KeyPressedEventArgs e)
     {
-        var key = e.KeyInfo.Key;
+        var key  = e.KeyInfo.Key;
         var mods = e.KeyInfo.Modifiers;
 
         if (key == ConsoleKey.S && mods == ConsoleModifiers.Control)
@@ -479,7 +686,33 @@ public class IdeApp : IDisposable
         }
         else if (key == ConsoleKey.Spacebar && mods == ConsoleModifiers.Control)
         {
+            _ = _lsp?.FlushPendingChangeAsync();
             _ = ShowCompletionAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.F12 && mods == 0)
+        {
+            _ = ShowGoToDefinitionAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.LeftArrow && mods == ConsoleModifiers.Alt)
+        {
+            NavigateBack();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.P && mods == ConsoleModifiers.Control)
+        {
+            _ = ShowSignatureHelpAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.F && mods == (ConsoleModifiers.Alt | ConsoleModifiers.Shift))
+        {
+            _ = FormatDocumentAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.R && mods == (ConsoleModifiers.Alt | ConsoleModifiers.Shift))
+        {
+            ReloadCurrentFromDisk();
             e.Handled = true;
         }
         else if (key == ConsoleKey.F && mods == ConsoleModifiers.Control)
@@ -508,6 +741,8 @@ public class IdeApp : IDisposable
                     _outputPanel?.AppendBuildLine(line);
                 while (_testLines.TryDequeue(out var line))
                     _outputPanel?.AppendTestLine(line);
+                while (_pendingUiActions.TryDequeue(out var action))
+                    action();
 
                 await Task.Delay(80, ct);
             }
@@ -527,12 +762,21 @@ public class IdeApp : IDisposable
         var lspServer = LspDetector.Find(projectPath);
         if (lspServer != null)
         {
+            _detectedLspExe = lspServer.Exe;
             _lsp = new LspClient();
             bool started = await _lsp.StartAsync(lspServer, projectPath);
             if (started)
             {
+                _lspStarted = true;
                 _lsp.DiagnosticsReceived += OnLspDiagnostics;
                 _ws.LogService.LogInfo("LSP server started: " + lspServer.Exe);
+
+                // Send DidOpen for any files that were opened before the LSP started
+                if (_editorManager != null)
+                {
+                    foreach (var (filePath, content) in _editorManager.GetOpenDocuments())
+                        await _lsp.DidOpenAsync(filePath, content);
+                }
             }
             else
             {
@@ -541,6 +785,9 @@ public class IdeApp : IDisposable
                 _ws.LogService.LogInfo("LSP server unavailable — running without IntelliSense");
             }
         }
+
+        _lspDetectionDone = true;
+        UpdateDashboard();
     }
 
     private void OnLspDiagnostics(object? sender, (string Uri, List<LspDiagnostic> Diags) args)
@@ -685,6 +932,93 @@ public class IdeApp : IDisposable
         terminal.ProcessExited += (_, _) => _lazyNuGetTabIndex = -1;
     }
 
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OpenShellTab()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+
+        if (_shellTabIndex >= 0 && _shellTabIndex < _editorManager!.TabControl.TabCount)
+        {
+            _editorManager.TabControl.ActiveTabIndex = _shellTabIndex;
+            return;
+        }
+
+        string exe = OperatingSystem.IsWindows() ? "cmd.exe" : "bash";
+        var terminal = Controls.Terminal(exe)
+            .WithWorkingDirectory(_projectService.RootPath)
+            .Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        _shellTabIndex = _editorManager!.OpenControlTab("Shell", terminal, isClosable: true);
+        terminal.ProcessExited += (_, _) => _shellTabIndex = -1;
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OpenConfigToolTab(int toolIndex)
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
+
+        if (_toolTabIndices.TryGetValue(toolIndex, out int existingTab) &&
+            existingTab >= 0 && existingTab < _editorManager!.TabControl.TabCount)
+        {
+            _editorManager.TabControl.ActiveTabIndex = existingTab;
+            return;
+        }
+
+        var tool = _config.Tools[toolIndex];
+        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
+            ? _projectService.RootPath
+            : tool.WorkingDir;
+
+        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
+        if (tool.Args?.Length > 0)
+            builder = builder.WithArgs(tool.Args);
+
+        var terminal = builder.Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        int tabIdx = _editorManager!.OpenControlTab(tool.Name, terminal, isClosable: true);
+        _toolTabIndices[toolIndex] = tabIdx;
+        terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
+    }
+
+    private void OpenConfigFile()
+    {
+        ConfigService.EnsureDefaultConfig();
+        _editorManager!.OpenFile(ConfigService.GetConfigPath());
+    }
+
+    private void HandleExternalFileChanged(string path)
+    {
+        if (!(_editorManager?.IsFileOpen(path) ?? false)) return;
+
+        if (_editorManager.IsFileDirty(path))
+        {
+            _editorManager.MarkFileConflict(path);
+            _ws.NotificationStateService.ShowNotification(
+                "External Change",
+                Path.GetFileName(path) + " was modified externally. Local edits preserved. Alt+Shift+R to reload.",
+                SharpConsoleUI.Core.NotificationSeverity.Warning);
+        }
+        else
+        {
+            _editorManager.ReloadFile(path);
+        }
+    }
+
+    private void ReloadCurrentFromDisk()
+    {
+        var path = _editorManager?.CurrentFilePath;
+        if (path == null) return;
+        _fileWatcher?.SuppressNext(path);
+        _editorManager!.ReloadFile(path);
+    }
+
     private async Task OpenFolderAsync()
     {
         var selected = await SharpConsoleUI.Dialogs.FileDialogs.ShowFolderPickerAsync(
@@ -695,6 +1029,7 @@ public class IdeApp : IDisposable
         _editorManager?.CloseAll();
         _explorer?.Refresh();
         _ = RefreshGitStatusAsync();
+        _fileWatcher?.Watch(selected);
 
         if (_lsp != null)
         {
@@ -872,70 +1207,414 @@ public class IdeApp : IDisposable
     // LSP: Hover & Completion
     // ──────────────────────────────────────────────────────────────
 
-    private CompletionPortal? _completionPortal;
-
     private async Task ShowHoverAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null)
+        {
+            _ws.NotificationStateService.ShowNotification("LSP", "Language server not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+            return;
+        }
+        var editor = _editorManager.CurrentEditor;
+        var path = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var result = await _lsp.HoverAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (result == null || string.IsNullOrWhiteSpace(result.Contents))
+        {
+            _ws.NotificationStateService.ShowNotification("Hover", "No type info at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        var lines = result.Contents.Split('\n')
+            .Select(l => Markup.Escape(l.TrimEnd()))  // escape so plain text survives markup pipeline
+            .Where(l => !string.IsNullOrEmpty(l))
+            .Take(8)
+            .ToList();
+        if (lines.Count == 0) return;
+
+        DismissTooltipPortal();
+        var cursor = _editorManager.GetCursorBounds();
+        var portal = new LspTooltipPortalContent(
+            lines, cursor.X, cursor.Y,
+            _mainWindow!.Width, _mainWindow.Height,
+            preferAbove: true);
+
+        _tooltipPortal     = portal;
+        _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
+    }
+
+    private async Task ShowCompletionAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null || _mainWindow == null) return;
+
+        var editor = _editorManager.CurrentEditor;
+        var path   = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var items = await _lsp.CompletionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (items.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Completion", "No completions at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        DismissCompletionPortal();
+
+        // If the cursor is mid-word (e.g. user typed "GetFo" then pressed Ctrl+Space),
+        // walk back to the word start and use the partial word as the initial filter.
+        // This also positions _completionTriggerColumn so subsequent keystrokes keep filtering.
+        var lineContent = editor.Content.Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        int cursorCol0 = editor.CurrentColumn - 1;  // 0-indexed position in the line
+        int wordStart0 = cursorCol0;
+        if (lineIdx >= 0 && lineIdx < lineContent.Length)
+        {
+            var currentLine = lineContent[lineIdx];
+            while (wordStart0 > 0 && IsIdentifierChar(currentLine[wordStart0 - 1]))
+                wordStart0--;
+        }
+        string initialFilter = string.Empty;
+        if (lineIdx >= 0 && lineIdx < lineContent.Length && wordStart0 < cursorCol0)
+            initialFilter = lineContent[lineIdx].Substring(wordStart0, cursorCol0 - wordStart0);
+
+        // Anchor trigger at word start so filterLen covers the already-typed prefix
+        _completionTriggerColumn = wordStart0 + 1;  // back to 1-indexed
+        _completionTriggerLine   = editor.CurrentLine;
+
+        // Position popup at the word-start column, not the cursor column
+        var screenCol = Math.Max(0, editor.ActualX + editor.GutterWidth + (wordStart0 - editor.HorizontalScrollOffset));
+        var screenRow = editor.ActualY + Math.Max(0, editor.CurrentLine - 1 - editor.VerticalScrollOffset);
+
+        var portal = new LspCompletionPortalContent(
+            items, screenCol, screenRow,
+            _mainWindow.Width, _mainWindow.Height);
+
+        if (initialFilter.Length > 0)
+            portal.SetFilter(initialFilter);
+
+        _completionPortal     = portal;
+        _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
+
+        // Give the portal a Container so its Invalidate() calls reach the window.
+        // Portal content is not added via AddControl, so Container is never set automatically.
+        portal.Container = _mainWindow;
+
+        // Mouse click on an item: accept and insert, same as Enter/Tab.
+        portal.ItemAccepted += (_, item) =>
+        {
+            int filterLen = _completionPortal?.FilterText.Length ?? 0;
+            DismissCompletionPortal();
+            if (filterLen > 0) editor.DeleteCharsBefore(filterLen);
+            editor.InsertText(item.InsertText ?? item.Label);
+            _dotTriggerDebounce?.Dispose();
+            _dotTriggerDebounce = null;
+        };
+
+        // Subscribe to content changes so the filter updates as the user types
+        editor.ContentChanged += OnEditorContentChangedForCompletion;
+    }
+
+    private async Task ShowGoToDefinitionAsync()
     {
         if (_lsp == null || _editorManager?.CurrentEditor == null) return;
         var editor = _editorManager.CurrentEditor;
         var path = _editorManager.CurrentFilePath;
         if (path == null) return;
 
-        var result = await _lsp.HoverAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (result == null || string.IsNullOrWhiteSpace(result.Contents)) return;
+        var locations = await _lsp.DefinitionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (locations.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Definition Not Found", "No definition found at current position.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
 
-        // Show hover in a small floating window above the status bar
-        var lines = result.Contents.Split('\n').Take(5).Select(Markup.Escape).ToList();
-        if (lines.Count == 0) return;
+        _navHistory.Push((path, editor.CurrentLine, editor.CurrentColumn));
 
-        var desktop = _ws.DesktopDimensions;
-        int hoverW = Math.Min(80, lines.Max(l => l.Length) + 4);
-        int hoverH = lines.Count + 2;
+        var loc = locations[0];
+        _editorManager.OpenFile(LspClient.UriToPath(loc.Uri));
 
-        var hoverWindow = new WindowBuilder(_ws)
-            .WithTitle("Type Info")
-            .WithSize(hoverW, hoverH)
-            .AtPosition(Math.Max(0, desktop.Width - hoverW - 2),
-                        Math.Max(0, desktop.Height - hoverH - 4))
-            .Closable(true)
-            .Build();
-
-        hoverWindow.AddControl(new MarkupControl(lines.Select(l => "  " + l).ToList()));
-        _ws.AddWindow(hoverWindow);
+        var targetEditor = _editorManager.CurrentEditor;
+        if (targetEditor != null)
+        {
+            targetEditor.GoToLine(loc.Range.Start.Line + 1);
+            targetEditor.SetLogicalCursorPosition(
+                new System.Drawing.Point(loc.Range.Start.Character, loc.Range.Start.Line));
+        }
     }
 
-    private async Task ShowCompletionAsync()
+    private void NavigateBack()
+    {
+        if (_navHistory.Count == 0) return;
+        var (prevPath, prevLine, prevCol) = _navHistory.Pop();
+        _editorManager?.OpenFile(prevPath);
+        var editor = _editorManager?.CurrentEditor;
+        if (editor != null)
+        {
+            editor.GoToLine(prevLine);
+            editor.SetLogicalCursorPosition(new System.Drawing.Point(prevCol - 1, prevLine - 1));
+        }
+    }
+
+    private async Task ShowSignatureHelpAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null || _mainWindow == null) return;
+
+        var editor = _editorManager.CurrentEditor;
+        var path   = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var sig = await _lsp.SignatureHelpAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (sig == null || sig.Signatures.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Signature Help", "No signature at cursor. Position inside function arguments.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        var activeSig = sig.Signatures[Math.Min(sig.ActiveSignature, sig.Signatures.Count - 1)];
+        string sigLabel = activeSig.Label;
+
+        // Highlight the active parameter in bold
+        string line1;
+        if (sig.ActiveParameter >= 0 && sig.ActiveParameter < activeSig.Parameters.Count)
+        {
+            var paramLabel = activeSig.Parameters[sig.ActiveParameter].Label;
+            int idx = sigLabel.IndexOf(paramLabel, StringComparison.Ordinal);
+            line1 = idx >= 0
+                ? Markup.Escape(sigLabel[..idx]) + $"[bold yellow]{Markup.Escape(paramLabel)}[/]" + Markup.Escape(sigLabel[(idx + paramLabel.Length)..])
+                : Markup.Escape(sigLabel);
+        }
+        else
+        {
+            line1 = Markup.Escape(sigLabel);
+        }
+
+        var lines = new List<string> { line1 };
+        if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
+            lines.Add(Markup.Escape(activeSig.Documentation!));
+
+        DismissTooltipPortal();
+        var cursor = _editorManager.GetCursorBounds();
+        var portal = new LspTooltipPortalContent(
+            lines, cursor.X, cursor.Y,
+            _mainWindow.Width, _mainWindow.Height,
+            preferAbove: true);
+
+        _tooltipPortal     = portal;
+        _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
+    }
+
+    // ── Portal helpers ─────────────────────────────────────────────────────────
+
+    private void DismissCompletionPortal()
+    {
+        // Unsubscribe filter handler before clearing the portal reference
+        var editor = _editorManager?.CurrentEditor;
+        if (editor != null)
+            editor.ContentChanged -= OnEditorContentChangedForCompletion;
+
+        if (_completionPortalNode != null && _mainWindow != null)
+        {
+            _mainWindow.RemovePortal(editor ?? (IWindowControl)_mainWindow, _completionPortalNode);
+            _completionPortalNode = null;
+            _completionPortal = null;
+        }
+    }
+
+    private void DismissTooltipPortal()
+    {
+        if (_tooltipPortalNode != null && _mainWindow != null)
+        {
+            _mainWindow.RemovePortal(_editorManager?.CurrentEditor ?? (IWindowControl)_mainWindow, _tooltipPortalNode);
+            _tooltipPortalNode = null;
+            _tooltipPortal = null;
+        }
+    }
+
+    private static bool IsIdentifierChar(char c) =>
+        char.IsLetterOrDigit(c) || c == '_';
+
+    private void OnEditorContentChangedForCompletion(object? sender, string content)
+    {
+        var editor = _editorManager?.CurrentEditor;
+        if (editor == null || _completionPortal == null) return;
+
+        // If cursor moved to a different line, dismiss
+        if (editor.CurrentLine != _completionTriggerLine)
+        {
+            DismissCompletionPortal();
+            return;
+        }
+
+        int filterLen = editor.CurrentColumn - _completionTriggerColumn;
+        if (filterLen < 0)
+        {
+            // User backspaced past the trigger point
+            DismissCompletionPortal();
+            return;
+        }
+
+        // Extract filter text directly from editor content
+        string filterText = string.Empty;
+        if (filterLen > 0)
+        {
+            var lines = content.Split('\n');
+            int lineIdx = editor.CurrentLine - 1;
+            if (lineIdx >= 0 && lineIdx < lines.Length)
+            {
+                var line = lines[lineIdx];
+                int start = _completionTriggerColumn - 1;
+                int len   = Math.Min(filterLen, line.Length - start);
+                if (len > 0 && start >= 0 && start + len <= line.Length)
+                    filterText = line.Substring(start, len);
+            }
+        }
+
+        _completionPortal.SetFilter(filterText);
+
+        if (!_completionPortal.HasVisibleItems)
+            DismissCompletionPortal();
+        else
+            _mainWindow?.Invalidate(false);
+    }
+
+    private void TryScheduleDotCompletion(string filePath, string content)
+    {
+        // Only trigger auto-complete on '.' in C# files when the LSP is running
+        if (_lsp == null || !filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
+
+        var editor = _editorManager?.CurrentEditor;
+        if (editor == null) return;
+
+        int col = editor.CurrentColumn - 1;   // 0-based
+        var lines = content.Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.Length) return;
+
+        string currentLine = lines[lineIdx];
+        if (col <= 0 || col > currentLine.Length) return;
+
+        if (currentLine[col - 1] == '.')
+        {
+            // Flush the pending DidChange immediately so the LSP has the dot before
+            // we request completions.  Then wait ~300 ms for the server to process it.
+            _ = _lsp.FlushPendingChangeAsync();
+
+            _dotTriggerDebounce?.Dispose();
+            _dotTriggerDebounce = new Timer(
+                _ => _ = ShowCompletionAsync(),
+                null, 350, Timeout.Infinite);
+        }
+    }
+
+    private async Task FormatDocumentAsync()
     {
         if (_lsp == null || _editorManager?.CurrentEditor == null) return;
         var editor = _editorManager.CurrentEditor;
         var path = _editorManager.CurrentFilePath;
-        if (path == null || _mainWindow == null) return;
+        if (path == null) return;
 
-        var items = await _lsp.CompletionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (items.Count == 0) return;
+        var edits = await _lsp.FormattingAsync(path);
+        if (edits.Count == 0) return;
 
-        _completionPortal ??= new CompletionPortal();
-        _completionPortal.Show(items);
+        var lines = editor.Content.Split('\n').ToList();
+
+        // Apply edits in reverse order to preserve offsets
+        var sortedEdits = edits
+            .OrderByDescending(e => e.Range.Start.Line)
+            .ThenByDescending(e => e.Range.Start.Character)
+            .ToList();
+
+        foreach (var edit in sortedEdits)
+        {
+            int startLine = Math.Min(edit.Range.Start.Line, lines.Count - 1);
+            int startChar = edit.Range.Start.Character;
+            int endLine   = Math.Min(edit.Range.End.Line, lines.Count - 1);
+            int endChar   = edit.Range.End.Character;
+
+            if (startLine == endLine)
+            {
+                var line = lines[startLine];
+                startChar = Math.Min(startChar, line.Length);
+                endChar   = Math.Min(endChar, line.Length);
+                lines[startLine] = line[..startChar] + edit.NewText + line[endChar..];
+            }
+            else
+            {
+                var startLineStr = lines[startLine];
+                var endLineStr   = lines[endLine];
+                startChar = Math.Min(startChar, startLineStr.Length);
+                endChar   = Math.Min(endChar, endLineStr.Length);
+                var combined = startLineStr[..startChar] + edit.NewText + endLineStr[endChar..];
+                lines.RemoveRange(startLine, endLine - startLine + 1);
+                lines.InsertRange(startLine, combined.Split('\n'));
+            }
+        }
+
+        editor.Content = string.Join('\n', lines);
     }
 
     // ──────────────────────────────────────────────────────────────
     // Status bar updates
     // ──────────────────────────────────────────────────────────────
 
-    private static List<string> GetDashboardLines() => new()
+    private void UpdateDashboard()
     {
-        "",
-        "",
-        "[bold dim]  .NET IDE[/]",
-        "",
-        "[dim]  Open a file from the explorer[/]",
-        "[dim]  on the left to start editing.[/]",
-        "",
-        "[dim]  ────────────────────────────[/]",
-        "[dim]  F5  Run       F6  Build[/]",
-        "[dim]  F7  Test      F8  Shell[/]",
-        "[dim]  Ctrl+S  Save  Ctrl+W  Close[/]",
-    };
+        _dashboard?.SetContent(GetDashboardLines());
+    }
+
+    private List<string> GetDashboardLines()
+    {
+        var projectName = new DirectoryInfo(_projectService.RootPath).Name;
+        var rootPath    = _projectService.RootPath;
+
+        List<string> lspLines;
+        if (!_lspDetectionDone)
+            lspLines = new List<string> { "[dim]  LSP      ○ detecting…[/]" };
+        else if (_lspStarted)
+            lspLines = new List<string> { $"[dim]  LSP      [/][green]● {Markup.Escape(_detectedLspExe!)}[/]" };
+        else if (_detectedLspExe != null)
+            lspLines = new List<string> { $"[dim]  LSP      ○ {Markup.Escape(_detectedLspExe)} (failed to start)[/]" };
+        else
+            lspLines = new List<string>
+            {
+                "[dim]  LSP      ○ not found[/]",
+                "[dim]           Enables: IntelliSense · Go to Definition[/]",
+                "[dim]                    Signature Help · Hover · Formatting[/]",
+                "[yellow]           Install: [/][italic]dotnet tool install -g csharp-ls[/]",
+                "[dim]           Alt:     [/][dim italic]OmniSharp  (omnisharp.net)[/]",
+            };
+
+        string toolsLine = _config.Tools.Count == 0
+            ? "[dim]  Tools    0 loaded  →  Tools › Edit Config[/]"
+            : $"[dim]  Tools    [/][green]{_config.Tools.Count} loaded[/][dim]  ({string.Join(", ", _config.Tools.Select(t => t.Name))})[/]";
+
+        var lines = new List<string>
+        {
+            "",
+            $"[bold]  lazydotide[/]  [dim]{Markup.Escape(projectName)}[/]",
+            $"[dim]  {Markup.Escape(rootPath)}[/]",
+            "",
+            "[dim]  ────────────────────────────[/]",
+        };
+        lines.AddRange(lspLines);
+        lines.Add(toolsLine);
+        lines.AddRange(new[]
+        {
+            "",
+            "[dim]  ────────────────────────────[/]",
+            "[dim]  F5  Run       F6  Build[/]",
+            "[dim]  F7  Test      F8  Shell / Shell Tab[/]",
+            "[dim]  F12  Definition  Alt+←  Back[/]",
+            "[dim]  Ctrl+S  Save  Ctrl+W  Close[/]",
+            "[dim]  Ctrl+B  Explorer  Ctrl+J  Output[/]",
+        });
+        return lines;
+    }
 
     private void UpdateErrorCount(List<BuildDiagnostic> diagnostics)
     {
