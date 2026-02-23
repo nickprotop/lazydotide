@@ -410,7 +410,14 @@ public class IdeApp : IDisposable
         {
             _editorManager?.OpenFile(diag.FilePath);
             _editorManager?.GoToLine(diag.Line);
-            _outputPanel.SwitchToProblemsTab();
+            // Activate the main window and focus the editor so it receives keyboard input
+            if (_mainWindow != null)
+            {
+                _ws.SetActiveWindow(_mainWindow);
+                var editor = _editorManager?.CurrentEditor;
+                if (editor != null)
+                    _mainWindow.FocusControl(editor);
+            }
         };
 
         _editorManager!.OpenFilesStateChanged += (_, _) =>
@@ -448,6 +455,28 @@ public class IdeApp : IDisposable
             DismissCompletionPortal();
             DismissTooltipPortal();
             _ = _lsp?.DidCloseAsync(p);
+            // Clear diagnostics for the closed file
+            _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
+            UpdateErrorCount(new List<BuildDiagnostic>());
+        };
+
+        _editorManager.ActiveFileChanged += (_, filePath) =>
+        {
+            DismissCompletionPortal();
+            DismissTooltipPortal();
+            if (filePath != null && filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                // Re-send content so LSP re-publishes fresh diagnostics for this file
+                var editor = _editorManager.CurrentEditor;
+                if (editor != null)
+                    _ = _lsp?.DidChangeAsync(filePath, editor.Content);
+            }
+            else
+            {
+                // Non-C# tab or no file — clear problems
+                _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
+                UpdateErrorCount(new List<BuildDiagnostic>());
+            }
         };
 
         _mainWindow!.PreviewKeyPressed += OnMainWindowPreviewKey;

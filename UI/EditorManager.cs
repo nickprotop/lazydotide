@@ -52,7 +52,8 @@ public class EditorManager
 
     public IEnumerable<(string FilePath, string Content)> GetOpenDocuments() =>
         _tabData.Values
-            .Where(d => d.FilePath != null && d.Editor != null)
+            .Where(d => d.FilePath != null && d.Editor != null
+                        && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             .Select(d => (d.FilePath!, d.Editor!.Content));
 
     public EditorManager(ConsoleWindowSystem ws, FileMiddlewarePipeline pipeline)
@@ -129,7 +130,7 @@ public class EditorManager
 
         _tabControl.ActiveTabIndex = tabIndex;
 
-        if (editor != null)
+        if (editor != null && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             DocumentOpened?.Invoke(this, (path, editor.Content));
 
         if (wasEmpty)
@@ -170,7 +171,7 @@ public class EditorManager
                     _tabData[_tabControl.ActiveTabIndex] = data with { IsDirty = true };
                     _tabControl.SetTabTitle(_tabControl.ActiveTabIndex, Path.GetFileName(data.FilePath!) + " *");
                 }
-                if (data.FilePath != null)
+                if (data.FilePath != null && data.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                     DocumentChanged?.Invoke(this, (data.FilePath, editor.Content));
             }
         };
@@ -225,7 +226,7 @@ public class EditorManager
         if (_tabData.TryGetValue(idx, out var data) && data.FilePath != null)
         {
             _openFiles.Remove(data.FilePath);
-            if (data.Editor != null)
+            if (data.Editor != null && data.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                 DocumentClosed?.Invoke(this, data.FilePath);
         }
 
