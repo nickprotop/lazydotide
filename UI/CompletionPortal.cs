@@ -72,7 +72,7 @@ public class CompletionPortal
         return _list.SelectedItem?.Tag as CompletionItem;
     }
 
-    private static string GetKindIcon(int kind) => kind switch
+    public static string GetKindIcon(int kind) => kind switch
     {
         2 or 3 => "f()",
         4 => "new",

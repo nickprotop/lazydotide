@@ -8,10 +8,20 @@ namespace DotNetIDE;
 
 public class LspClient : IAsyncDisposable
 {
+    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp.log");
+    private static readonly object LogLock = new();
+
+    private static void Log(string msg)
+    {
+        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
+        catch { }
+    }
+
     private Process? _process;
     private StreamWriter? _stdin;
     private int _nextId = 1;
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement?>> _pending = new();
+    private readonly ConcurrentDictionary<string, int> _docVersions = new();
     private Thread? _readThread;
     private volatile bool _disposed;
     private CancellationTokenSource _cts = new();
@@ -71,18 +81,25 @@ public class LspClient : IAsyncDisposable
                 {
                     publishDiagnostics = new { relatedInformation = false },
                     completion = new { completionItem = new { snippetSupport = false } },
-                    hover = new { contentFormat = new[] { "plaintext" } }
+                    hover = new { contentFormat = new[] { "plaintext" } },
+                    definition = new { },
+                    signatureHelp = new { triggerCharacters = new[] { "(", "," } },
+                    formatting = new { }
                 },
                 workspace = new { didChangeConfiguration = new { dynamicRegistration = false } }
             }
         };
 
-        var result = await SendRequestAsync("initialize", initParams);
+        Log($"Sending initialize, workspace: {workspacePath}");
+        var result = await SendRequestAsync("initialize", initParams, timeout: 15000);
+        Log($"Initialize response: {(result.HasValue ? result.Value.ValueKind.ToString() : "null/timeout")}");
         SendNotification("initialized", new { });
     }
 
     public Task DidOpenAsync(string filePath, string content)
     {
+        _docVersions[filePath] = 1;
+        Log($"DidOpen: {filePath}");
         SendNotification("textDocument/didOpen", new
         {
             textDocument = new
@@ -113,11 +130,25 @@ public class LspClient : IAsyncDisposable
 
     private Task SendDidChangeInternalAsync(string filePath, string content)
     {
+        var version = _docVersions.AddOrUpdate(filePath, 2, (_, v) => v + 1);
         SendNotification("textDocument/didChange", new
         {
-            textDocument = new { uri = PathToUri(filePath), version = 2 },
+            textDocument = new { uri = PathToUri(filePath), version },
             contentChanges = new[] { new { text = content } }
         });
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Immediately sends any pending debounced DidChange notification.
+    /// Call this before requesting completions/hover to ensure the LSP has the latest content.
+    /// </summary>
+    public Task FlushPendingChangeAsync()
+    {
+        _changeDebounce?.Dispose();
+        _changeDebounce = null;
+        if (_pendingChangePath != null && _pendingChangeContent != null)
+            return SendDidChangeInternalAsync(_pendingChangePath, _pendingChangeContent);
         return Task.CompletedTask;
     }
 
@@ -132,6 +163,7 @@ public class LspClient : IAsyncDisposable
 
     public Task DidCloseAsync(string filePath)
     {
+        _docVersions.TryRemove(filePath, out _);
         SendNotification("textDocument/didClose", new
         {
             textDocument = new { uri = PathToUri(filePath) }
@@ -177,22 +209,29 @@ public class LspClient : IAsyncDisposable
         var result = new List<CompletionItem>();
         try
         {
+            Log($"Completion request: {filePath} {line}:{character}");
             var response = await SendRequestAsync("textDocument/completion", new
             {
                 textDocument = new { uri = PathToUri(filePath) },
                 position = new { line, character }
-            });
+            }, timeout: 20000);
+            Log($"Completion response kind: {(response.HasValue ? response.Value.ValueKind.ToString() : "null")}");
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
 
             JsonElement items;
-            if (response.Value.TryGetProperty("items", out items))
+            if (response.Value.ValueKind == JsonValueKind.Object &&
+                response.Value.TryGetProperty("items", out items))
             {
-                // CompletionList
+                // CompletionList { isIncomplete, items: [...] }
+            }
+            else if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                items = response.Value;
             }
             else
             {
-                items = response.Value;
+                return result;
             }
 
             if (items.ValueKind == JsonValueKind.Array)
@@ -204,6 +243,121 @@ public class LspClient : IAsyncDisposable
                     var insertText = item.TryGetProperty("insertText", out var it) ? it.GetString() : null;
                     var kind = item.TryGetProperty("kind", out var k) ? k.GetInt32() : 1;
                     result.Add(new CompletionItem(label, detail, insertText, kind));
+                }
+            }
+            Log($"Completion items returned: {result.Count}");
+        }
+        catch (Exception ex) { Log($"Completion exception: {ex.Message}"); }
+        return result;
+    }
+
+    public async Task<List<LspLocation>> DefinitionAsync(string filePath, int line, int character)
+    {
+        var result = new List<LspLocation>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/definition", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character }
+            });
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            // Result may be Location | Location[]
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var loc in response.Value.EnumerateArray())
+                    ParseLocation(loc, result);
+            }
+            else if (response.Value.ValueKind == JsonValueKind.Object)
+            {
+                ParseLocation(response.Value, result);
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    private static void ParseLocation(JsonElement loc, List<LspLocation> result)
+    {
+        if (!loc.TryGetProperty("uri", out var uriEl)) return;
+        var uri = uriEl.GetString() ?? "";
+        var range = ParseRange(loc);
+        result.Add(new LspLocation(uri, range));
+    }
+
+    public async Task<SignatureHelp?> SignatureHelpAsync(string filePath, int line, int character)
+    {
+        try
+        {
+            var response = await SendRequestAsync("textDocument/signatureHelp", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character }
+            });
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return null;
+            if (response.Value.ValueKind != JsonValueKind.Object) return null;
+
+            var activeSignature = response.Value.TryGetProperty("activeSignature", out var as_) ? as_.GetInt32() : 0;
+            var activeParameter = response.Value.TryGetProperty("activeParameter", out var ap) ? ap.GetInt32() : 0;
+
+            var signatures = new List<SignatureInfo>();
+            if (response.Value.TryGetProperty("signatures", out var sigsEl))
+            {
+                foreach (var sig in sigsEl.EnumerateArray())
+                {
+                    var label = sig.TryGetProperty("label", out var l) ? l.GetString() ?? "" : "";
+                    var doc = sig.TryGetProperty("documentation", out var d)
+                        ? d.ValueKind == JsonValueKind.String ? d.GetString()
+                          : d.TryGetProperty("value", out var dv) ? dv.GetString() : null
+                        : null;
+
+                    var parameters = new List<ParameterInfo>();
+                    if (sig.TryGetProperty("parameters", out var paramsEl))
+                    {
+                        foreach (var p in paramsEl.EnumerateArray())
+                        {
+                            var pLabel = p.TryGetProperty("label", out var pl) ? pl.GetString() ?? "" : "";
+                            var pDoc = p.TryGetProperty("documentation", out var pd)
+                                ? pd.ValueKind == JsonValueKind.String ? pd.GetString()
+                                  : pd.TryGetProperty("value", out var pdv) ? pdv.GetString() : null
+                                : null;
+                            parameters.Add(new ParameterInfo(pLabel, pDoc));
+                        }
+                    }
+                    signatures.Add(new SignatureInfo(label, doc, parameters));
+                }
+            }
+
+            if (signatures.Count == 0) return null;
+            return new SignatureHelp(signatures, activeSignature, activeParameter);
+        }
+        catch { }
+        return null;
+    }
+
+    public async Task<List<TextEdit>> FormattingAsync(string filePath, int tabSize = 4, bool insertSpaces = true)
+    {
+        var result = new List<TextEdit>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/formatting", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                options = new { tabSize, insertSpaces }
+            }, timeout: 10000);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var edit in response.Value.EnumerateArray())
+                {
+                    var range = ParseRange(edit);
+                    var newText = edit.TryGetProperty("newText", out var nt) ? nt.GetString() ?? "" : "";
+                    result.Add(new TextEdit(range, newText));
                 }
             }
         }

@@ -19,6 +19,20 @@ public record CompletionItem(
 
 public record HoverResult(string Contents);
 
+public record TextEdit(LspRange Range, string NewText);
+
+public record SignatureHelp(
+    List<SignatureInfo> Signatures,
+    int ActiveSignature,
+    int ActiveParameter);
+
+public record SignatureInfo(
+    string Label,
+    string? Documentation,
+    List<ParameterInfo> Parameters);
+
+public record ParameterInfo(string Label, string? Documentation);
+
 // JSON-RPC types
 public record JsonRpcRequest(string jsonrpc, int id, string method, object? @params);
 public record JsonRpcNotification(string jsonrpc, string method, object? @params);
