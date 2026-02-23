@@ -81,6 +81,13 @@ public static class CommandPaletteDialog
 
         UpdateCommandList(commandList, statusText, registry, "");
 
+        // Track which command (if any) was chosen before the window closes.
+        // onCommandSelected is called exactly once from OnClosed, so every
+        // close path (title-bar X, Escape, Enter, double-click) resets the flag.
+        IdeCommand? selectedCommand = null;
+
+        modal.OnClosed += (_, _) => onCommandSelected(selectedCommand);
+
         searchInput.InputChanged += (_, newText) =>
         {
             UpdateCommandList(commandList, statusText, registry, newText);
@@ -90,7 +97,7 @@ public static class CommandPaletteDialog
         {
             if (item?.Tag is IdeCommand command)
             {
-                onCommandSelected(command);
+                selectedCommand = command;
                 modal.Close();
             }
         };
@@ -109,7 +116,7 @@ public static class CommandPaletteDialog
                     var selectedItem = commandList.SelectedItem;
                     if (selectedItem?.Tag is IdeCommand command)
                     {
-                        onCommandSelected(command);
+                        selectedCommand = command;
                         modal.Close();
                     }
                     e.Handled = true;
@@ -117,7 +124,6 @@ public static class CommandPaletteDialog
             }
             else if (e.KeyInfo.Key == ConsoleKey.Escape)
             {
-                onCommandSelected(null);
                 modal.Close();
                 e.Handled = true;
             }

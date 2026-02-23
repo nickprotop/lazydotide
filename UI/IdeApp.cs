@@ -68,6 +68,7 @@ public class IdeApp : IDisposable
     // Command registry
     private readonly CommandRegistry _commandRegistry = new();
     private bool _commandPaletteOpen;
+    private bool _aboutOpen;
 
     // Dashboard LSP state (set in PostInitAsync)
     private string? _detectedLspExe;
@@ -258,6 +259,8 @@ public class IdeApp : IDisposable
                 m.AddSeparator();
                 m.AddItem("Edit Config", "", () => OpenConfigFile());
             })
+            .AddItem("Help", m => m
+                .AddItem("About lazydotide\u2026", () => ShowAbout()))
             .Build();
 
         menu.StickyPosition = StickyPosition.Top;
@@ -1189,6 +1192,7 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",     Execute = CloseCurrentTab,                                                    Priority = 85 });
         _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                            Execute = () => _ = OpenFolderAsync(),                                        Priority = 80 });
         _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",                             Execute = () => _explorer?.Refresh(),                                         Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.exit",            Category = "File",  Label = "Exit",              Keybinding = "Alt+F4",     Execute = () => _ws.Shutdown(0),                                              Priority = 10 });
 
         // Edit
         _commandRegistry.Register(new IdeCommand { Id = "edit.find",            Category = "Edit",  Label = "Find\u2026",        Keybinding = "Ctrl+F",     Execute = ShowFindReplace,                                                    Priority = 80 });
@@ -1230,6 +1234,9 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "Tools", Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }, Priority = 70 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",          Category = "Tools", Label = "Add NuGet Package\u2026",                      Execute = ShowNuGetDialog,                                                    Priority = 65 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = OpenConfigFile,                                                     Priority = 60 });
+
+        // Help
+        _commandRegistry.Register(new IdeCommand { Id = "help.about",           Category = "Help",  Label = "About lazydotide\u2026",                       Execute = ShowAbout,                                                          Priority = 10 });
 
         // Dynamic tool commands from config
         for (int i = 0; i < _config.Tools.Count; i++)
@@ -1738,6 +1745,19 @@ public class IdeApp : IDisposable
             "[dim]  Ctrl+B  Explorer  Ctrl+J  Output[/]",
         });
         return lines;
+    }
+
+    private void ShowAbout()
+    {
+        if (_aboutOpen) return;
+        _aboutOpen = true;
+        var info = new AboutInfo(
+            LspStarted:       _lspStarted,
+            LspDetectionDone: _lspDetectionDone,
+            DetectedLspExe:   _detectedLspExe,
+            Tools:            _config.Tools,
+            ProjectPath:      _projectService.RootPath);
+        AboutDialog.Show(_ws, info, () => _aboutOpen = false);
     }
 
     private void UpdateErrorCount(List<BuildDiagnostic> diagnostics)
