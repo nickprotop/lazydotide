@@ -65,6 +65,10 @@ public class IdeApp : IDisposable
     // Config
     private IdeConfig _config = new();
 
+    // Command registry
+    private readonly CommandRegistry _commandRegistry = new();
+    private bool _commandPaletteOpen;
+
     // Dashboard LSP state (set in PostInitAsync)
     private string? _detectedLspExe;
     private bool _lspStarted;
@@ -98,6 +102,7 @@ public class IdeApp : IDisposable
 
         InitBottomStatus();  // Must be before CreateLayout so DesktopDimensions accounts for the bar
         CreateLayout();
+        InitializeCommands();
 
         // Async post-init: git status + optional LSP
         _ = PostInitAsync(projectPath);
@@ -114,6 +119,7 @@ public class IdeApp : IDisposable
         _fileWatcher?.Dispose();
         DismissCompletionPortal();
         DismissTooltipPortal();
+        _ws.ConsoleDriver.KeyPressed   -= OnGlobalDriverKeyPressed;
         _ws.ConsoleDriver.ScreenResized -= OnScreenResized;
         _ = _lsp?.DisposeAsync().AsTask();
     }
@@ -224,10 +230,12 @@ public class IdeApp : IDisposable
                 .AddItem("Push", () => _ = GitCommandAsync("push")))
             .AddItem("Tools", m =>
             {
-                m.AddItem("Go to Definition", "F12",            () => _ = ShowGoToDefinitionAsync())
+                m.AddItem("Command Palette",  "Ctrl+P",         () => ShowCommandPalette())
+                 .AddSeparator()
+                 .AddItem("Go to Definition", "F12",            () => _ = ShowGoToDefinitionAsync())
                  .AddItem("Navigate Back",    "Alt+Left",       () => NavigateBack())
                  .AddSeparator()
-                 .AddItem("Signature Help",   "Ctrl+P",         () => _ = ShowSignatureHelpAsync())
+                 .AddItem("Signature Help",   "F2",             () => _ = ShowSignatureHelpAsync())
                  .AddItem("Format Document",  "Alt+Shift+F",    () => _ = FormatDocumentAsync())
                  .AddItem("Reload from Disk", "Alt+Shift+R",    () => ReloadCurrentFromDisk())
                  .AddSeparator()
@@ -483,6 +491,7 @@ public class IdeApp : IDisposable
         _mainWindow!.KeyPressed        += OnMainWindowKeyPressed;
         _mainWindow!.OnResize          += OnMainWindowResized;
         _outputWindow!.OnResize        += OnOutputWindowResized;
+        _ws.ConsoleDriver.KeyPressed   += OnGlobalDriverKeyPressed;
     }
 
     private void InitBottomStatus()
@@ -561,6 +570,14 @@ public class IdeApp : IDisposable
             _splitRatio = newDivider / (double)desktop.Height;
         }
         finally { _resizeCoupling = false; }
+    }
+
+    // Fires from the input thread for every keystroke, regardless of which window is active.
+    // Only enqueue work — never touch UI directly from this handler.
+    private void OnGlobalDriverKeyPressed(object? sender, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.P && (key.Modifiers & ConsoleModifiers.Control) != 0)
+            _pendingUiActions.Enqueue(ShowCommandPalette);
     }
 
     // PreviewKeyPressed fires BEFORE the focused control (editor) processes the key.
@@ -646,7 +663,6 @@ public class IdeApp : IDisposable
         // Any other key or modifier combo: dismiss unless it's a completion shortcut.
         bool isCompletionShortcut =
             (key == ConsoleKey.Spacebar && mods == ConsoleModifiers.Control) ||
-            (key == ConsoleKey.P        && mods == ConsoleModifiers.Control) ||
             key == ConsoleKey.F12;
         if (!isCompletionShortcut)
             DismissCompletionPortal();
@@ -729,7 +745,7 @@ public class IdeApp : IDisposable
             NavigateBack();
             e.Handled = true;
         }
-        else if (key == ConsoleKey.P && mods == ConsoleModifiers.Control)
+        else if (key == ConsoleKey.F2 && mods == 0)
         {
             _ = ShowSignatureHelpAsync();
             e.Handled = true;
@@ -1163,6 +1179,85 @@ public class IdeApp : IDisposable
                 : $"add {target} package {packageName}";
 
             _ = RunNuGetAsync(cmdArgs);
+        });
+    }
+
+    private void InitializeCommands()
+    {
+        // File
+        _commandRegistry.Register(new IdeCommand { Id = "file.save",            Category = "File",  Label = "Save",             Keybinding = "Ctrl+S",     Execute = () => _editorManager?.SaveCurrent(),                                Priority = 90 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",     Execute = CloseCurrentTab,                                                    Priority = 85 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                            Execute = () => _ = OpenFolderAsync(),                                        Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",                             Execute = () => _explorer?.Refresh(),                                         Priority = 70 });
+
+        // Edit
+        _commandRegistry.Register(new IdeCommand { Id = "edit.find",            Category = "Edit",  Label = "Find\u2026",        Keybinding = "Ctrl+F",     Execute = ShowFindReplace,                                                    Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.replace",         Category = "Edit",  Label = "Replace\u2026",     Keybinding = "Ctrl+H",     Execute = ShowFindReplace,                                                    Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.reload",          Category = "Edit",  Label = "Reload from Disk",  Keybinding = "Alt+Shift+R",Execute = ReloadCurrentFromDisk,                                              Priority = 60 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-word",       Category = "Edit",  Label = "Word Wrap",                                    Execute = () => SetWrapMode(WrapMode.WrapWords),                               Priority = 50 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-char",       Category = "Edit",  Label = "Character Wrap",                               Execute = () => SetWrapMode(WrapMode.Wrap),                                   Priority = 50 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.no-wrap",         Category = "Edit",  Label = "No Wrap",                                      Execute = () => SetWrapMode(WrapMode.NoWrap),                                 Priority = 50 });
+
+        // Build
+        _commandRegistry.Register(new IdeCommand { Id = "build.build",          Category = "Build", Label = "Build",             Keybinding = "F6",         Execute = () => _ = BuildProjectAsync(),                                      Priority = 90 });
+        _commandRegistry.Register(new IdeCommand { Id = "build.test",           Category = "Build", Label = "Test",              Keybinding = "F7",         Execute = () => _ = TestProjectAsync(),                                       Priority = 85 });
+        _commandRegistry.Register(new IdeCommand { Id = "build.clean",          Category = "Build", Label = "Clean",                                        Execute = () => _ = CleanProjectAsync(),                                      Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "build.stop",           Category = "Build", Label = "Stop",              Keybinding = "F4",         Execute = () => _buildService.Cancel(),                                       Priority = 80 });
+
+        // Run
+        _commandRegistry.Register(new IdeCommand { Id = "run.run",              Category = "Run",   Label = "Run",               Keybinding = "F5",         Execute = RunProject,                                                         Priority = 90 });
+
+        // View
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-explorer", Category = "View",  Label = "Toggle Explorer",   Keybinding = "Ctrl+B",     Execute = ToggleExplorer,                                                     Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-output",   Category = "View",  Label = "Toggle Output Panel",Keybinding = "Ctrl+J",    Execute = ToggleOutput,                                                       Priority = 75 });
+
+        // Git
+        _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = RefreshGitStatusAsync(),                                  Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.pull",             Category = "Git",   Label = "Pull",                                         Execute = () => _ = GitCommandAsync("pull"),                                   Priority = 65 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = GitCommandAsync("push"),                                   Priority = 60 });
+
+        // LSP
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",  Keybinding = "F12",        Execute = () => _ = ShowGoToDefinitionAsync(),                                Priority = 90 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.nav-back",         Category = "LSP",   Label = "Navigate Back",     Keybinding = "Alt+\u2190", Execute = NavigateBack,                                                       Priority = 85 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.hover",            Category = "LSP",   Label = "Hover Tooltip",     Keybinding = "Ctrl+K",     Execute = () => _ = ShowHoverAsync(),                                         Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.signature",        Category = "LSP",   Label = "Signature Help",    Keybinding = "F2",         Execute = () => _ = ShowSignatureHelpAsync(),                                 Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",   Keybinding = "Alt+Shift+F",Execute = () => _ = FormatDocumentAsync(),                                    Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",  Keybinding = "Ctrl+Space", Execute = () => _ = ShowCompletionAsync(),                                    Priority = 65 });
+
+        // Tools
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Tools", Label = "Open Shell",        Keybinding = "F8",         Execute = OpenShell,                                                          Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Tools", Label = "Open Shell Tab",                               Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); },      Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "Tools", Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }, Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",          Category = "Tools", Label = "Add NuGet Package\u2026",                      Execute = ShowNuGetDialog,                                                    Priority = 65 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = OpenConfigFile,                                                     Priority = 60 });
+
+        // Dynamic tool commands from config
+        for (int i = 0; i < _config.Tools.Count; i++)
+        {
+            int idx = i;
+            var tool = _config.Tools[i];
+            _commandRegistry.Register(new IdeCommand
+            {
+                Id       = $"tools.custom.{idx}",
+                Category = "Tools",
+                Label    = tool.Name,
+                Execute  = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolTab(idx); },
+                Priority = 55
+            });
+        }
+    }
+
+    private void ShowCommandPalette()
+    {
+        if (_commandPaletteOpen) return;
+        _commandPaletteOpen = true;
+        CommandPaletteDialog.Show(_ws, _commandRegistry, cmd =>
+        {
+            _commandPaletteOpen = false;
+            if (cmd == null) return;
+            cmd.Execute();
+            var editor = _editorManager?.CurrentEditor;
+            if (editor != null) _mainWindow?.FocusControl(editor);
         });
     }
 
