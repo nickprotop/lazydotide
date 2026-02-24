@@ -59,6 +59,18 @@ public class LspClient : IAsyncDisposable
             _readThread = new Thread(ReadLoop) { IsBackground = true, Name = "LSP-read" };
             _readThread.Start();
 
+            // Drain stderr to prevent pipe buffer deadlock
+            var stderrThread = new Thread(() =>
+            {
+                try
+                {
+                    var stderr = _process!.StandardError;
+                    while (!_disposed && stderr.ReadLine() is not null) { }
+                }
+                catch { }
+            }) { IsBackground = true, Name = "LSP-stderr" };
+            stderrThread.Start();
+
             await SendInitializeAsync(workspacePath);
             return true;
         }
@@ -702,8 +714,30 @@ public class LspClient : IAsyncDisposable
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            // Check if it's a response (has "id" and "result"/"error")
-            if (root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number)
+            var hasId = root.TryGetProperty("id", out var idEl);
+            var hasMethod = root.TryGetProperty("method", out var methodEl);
+
+            // Server-to-client request (has both "id" and "method") — must respond
+            if (hasId && hasMethod)
+            {
+                var method = methodEl.GetString();
+                var id = idEl.ValueKind == JsonValueKind.Number ? idEl.GetInt32()
+                       : idEl.ValueKind == JsonValueKind.String && int.TryParse(idEl.GetString(), out var parsed) ? parsed
+                       : -1;
+
+                object? result = method switch
+                {
+                    "workspace/configuration" => MakeConfigurationResponse(root),
+                    _ => null
+                };
+
+                if (id >= 0)
+                    SendRaw(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, result }));
+                return;
+            }
+
+            // Response to our request (has "id", no "method")
+            if (hasId && !hasMethod && idEl.ValueKind == JsonValueKind.Number)
             {
                 var id = idEl.GetInt32();
                 if (_pending.TryRemove(id, out var tcs))
@@ -716,8 +750,8 @@ public class LspClient : IAsyncDisposable
                 return;
             }
 
-            // Notification
-            if (root.TryGetProperty("method", out var methodEl))
+            // Notification (has "method", no "id")
+            if (hasMethod)
             {
                 var method = methodEl.GetString();
                 if (method == "textDocument/publishDiagnostics")
@@ -727,6 +761,16 @@ public class LspClient : IAsyncDisposable
             }
         }
         catch { }
+    }
+
+    private static object MakeConfigurationResponse(JsonElement root)
+    {
+        int count = 1;
+        if (root.TryGetProperty("params", out var p) &&
+            p.TryGetProperty("items", out var items) &&
+            items.ValueKind == JsonValueKind.Array)
+            count = items.GetArrayLength();
+        return Enumerable.Range(0, count).Select(_ => (object?)null).ToArray();
     }
 
     private void HandlePublishDiagnostics(JsonElement root)
