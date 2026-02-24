@@ -1,6 +1,7 @@
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
@@ -168,6 +169,17 @@ public static class AboutDialog
 
         string arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString();
 
+        string clipBackend = ClipboardHelper.Backend switch
+        {
+            ClipboardBackend.WlClipboard     => "wl-clipboard (Wayland)",
+            ClipboardBackend.Xclip           => "xclip (X11)",
+            ClipboardBackend.Xsel            => "xsel (X11)",
+            ClipboardBackend.Pbcopy          => "pbcopy / pbpaste (macOS)",
+            ClipboardBackend.WindowsClip     => "clip.exe (Windows)",
+            ClipboardBackend.InternalFallback => "internal (no system tool found)",
+            _                                => "unknown"
+        };
+
         var lines = new List<string>
         {
             "",
@@ -175,6 +187,7 @@ public static class AboutDialog
             $"  [grey50].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",
             $"  [grey50]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
             $"  [grey50]Architecture [/]{Markup.Escape(arch)}",
+            $"  [grey50]Clipboard    [/]{Markup.Escape(clipBackend)}",
             $"  [grey50]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
             $"  [grey50]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
         };
