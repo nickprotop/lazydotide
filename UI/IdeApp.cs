@@ -103,6 +103,7 @@ public class IdeApp : IDisposable
 
     // Debounce timer for dot-triggered auto-completion
     private Timer? _dotTriggerDebounce;
+    private Timer? _tooltipAutoDismiss;
 
     public IdeApp(string projectPath)
     {
@@ -1598,12 +1599,12 @@ public class IdeApp : IDisposable
     {
         if (_lsp == null)
         {
-            _ws.NotificationStateService.ShowNotification("LSP", "Language server not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+            ShowTransientTooltip("Language server not running.");
             return null;
         }
         var result = await request();
         if (result == null)
-            _ws.NotificationStateService.ShowNotification(featureName, $"No {featureName.ToLower()} available.", SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip($"No {featureName.ToLower()} available.");
         return result;
     }
 
@@ -1611,7 +1612,7 @@ public class IdeApp : IDisposable
     {
         if (_lsp == null || _editorManager?.CurrentEditor == null)
         {
-            _ws.NotificationStateService.ShowNotification("LSP", "Language server not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+            ShowTransientTooltip("Language server not running.");
             return;
         }
         var editor = _editorManager.CurrentEditor;
@@ -1621,7 +1622,7 @@ public class IdeApp : IDisposable
         var result = await _lsp.HoverAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         if (result == null || string.IsNullOrWhiteSpace(result.Contents))
         {
-            _ws.NotificationStateService.ShowNotification("Hover", "No type info at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No type info at cursor.");
             return;
         }
 
@@ -1635,7 +1636,7 @@ public class IdeApp : IDisposable
         ShowTooltipPortal(lines);
     }
 
-    private async Task ShowCompletionAsync()
+    private async Task ShowCompletionAsync(bool silent = false)
     {
         if (_lsp == null || _editorManager?.CurrentEditor == null || _mainWindow == null) return;
 
@@ -1650,8 +1651,7 @@ public class IdeApp : IDisposable
         var items = await _lsp.CompletionAsync(path, requestLine - 1, requestCol - 1);
         if (items.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Completion", "No completions at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+            if (!silent) ShowTransientTooltip("No completions at cursor.");
             return;
         }
 
@@ -1722,9 +1722,7 @@ public class IdeApp : IDisposable
         var locations = await _lsp.DefinitionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         if (locations.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Definition Not Found", "No definition found at current position.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No definition found at current position.");
             return;
         }
 
@@ -1756,7 +1754,7 @@ public class IdeApp : IDisposable
         }
     }
 
-    private async Task ShowSignatureHelpAsync()
+    private async Task ShowSignatureHelpAsync(bool silent = false)
     {
         if (_lsp == null || _editorManager?.CurrentEditor == null || _mainWindow == null) return;
 
@@ -1767,9 +1765,7 @@ public class IdeApp : IDisposable
         var sig = await _lsp.SignatureHelpAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         if (sig == null || sig.Signatures.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Signature Help", "No signature at cursor. Position inside function arguments.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            if (!silent) ShowTransientTooltip("No signature at cursor. Position inside function arguments.");
             return;
         }
 
@@ -1811,6 +1807,19 @@ public class IdeApp : IDisposable
         _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
     }
 
+    private void ShowTransientTooltip(string message, int dismissMs = 2000)
+    {
+        _tooltipAutoDismiss?.Dispose();
+        _tooltipAutoDismiss = null;
+
+        ShowTooltipPortal(new List<string> { Markup.Escape(message) });
+
+        _tooltipAutoDismiss = new Timer(_ =>
+        {
+            _pendingUiActions.Enqueue(() => DismissTooltipPortal());
+        }, null, dismissMs, Timeout.Infinite);
+    }
+
     // ── Portal helpers ─────────────────────────────────────────────────────────
 
     private void DismissCompletionPortal()
@@ -1830,6 +1839,9 @@ public class IdeApp : IDisposable
 
     private void DismissTooltipPortal()
     {
+        _tooltipAutoDismiss?.Dispose();
+        _tooltipAutoDismiss = null;
+
         if (_tooltipPortalNode != null && _mainWindow != null)
         {
             _mainWindow.RemovePortal(_editorManager?.CurrentEditor ?? (IWindowControl)_mainWindow, _tooltipPortalNode);
@@ -1942,7 +1954,7 @@ public class IdeApp : IDisposable
 
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _ = ShowCompletionAsync(),
+                _ => _ = ShowCompletionAsync(silent: true),
                 null, 350, Timeout.Infinite);
         }
         else if (lastChar is '(' or ',')
@@ -1952,7 +1964,7 @@ public class IdeApp : IDisposable
 
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _ = ShowSignatureHelpAsync(),
+                _ => _ = ShowSignatureHelpAsync(silent: true),
                 null, 250, Timeout.Infinite);
         }
     }
@@ -2049,9 +2061,7 @@ public class IdeApp : IDisposable
         var locations = await _lsp.ReferencesAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         if (locations.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "References", "No references found at cursor.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No references found at cursor.");
             return;
         }
 
@@ -2068,9 +2078,7 @@ public class IdeApp : IDisposable
         var locations = await _lsp.ImplementationAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         if (locations.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Implementation", "No implementation found at cursor.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No implementation found at cursor.");
             return;
         }
 
@@ -2095,8 +2103,7 @@ public class IdeApp : IDisposable
         {
             if (_lsp == null || _editorManager?.CurrentEditor == null)
             {
-                _ws.NotificationStateService.ShowNotification(
-                    "Rename", "LSP not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+                ShowTransientTooltip("LSP not running.");
                 return;
             }
             var editor = _editorManager.CurrentEditor;
@@ -2107,8 +2114,7 @@ public class IdeApp : IDisposable
             string currentName = ExtractWordAtCursor(editor);
             if (string.IsNullOrEmpty(currentName))
             {
-                _ws.NotificationStateService.ShowNotification(
-                    "Rename", "No symbol at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+                ShowTransientTooltip("No symbol at cursor.");
                 return;
             }
 
@@ -2119,9 +2125,7 @@ public class IdeApp : IDisposable
             var workspaceEdit = await _lsp.RenameAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1, newName);
             if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
             {
-                _ws.NotificationStateService.ShowNotification(
-                    "Rename", "LSP returned no edits.",
-                    SharpConsoleUI.Core.NotificationSeverity.Info);
+                ShowTransientTooltip("LSP returned no edits.");
                 return;
             }
 
@@ -2163,9 +2167,7 @@ public class IdeApp : IDisposable
         var actions = await _lsp.CodeActionAsync(path, line, col, line, col);
         if (actions.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Code Actions", "No code actions available at cursor.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No code actions available at cursor.");
             return;
         }
 
@@ -2208,9 +2210,7 @@ public class IdeApp : IDisposable
         var symbols = await _lsp.DocumentSymbolAsync(path);
         if (symbols.Count == 0)
         {
-            _ws.NotificationStateService.ShowNotification(
-                "Symbols", "No symbols found in document.",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+            ShowTransientTooltip("No symbols found in document.");
             return;
         }
 
