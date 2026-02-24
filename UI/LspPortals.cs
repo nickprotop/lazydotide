@@ -110,7 +110,20 @@ internal class LspTooltipPortalContent : IWindowControl, IDOMPaintable, IHasPort
             ? markupLines.Max(l => AnsiConsoleHelper.StripSpectreLength(l)) + 4  // +2 border + 2 padding
             : 20;
         int popupW = Math.Min(80, contentW);
-        int popupH = markupLines.Count + 2;  // +2 for top/bottom border
+
+        // Account for word wrapping: MarkupControl wraps by default, so long lines
+        // produce more rendered lines than input lines.  The inner width available
+        // for text is popupW minus border (2) minus left+right padding (2).
+        int innerW = popupW - 4;
+        int wrappedLines = 0;
+        foreach (var line in markupLines)
+        {
+            int lineW = AnsiConsoleHelper.StripSpectreLength(line);
+            wrappedLines += (innerW > 0 && lineW > innerW)
+                ? (int)Math.Ceiling((double)lineW / innerW)
+                : 1;
+        }
+        int popupH = wrappedLines + 2;  // +2 for top/bottom border
 
         int y = LspPortalLayout.PickY(cursorY, popupH, windowHeight, preferAbove, out popupH);
         _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);

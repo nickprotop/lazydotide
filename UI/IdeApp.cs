@@ -104,6 +104,7 @@ public class IdeApp : IDisposable
     // Debounce timer for dot-triggered auto-completion
     private Timer? _dotTriggerDebounce;
     private Timer? _tooltipAutoDismiss;
+    private int _tooltipAutoDismissGeneration;
 
     public IdeApp(string projectPath)
     {
@@ -1796,7 +1797,8 @@ public class IdeApp : IDisposable
 
     private void ShowTooltipPortal(List<string> lines, bool preferAbove = true)
     {
-        DismissTooltipPortal();
+        DismissTooltipPortal(); // also bumps generation to invalidate stale auto-dismiss
+        ++_tooltipAutoDismissGeneration;
         var editor = _editorManager?.CurrentEditor;
         if (editor == null || _mainWindow == null) return;
         var cursor = _editorManager!.GetCursorBounds();
@@ -1814,9 +1816,15 @@ public class IdeApp : IDisposable
 
         ShowTooltipPortal(new List<string> { Markup.Escape(message) });
 
+        int gen = ++_tooltipAutoDismissGeneration;
         _tooltipAutoDismiss = new Timer(_ =>
         {
-            _pendingUiActions.Enqueue(() => DismissTooltipPortal());
+            _pendingUiActions.Enqueue(() =>
+            {
+                // Only dismiss if no newer tooltip has been shown since this timer was set
+                if (_tooltipAutoDismissGeneration == gen)
+                    DismissTooltipPortal();
+            });
         }, null, dismissMs, Timeout.Infinite);
     }
 
@@ -1966,6 +1974,24 @@ public class IdeApp : IDisposable
             _dotTriggerDebounce = new Timer(
                 _ => _ = ShowSignatureHelpAsync(silent: true),
                 null, 250, Timeout.Infinite);
+        }
+        else if (IsIdentifierChar(lastChar) && _completionPortal == null)
+        {
+            // Count identifier chars back from cursor to find word length
+            int wordLen = 0;
+            int i = col - 1;
+            while (i >= 0 && IsIdentifierChar(currentLine[i])) { wordLen++; i--; }
+
+            // If the word is preceded by a dot, skip — dot-trigger already handles this
+            bool afterDot = i >= 0 && currentLine[i] == '.';
+
+            if (wordLen >= 3 && !afterDot)
+            {
+                _dotTriggerDebounce?.Dispose();
+                _dotTriggerDebounce = new Timer(
+                    _ => _ = ShowCompletionAsync(silent: true),
+                    null, 300, Timeout.Infinite);
+            }
         }
     }
 
