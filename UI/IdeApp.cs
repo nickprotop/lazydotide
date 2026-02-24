@@ -26,10 +26,12 @@ public class IdeApp : IDisposable
     private ExplorerPanel? _explorer;
     private EditorManager? _editorManager;
     private OutputPanel? _outputPanel;
+    private FileMiddlewarePipeline? _pipeline;
 
     // Status bar
     private MarkupControl? _statusLeft;   // git + error combined
     private MarkupControl? _cursorStatus;
+    private MarkupControl? _syntaxStatus;
     private string _gitMarkup   = "[dim] git: --[/]";
     private string _errorMarkup = "";
     private MarkupControl? _dashboard;
@@ -141,14 +143,17 @@ public class IdeApp : IDisposable
 
         _explorer = new ExplorerPanel(_ws, _projectService);
 
-        var pipeline = new FileMiddlewarePipeline();
-        pipeline.Register(new CSharpFileMiddleware());
-        pipeline.Register(new MarkdownFileMiddleware());
-        pipeline.Register(new JsonFileMiddleware());
-        pipeline.Register(new XmlFileMiddleware());
-        pipeline.Register(new DefaultFileMiddleware());
+        _pipeline = new FileMiddlewarePipeline();
+        _pipeline.Register(new CSharpFileMiddleware());
+        _pipeline.Register(new MarkdownFileMiddleware());
+        _pipeline.Register(new JsonFileMiddleware());
+        _pipeline.Register(new XmlFileMiddleware());
+        _pipeline.Register(new YamlFileMiddleware());
+        _pipeline.Register(new DockerfileMiddleware());
+        _pipeline.Register(new SlnFileMiddleware());
+        _pipeline.Register(new DefaultFileMiddleware());
 
-        _editorManager = new EditorManager(_ws, pipeline);
+        _editorManager = new EditorManager(_ws, _pipeline);
         _outputPanel = new OutputPanel(_ws);
 
         BuildMainWindow(desktop.Width, mainH);
@@ -209,13 +214,25 @@ public class IdeApp : IDisposable
                 .AddItem("Refresh Explorer", () => _explorer?.Refresh())
                 .AddSeparator()
                 .AddItem("Exit", "Alt+F4", () => _ws.Shutdown(0)))
-            .AddItem("Edit", m => m
-                .AddItem("Word Wrap", () => SetWrapMode(WrapMode.WrapWords))
-                .AddItem("Wrap (character)", () => SetWrapMode(WrapMode.Wrap))
-                .AddItem("No Wrap", () => SetWrapMode(WrapMode.NoWrap))
-                .AddSeparator()
-                .AddItem("Find...",    "Ctrl+F", () => ShowFindReplace())
-                .AddItem("Replace...", "Ctrl+H", () => ShowFindReplace()))
+            .AddItem("Edit", m =>
+            {
+                m.AddItem("Word Wrap", () => SetWrapMode(WrapMode.WrapWords))
+                 .AddItem("Wrap (character)", () => SetWrapMode(WrapMode.Wrap))
+                 .AddItem("No Wrap", () => SetWrapMode(WrapMode.NoWrap))
+                 .AddSeparator()
+                 .AddItem("Find...",    "Ctrl+F", () => ShowFindReplace())
+                 .AddItem("Replace...", "Ctrl+H", () => ShowFindReplace())
+                 .AddSeparator()
+                 .AddItem("Syntax Highlighter", sub =>
+                 {
+                     foreach (var (name, highlighter) in _pipeline!.GetAvailableHighlighters())
+                     {
+                         var n = name;
+                         var h = highlighter;
+                         sub.AddItem(n, () => _editorManager?.SetSyntaxHighlighter(n, h));
+                     }
+                 });
+            })
             .AddItem("Build", m => m
                 .AddItem("Build", "F6", () => _ = BuildProjectAsync())
                 .AddItem("Test", "F7", () => _ = TestProjectAsync())
@@ -340,6 +357,15 @@ public class IdeApp : IDisposable
         leftCol.AddContent(_statusLeft);
         statusBar.AddColumn(leftCol);
 
+        // Middle fixed: syntax highlighter name
+        var syntaxCol = new ColumnContainer(statusBar) { Width = 14 };
+        _syntaxStatus = new MarkupControl(new List<string> { "[dim]Plain Text[/]" })
+        {
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        syntaxCol.AddContent(_syntaxStatus);
+        statusBar.AddColumn(syntaxCol);
+
         // Right fixed: cursor position
         var cursorCol = new ColumnContainer(statusBar) { Width = 22 };
         _cursorStatus = new MarkupControl(new List<string> { "Ln 1 Col 1 | UTF-8" })
@@ -418,6 +444,11 @@ public class IdeApp : IDisposable
             {
                 $"Ln {pos.Line} Col {pos.Column} | UTF-8"
             });
+        };
+
+        _editorManager.SyntaxChanged += (_, name) =>
+        {
+            _syntaxStatus?.SetContent(new List<string> { $"[dim]{Markup.Escape(name)}[/]" });
         };
 
         _outputPanel!.DiagnosticNavigateRequested += (_, diag) =>

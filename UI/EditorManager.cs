@@ -12,7 +12,7 @@ public class EditorManager
 {
     private readonly ConsoleWindowSystem _ws;
     private readonly TabControl _tabControl;
-    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty);
+    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty, string? SyntaxOverride = null);
 
     private readonly Dictionary<string, int> _openFiles = new();
     private readonly Dictionary<int, EditorTabData> _tabData = new();
@@ -38,6 +38,7 @@ public class EditorManager
     public event EventHandler<(string FilePath, string Content)>? DocumentChanged;
     public event EventHandler<string>? DocumentSaved;
     public event EventHandler<string>? DocumentClosed;
+    public event EventHandler<string>? SyntaxChanged;
 
     public string? CurrentFilePath =>
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.FilePath : null;
@@ -46,6 +47,30 @@ public class EditorManager
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d2) ? d2.Editor : null;
 
     public TabControl TabControl => _tabControl;
+
+    public string CurrentSyntaxName
+    {
+        get
+        {
+            if (_tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d))
+            {
+                if (d.SyntaxOverride != null) return d.SyntaxOverride;
+                if (d.FilePath != null) return _pipeline.GetSyntaxName(d.FilePath);
+            }
+            return "Plain Text";
+        }
+    }
+
+    public void SetSyntaxHighlighter(string name, ISyntaxHighlighter? highlighter)
+    {
+        if (_tabControl.ActiveTabIndex < 0) return;
+        if (!_tabData.TryGetValue(_tabControl.ActiveTabIndex, out var data)) return;
+        if (data.Editor == null) return;
+
+        data.Editor.SyntaxHighlighter = highlighter;
+        _tabData[_tabControl.ActiveTabIndex] = data with { SyntaxOverride = name };
+        SyntaxChanged?.Invoke(this, name);
+    }
 
     public bool HasOpenFiles => _tabControl.TabCount > 0;
     public event EventHandler? OpenFilesStateChanged;
@@ -132,6 +157,9 @@ public class EditorManager
 
         if (editor != null && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             DocumentOpened?.Invoke(this, (path, editor.Content));
+
+        // Always notify syntax change (TabChanged may not fire for the first tab)
+        SyntaxChanged?.Invoke(this, CurrentSyntaxName);
 
         if (wasEmpty)
             OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
@@ -364,6 +392,7 @@ public class EditorManager
     private void OnTabChanged(object? sender, TabChangedEventArgs args)
     {
         ActiveFileChanged?.Invoke(this, CurrentFilePath);
+        SyntaxChanged?.Invoke(this, CurrentSyntaxName);
     }
 
     // ──────────────────────────────────────────────────────────────
