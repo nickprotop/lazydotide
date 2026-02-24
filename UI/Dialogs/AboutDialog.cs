@@ -21,11 +21,13 @@ public static class AboutDialog
     private const int DialogWidth  = 80;
     private const int DialogHeight = 28;
 
-    public static void Show(
+    public static Action Show(
         ConsoleWindowSystem windowSystem,
-        AboutInfo info,
+        Func<AboutInfo> infoProvider,
         Action onClosed)
     {
+        var info = infoProvider();
+
         var modal = new WindowBuilder(windowSystem)
             .WithTitle("About lazydotide")
             .WithSize(DialogWidth, DialogHeight)
@@ -64,17 +66,29 @@ public static class AboutDialog
 
         modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).Build());
 
+        // Build environment tab with live-updatable markup
+        var envMarkup = BuildEnvironmentTab(info);
+
         // Tab control — Info first, then Environment, then Tools
-        modal.AddControl(Controls.TabControl()
+        var tabControl = Controls.TabControl()
             .AddTab("  Info  ",        ScrollWrap(BuildInfoTab()))
-            .AddTab("  Environment  ", ScrollWrap(BuildEnvironmentTab(info)))
+            .AddTab("  Environment  ", ScrollWrap(envMarkup))
             .AddTab("  Tools  ",       ScrollWrap(BuildToolsTab(info)))
             .WithHeaderStyle(TabHeaderStyle.Separator)
             .WithAlignment(HorizontalAlignment.Stretch)
             .Fill()
             .WithBackgroundColor(Color.Grey15)
             .WithForegroundColor(Color.Grey93)
-            .Build());
+            .Build();
+
+        // Refresh environment content when switching to that tab
+        tabControl.TabChanged += (_, e) =>
+        {
+            if (e.NewIndex == 1)
+                envMarkup.SetContent(BuildEnvironmentLines(infoProvider()));
+        };
+
+        modal.AddControl(tabControl);
 
         // Footer rule + bar (sticky bottom)
         modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).StickyBottom().Build());
@@ -112,6 +126,8 @@ public static class AboutDialog
 
         windowSystem.AddWindow(modal);
         windowSystem.SetActiveWindow(modal);
+
+        return () => envMarkup.SetContent(BuildEnvironmentLines(infoProvider()));
     }
 
     private static ScrollablePanelControl ScrollWrap(MarkupControl content) =>
@@ -136,10 +152,6 @@ public static class AboutDialog
             "  [cyan1]SharpConsoleUI[/] (ConsoleEx)  —  A .NET 9 console windowing framework",
             "  [dim]https://github.com/nickprotop/ConsoleEx[/]",
             "",
-            "  [grey50]LSP backend[/]",
-            "  [cyan1]csharp-language-server[/]  (csharp-ls)",
-            "  [dim]https://github.com/razzmatazz/csharp-language-server[/]",
-            "",
             "  [grey50]Useful resources[/]",
             "  [dim].NET docs       ·  https://learn.microsoft.com/dotnet[/]",
             "  [dim]NuGet           ·  https://www.nuget.org[/]",
@@ -154,18 +166,26 @@ public static class AboutDialog
         };
     }
 
-    private static MarkupControl BuildEnvironmentTab(AboutInfo info)
+    private static List<string> BuildEnvironmentLines(AboutInfo info)
     {
-        string lspLine = info switch
+        var lspLines = new List<string>();
+        switch (info)
         {
-            { LspDetectionDone: false } =>
-                "  [grey50]LSP          [/][dim]○ detecting…[/]",
-            { LspStarted: true, DetectedLspExe: var exe } =>
-                $"  [grey50]LSP          [/][green]● {Markup.Escape(exe!)} (running)[/]",
-            { DetectedLspExe: var exe } when exe != null =>
-                $"  [grey50]LSP          [/][dim]○ {Markup.Escape(exe)} (not started)[/]",
-            _ => "  [grey50]LSP          [/][dim]○ not detected[/]"
-        };
+            case { LspDetectionDone: false }:
+                lspLines.Add("  [grey50]LSP          [/][dim]○ detecting…[/]");
+                break;
+            case { LspStarted: true, DetectedLspExe: var exe }:
+                lspLines.Add($"  [grey50]LSP          [/][green]● {Markup.Escape(exe!)} (running)[/]");
+                break;
+            case { DetectedLspExe: var exe } when exe != null:
+                lspLines.Add($"  [grey50]LSP          [/][dim]○ {Markup.Escape(exe)} (failed to start)[/]");
+                break;
+            default:
+                lspLines.Add("  [grey50]LSP          [/][dim]○ not detected[/]");
+                lspLines.Add("[yellow]               Install:  [/][italic]dotnet tool install -g csharp-ls[/]");
+                lspLines.Add($"[dim]               Config:   {Markup.Escape(ConfigService.GetConfigPath())}[/]");
+                break;
+        }
 
         string arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString();
 
@@ -180,19 +200,23 @@ public static class AboutDialog
             _                                => "unknown"
         };
 
-        var lines = new List<string>
+        var result = new List<string> { "" };
+        result.AddRange(lspLines);
+        result.AddRange(new[]
         {
-            "",
-            lspLine,
             $"  [grey50].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",
             $"  [grey50]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
             $"  [grey50]Architecture [/]{Markup.Escape(arch)}",
             $"  [grey50]Clipboard    [/]{Markup.Escape(clipBackend)}",
             $"  [grey50]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
             $"  [grey50]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
-        };
+        });
+        return result;
+    }
 
-        return new MarkupControl(lines)
+    private static MarkupControl BuildEnvironmentTab(AboutInfo info)
+    {
+        return new MarkupControl(BuildEnvironmentLines(info))
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment   = VerticalAlignment.Top,

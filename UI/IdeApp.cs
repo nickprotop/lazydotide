@@ -69,6 +69,7 @@ public class IdeApp : IDisposable
     private readonly CommandRegistry _commandRegistry = new();
     private bool _commandPaletteOpen;
     private bool _aboutOpen;
+    private Action? _aboutRefresh;
 
     // Dashboard LSP state (set in PostInitAsync)
     private string? _detectedLspExe;
@@ -807,7 +808,7 @@ public class IdeApp : IDisposable
     {
         await RefreshGitStatusAsync();
 
-        var lspServer = LspDetector.Find(projectPath);
+        var lspServer = LspDetector.Find(projectPath, _config.Lsp);
         if (lspServer != null)
         {
             _detectedLspExe = lspServer.Exe;
@@ -835,6 +836,7 @@ public class IdeApp : IDisposable
         }
 
         _lspDetectionDone = true;
+        _aboutRefresh?.Invoke();
         UpdateDashboard();
     }
 
@@ -1083,7 +1085,7 @@ public class IdeApp : IDisposable
         {
             await _lsp.ShutdownAsync();
             _lsp = null;
-            var lspServer = LspDetector.Find(selected);
+            var lspServer = LspDetector.Find(selected, _config.Lsp);
             if (lspServer != null)
             {
                 _lsp = new LspClient();
@@ -1718,6 +1720,7 @@ public class IdeApp : IDisposable
                 "[dim]                    Signature Help · Hover · Formatting[/]",
                 "[yellow]           Install: [/][italic]dotnet tool install -g csharp-ls[/]",
                 "[dim]           Alt:     [/][dim italic]OmniSharp  (omnisharp.net)[/]",
+                $"[dim]           Config:  [/][dim italic]{Markup.Escape(ConfigService.GetConfigPath())}[/]",
             };
 
         string toolsLine = _config.Tools.Count == 0
@@ -1751,13 +1754,13 @@ public class IdeApp : IDisposable
     {
         if (_aboutOpen) return;
         _aboutOpen = true;
-        var info = new AboutInfo(
+        _aboutRefresh = AboutDialog.Show(_ws, () => new AboutInfo(
             LspStarted:       _lspStarted,
             LspDetectionDone: _lspDetectionDone,
             DetectedLspExe:   _detectedLspExe,
             Tools:            _config.Tools,
-            ProjectPath:      _projectService.RootPath);
-        AboutDialog.Show(_ws, info, () => _aboutOpen = false);
+            ProjectPath:      _projectService.RootPath),
+            () => { _aboutOpen = false; _aboutRefresh = null; });
     }
 
     private void UpdateErrorCount(List<BuildDiagnostic> diagnostics)

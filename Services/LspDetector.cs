@@ -11,8 +11,12 @@ public static class LspDetector
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".omnisharp", "omnisharp", "OmniSharp"),
     ];
 
-    public static LspServer? Find(string workspacePath)
+    public static LspServer? Find(string workspacePath, LspConfig? configOverride = null)
     {
+        // 0. Config file override
+        if (configOverride != null && !string.IsNullOrEmpty(configOverride.Command))
+            return new LspServer(configOverride.Command, configOverride.Args ?? []);
+
         // 1. Env override
         var env = Environment.GetEnvironmentVariable("DOTNET_IDE_LSP");
         if (env != null && File.Exists(env))

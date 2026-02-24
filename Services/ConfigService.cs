@@ -4,6 +4,7 @@ public static class ConfigService
 {
     private const string DefaultConfigJson = """
 {
+  "lsp": null,
   "tools": [
     {
       "name": "htop",
