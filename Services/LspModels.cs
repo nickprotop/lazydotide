@@ -33,6 +33,24 @@ public record SignatureInfo(
 
 public record ParameterInfo(string Label, string? Documentation);
 
+// Rename / Code Action / Document Symbol types
+public record WorkspaceEdit(Dictionary<string, List<TextEdit>>? Changes);
+
+public record CodeAction(
+    string Title,
+    string? Kind,
+    WorkspaceEdit? Edit,
+    List<LspDiagnostic>? Diagnostics);
+
+public record DocumentSymbol(
+    string Name,
+    int Kind,          // SymbolKind: 5=Class, 6=Method, 7=Property, 8=Field, ...
+    LspRange Range,
+    LspRange SelectionRange,
+    List<DocumentSymbol>? Children);
+
+public record PrepareRenameResult(LspRange Range, string Placeholder);
+
 // JSON-RPC types
 public record JsonRpcRequest(string jsonrpc, int id, string method, object? @params);
 public record JsonRpcNotification(string jsonrpc, string method, object? @params);

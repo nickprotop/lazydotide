@@ -217,9 +217,20 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
         Invalidate();
     }
 
+    public static string GetKindIcon(int kind) => kind switch
+    {
+        2 or 3 => "f()",
+        4 => "new",
+        5 or 6 => "var",
+        7 => "cls",
+        8 => "ifc",
+        10 => "prp",
+        _ => "   "
+    };
+
     private static ListItem BuildListItem(CompletionItem item)
     {
-        string icon = CompletionPortal.GetKindIcon(item.Kind);
+        string icon = GetKindIcon(item.Kind);
         string text = icon + " " + Markup.Escape(item.Label);
         if (item.Detail != null)
             text += "  [dim]" + Markup.Escape(item.Detail) + "[/]";
@@ -257,7 +268,7 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
         // Width: icon + space + label + "  " + detail — cap at 60
         int maxLabel = items.Take(20).Max(i =>
         {
-            string icon  = CompletionPortal.GetKindIcon(i.Kind);
+            string icon  = GetKindIcon(i.Kind);
             string label = icon + " " + i.Label;
             if (i.Detail != null) label += "  " + i.Detail;
             return AnsiConsoleHelper.StripSpectreLength(label);
@@ -331,6 +342,166 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
 #pragma warning restore CS0067
 
     // ── IWindowControl boilerplate ─────────────────────────────────────────────
+
+    private int _actualX, _actualY, _actualWidth, _actualHeight;
+    public int ActualX => _actualX;
+    public int ActualY => _actualY;
+    public int ActualWidth => _actualWidth;
+    public int ActualHeight => _actualHeight;
+    public int? ContentWidth  => _bounds.Width;
+    public int? ContentHeight => _bounds.Height;
+    public HorizontalAlignment HorizontalAlignment { get; set; } = HorizontalAlignment.Left;
+    public VerticalAlignment   VerticalAlignment   { get; set; } = VerticalAlignment.Top;
+    public IContainer? Container { get; set; }
+    public Margin Margin { get; set; } = new(0, 0, 0, 0);
+    public StickyPosition StickyPosition { get; set; } = StickyPosition.None;
+    public string? Name { get; set; }
+    public object? Tag { get; set; }
+    public bool Visible { get; set; } = true;
+    public int? Width { get; set; }
+    public Size GetLogicalContentSize() => new(_bounds.Width, _bounds.Height);
+    public void Invalidate() => Container?.Invalidate(true);
+    public void Dispose() { }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Location list portal — used for Find References, Go-to-Implementation (multiple)
+// Interactive list with Up/Down/Enter/Escape support, shows file:line + context
+// ──────────────────────────────────────────────────────────────────────────────
+
+internal record LspLocationEntry(string FilePath, int Line, int Column, string DisplayText);
+
+internal class LspLocationListPortalContent : IWindowControl, IDOMPaintable, IHasPortalBounds, IMouseAwareControl
+{
+    private readonly List<LspLocationEntry> _entries;
+    private readonly ListControl _list;
+    private Rectangle _bounds;
+
+    private static readonly Color Bg       = Color.Grey11;
+    private static readonly Color Fg       = Color.Grey93;
+    private static readonly Color BorderFg = Color.Grey50;
+    private static readonly Color SelBg    = Color.SteelBlue;
+    private static readonly Color SelFg    = Color.White;
+
+    public int SelectedIndex => _list.SelectedIndex;
+
+    public LspLocationEntry? GetSelected()
+    {
+        if (_list.SelectedIndex < 0 || _list.SelectedIndex >= _entries.Count)
+            return null;
+        return _entries[_list.SelectedIndex];
+    }
+
+    public event EventHandler<LspLocationEntry>? ItemAccepted;
+
+    public void SelectNext()
+    {
+        if (_list.SelectedIndex < _list.Items.Count - 1)
+            _list.SelectedIndex++;
+        Invalidate();
+    }
+
+    public void SelectPrev()
+    {
+        if (_list.SelectedIndex > 0)
+            _list.SelectedIndex--;
+        Invalidate();
+    }
+
+    private static ListItem BuildListItem(LspLocationEntry entry)
+    {
+        var fileName = Path.GetFileName(entry.FilePath);
+        var text = $"[cyan]{Markup.Escape(fileName)}[/]:[dim]{entry.Line}[/] {Markup.Escape(entry.DisplayText)}";
+        return new ListItem(text) { Tag = entry };
+    }
+
+    public LspLocationListPortalContent(
+        List<LspLocationEntry> entries,
+        int cursorX, int cursorY,
+        int windowWidth, int windowHeight)
+    {
+        _entries = entries;
+
+        _list = new ListControl
+        {
+            BackgroundColor          = Bg,
+            ForegroundColor          = Fg,
+            FocusedBackgroundColor   = Bg,
+            FocusedForegroundColor   = Fg,
+            HighlightBackgroundColor = SelBg,
+            HighlightForegroundColor = SelFg,
+            HoverHighlightsItems     = false,
+            AutoAdjustWidth          = false,
+        };
+        _list.HasFocus = true;
+
+        foreach (var entry in entries)
+            _list.AddItem(BuildListItem(entry));
+
+        if (entries.Count > 0) _list.SelectedIndex = 0;
+
+        // Size: fit the widest entry, cap at 80
+        int maxWidth = entries.Take(30).Max(e =>
+        {
+            var fileName = Path.GetFileName(e.FilePath);
+            return fileName.Length + 1 + e.Line.ToString().Length + 1 + e.DisplayText.Length;
+        });
+        int popupW = Math.Min(80, Math.Max(30, maxWidth + 6));
+        int visibleItems = Math.Min(15, entries.Count);
+        int popupH = visibleItems + 2;
+
+        int y = LspPortalLayout.PickY(cursorY, popupH, windowHeight, preferAbove: false, out popupH);
+        _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
+    }
+
+    public Rectangle GetPortalBounds() => _bounds;
+
+    public LayoutSize MeasureDOM(LayoutConstraints c) => new(_bounds.Width, _bounds.Height);
+
+    public void PaintDOM(CharacterBuffer buffer, LayoutRect bounds, LayoutRect clip,
+                         Color defaultFg, Color defaultBg)
+    {
+        _actualX = bounds.X; _actualY = bounds.Y;
+        _actualWidth = bounds.Width; _actualHeight = bounds.Height;
+
+        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
+
+        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
+        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clip, Fg, Bg);
+    }
+
+    public bool WantsMouseEvents => true;
+    public bool CanFocusWithMouse => false;
+
+    public bool ProcessMouseEvent(MouseEventArgs args)
+    {
+        if (args.HasFlag(MouseFlags.WheeledUp))   { SelectPrev(); return true; }
+        if (args.HasFlag(MouseFlags.WheeledDown)) { SelectNext(); return true; }
+
+        if (args.HasFlag(MouseFlags.Button1Clicked))
+        {
+            var innerArgs = args.WithPosition(
+                new System.Drawing.Point(args.Position.X - 1, args.Position.Y - 1));
+            ((IMouseAwareControl)_list).ProcessMouseEvent(innerArgs);
+
+            var clicked = GetSelected();
+            if (clicked != null)
+                ItemAccepted?.Invoke(this, clicked);
+            else
+                Invalidate();
+            return true;
+        }
+
+        return false;
+    }
+
+#pragma warning disable CS0067
+    public event EventHandler<MouseEventArgs>? MouseClick;
+    public event EventHandler<MouseEventArgs>? MouseDoubleClick;
+    public event EventHandler<MouseEventArgs>? MouseEnter;
+    public event EventHandler<MouseEventArgs>? MouseLeave;
+    public event EventHandler<MouseEventArgs>? MouseMove;
+#pragma warning restore CS0067
 
     private int _actualX, _actualY, _actualWidth, _actualHeight;
     public int ActualX => _actualX;

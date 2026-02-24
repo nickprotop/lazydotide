@@ -81,11 +81,21 @@ public class IdeApp : IDisposable
     // Navigation history for Go to Definition / Navigate Back
     private readonly Stack<(string FilePath, int Line, int Col)> _navHistory = new();
 
+    // Side panel (symbols browser)
+    private SidePanel? _sidePanel;
+    private ColumnContainer? _sidePanelCol;
+    private SplitterControl? _sidePanelSplitter;
+    private HorizontalGridControl? _mainContent;
+    private bool _sidePanelVisible;
+    private Timer? _symbolRefreshDebounce;
+
     // LSP portal overlays (rendered inside _mainWindow, not as separate windows)
     private LspCompletionPortalContent? _completionPortal;
     private LayoutNode? _completionPortalNode;
     private LspTooltipPortalContent? _tooltipPortal;
     private LayoutNode? _tooltipPortalNode;
+    private LspLocationListPortalContent? _locationPortal;
+    private LayoutNode? _locationPortalNode;
 
     // Completion filter tracking — column at which completion was triggered (1-indexed)
     private int _completionTriggerColumn;
@@ -120,9 +130,11 @@ public class IdeApp : IDisposable
         _disposed = true;
         _cts.Cancel();
         _dotTriggerDebounce?.Dispose();
+        _symbolRefreshDebounce?.Dispose();
         _fileWatcher?.Dispose();
         DismissCompletionPortal();
         DismissTooltipPortal();
+        DismissLocationPortal();
         _ws.ConsoleDriver.KeyPressed   -= OnGlobalDriverKeyPressed;
         _ws.ConsoleDriver.ScreenResized -= OnScreenResized;
         _ = _lsp?.DisposeAsync().AsTask();
@@ -159,6 +171,7 @@ public class IdeApp : IDisposable
 
         _editorManager = new EditorManager(_ws, _pipeline);
         _outputPanel = new OutputPanel(_ws);
+        _sidePanel = new SidePanel();
 
         BuildMainWindow(desktop.Width, mainH);
         BuildOutputWindow(desktop.Width, outH, mainH);
@@ -248,7 +261,8 @@ public class IdeApp : IDisposable
                 .AddItem("Stop", "F4", () => _buildService.Cancel()))
             .AddItem("View", m => m
                 .AddItem("Toggle Explorer", "Ctrl+B", () => ToggleExplorer())
-                .AddItem("Toggle Output Panel", "Ctrl+J", () => ToggleOutput()))
+                .AddItem("Toggle Output Panel", "Ctrl+J", () => ToggleOutput())
+                .AddItem("Toggle Side Panel", "Alt+;", () => ToggleSidePanel()))
             .AddItem("Git", m => m
                 .AddItem("Refresh Status", () => _ = RefreshGitStatusAsync())
                 .AddItem("Pull", () => _ = GitCommandAsync("pull"))
@@ -257,17 +271,24 @@ public class IdeApp : IDisposable
             {
                 m.AddItem("Command Palette",  "Ctrl+P",         () => ShowCommandPalette())
                  .AddSeparator()
-                 .AddItem("Go to Definition", "F12",            () => _ = ShowGoToDefinitionAsync())
-                 .AddItem("Navigate Back",    "Alt+Left",       () => NavigateBack())
+                 .AddItem("Go to Definition",    "F12",            () => _ = ShowGoToDefinitionAsync())
+                 .AddItem("Go to Implementation","Ctrl+F12",       () => _ = ShowGoToImplementationAsync())
+                 .AddItem("Find All References", "Shift+F12",      () => _ = ShowFindReferencesAsync())
+                 .AddItem("Navigate Back",       "Alt+Left",       () => NavigateBack())
                  .AddSeparator()
-                 .AddItem("Signature Help",   "F2",             () => _ = ShowSignatureHelpAsync())
-                 .AddItem("Format Document",  "Alt+Shift+F",    () => _ = FormatDocumentAsync())
-                 .AddItem("Reload from Disk", "Alt+Shift+R",    () => ReloadCurrentFromDisk())
+                 .AddItem("Rename Symbol",    "Ctrl+F2",         () => _ = ShowRenameAsync())
+                 .AddItem("Code Actions",     "Ctrl+.",          () => _ = ShowCodeActionsAsync())
+                 .AddItem("Focus Symbols",    "Alt+O",    () => FocusSymbolsTab())
+                 .AddSeparator()
+                 .AddItem("Signature Help",   "F2",              () => _ = ShowSignatureHelpAsync())
+                 .AddItem("Format Document",  "Alt+Shift+F",     () => _ = FormatDocumentAsync())
+                 .AddItem("Reload from Disk", "Alt+Shift+R",     () => ReloadCurrentFromDisk())
                  .AddSeparator()
                  .AddItem("Add NuGet Package", () => ShowNuGetDialog())
                  .AddSeparator()
                  .AddItem("Shell",      "F8", () => OpenShell())
                  .AddItem("Shell Tab",  "",   () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); })
+                 .AddItem("Side Shell", "Shift+F8", () => OpenSidePanelShell())
                  .AddItem("LazyNuGet",  "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); });
 
                 if (_config.Tools.Count > 0)
@@ -303,6 +324,7 @@ public class IdeApp : IDisposable
             .AddButton("LazyNuGet F9", (_, _) => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); })
             .AddButton("Explorer", (_, _) => ToggleExplorer())
             .AddButton("Output", (_, _) => ToggleOutput())
+            .AddButton("Side Panel", (_, _) => ToggleSidePanel())
             .StickyTop()
             .Build();
 
@@ -311,11 +333,12 @@ public class IdeApp : IDisposable
 
     private void AddMainContentArea()
     {
-        var mainContent = new HorizontalGridControl
+        _mainContent = new HorizontalGridControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
+        var mainContent = _mainContent;
 
         _explorerCol = new ColumnContainer(mainContent)
         {
@@ -341,8 +364,22 @@ public class IdeApp : IDisposable
 
         mainContent.AddColumn(editorCol);
 
+        _sidePanelCol = new ColumnContainer(mainContent)
+        {
+            Width = 30,
+            VerticalAlignment = VerticalAlignment.Fill,
+            Visible = false
+        };
+        _sidePanelCol.AddContent(_sidePanel!.TabControl);
+        mainContent.AddColumn(_sidePanelCol);
+
         _explorerSplitter = new SplitterControl();
         mainContent.AddSplitter(0, _explorerSplitter);
+
+        _sidePanelSplitter = new SplitterControl { Visible = false };
+        mainContent.AddSplitter(1, _sidePanelSplitter);
+
+        _sidePanel.SymbolActivated += (_, entry) => NavigateToLocation(entry);
 
         _mainWindow!.AddControl(mainContent);
     }
@@ -484,6 +521,7 @@ public class IdeApp : IDisposable
         {
             _ = _lsp?.DidChangeAsync(a.FilePath, a.Content);
             TryScheduleDotCompletion(a.FilePath, a.Content);
+            ScheduleSymbolRefresh(a.FilePath);
         };
         _editorManager.DocumentSaved   += (_, p) => _ = _lsp?.DidSaveAsync(p);
         _editorManager.DocumentSaved   += (_, savedPath) => _fileWatcher?.SuppressNext(savedPath);
@@ -503,6 +541,7 @@ public class IdeApp : IDisposable
         {
             DismissCompletionPortal();
             DismissTooltipPortal();
+            DismissLocationPortal();
             _ = _lsp?.DidCloseAsync(p);
             // Clear diagnostics for the closed file
             _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
@@ -513,6 +552,7 @@ public class IdeApp : IDisposable
         {
             DismissCompletionPortal();
             DismissTooltipPortal();
+            DismissLocationPortal();
             if (filePath != null && filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             {
                 // Re-send content so LSP re-publishes fresh diagnostics for this file
@@ -526,6 +566,7 @@ public class IdeApp : IDisposable
                 _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
                 UpdateErrorCount(new List<BuildDiagnostic>());
             }
+            RefreshSymbolsForFile(filePath);
         };
 
         _mainWindow!.PreviewKeyPressed += OnMainWindowPreviewKey;
@@ -628,17 +669,69 @@ public class IdeApp : IDisposable
         var key  = e.KeyInfo.Key;
         var mods = e.KeyInfo.Modifiers;
 
-        // Dismiss tooltip on any key
+        // Dismiss tooltip on typing keys, Escape, or navigation — but not on
+        // arrow keys (used for completion navigation), modifier-only presses, or Ctrl combos
         if (_tooltipPortal != null)
-            DismissTooltipPortal();
+        {
+            bool isModifierOnly = key is ConsoleKey.LeftWindows or ConsoleKey.RightWindows;
+            bool isArrowKey = key is ConsoleKey.UpArrow or ConsoleKey.DownArrow
+                                  or ConsoleKey.LeftArrow or ConsoleKey.RightArrow;
+            bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
+            if (!isModifierOnly && !isArrowKey && !isCtrlCombo)
+                DismissTooltipPortal();
+        }
 
         // Escape: dismiss portals if open, then swallow — never let the editor exit editing mode
         if (key == ConsoleKey.Escape && mods == 0)
         {
+            if (_locationPortal != null)
+            {
+                DismissLocationPortal();
+                e.Handled = true;
+                return;
+            }
             if (_completionPortal != null)
                 DismissCompletionPortal();
             e.Handled = true;
             return;
+        }
+
+        // Location list portal navigation (Find References / Go-to-Implementation)
+        if (_locationPortal != null)
+        {
+            if (mods == 0)
+            {
+                if (key == ConsoleKey.UpArrow)
+                {
+                    _locationPortal.SelectPrev();
+                    _mainWindow?.Invalidate(false);
+                    e.Handled = true;
+                    return;
+                }
+                if (key == ConsoleKey.DownArrow)
+                {
+                    _locationPortal.SelectNext();
+                    _mainWindow?.Invalidate(false);
+                    e.Handled = true;
+                    return;
+                }
+                if (key == ConsoleKey.Enter)
+                {
+                    var selected = _locationPortal.GetSelected();
+                    DismissLocationPortal();
+                    if (selected != null)
+                        NavigateToLocation(selected);
+                    e.Handled = true;
+                    return;
+                }
+            }
+            // Any typing key dismisses the location portal
+            char lch = e.KeyInfo.KeyChar;
+            if (lch != '\0' && !char.IsControl(lch))
+            {
+                DismissLocationPortal();
+                // fall through to let the editor handle the key
+            }
         }
 
         if (_completionPortal == null) return;
@@ -744,6 +837,11 @@ public class IdeApp : IDisposable
             OpenShell();
             e.Handled = true;
         }
+        else if (key == ConsoleKey.F8 && mods == ConsoleModifiers.Shift)
+        {
+            OpenSidePanelShell();
+            e.Handled = true;
+        }
         else if (key == ConsoleKey.F9 && mods == 0)
         {
             if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows())
@@ -781,14 +879,44 @@ public class IdeApp : IDisposable
             _ = ShowGoToDefinitionAsync();
             e.Handled = true;
         }
+        else if (key == ConsoleKey.F12 && mods == ConsoleModifiers.Control)
+        {
+            _ = ShowGoToImplementationAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.F12 && mods == ConsoleModifiers.Shift)
+        {
+            _ = ShowFindReferencesAsync();
+            e.Handled = true;
+        }
         else if (key == ConsoleKey.LeftArrow && mods == ConsoleModifiers.Alt)
         {
             NavigateBack();
             e.Handled = true;
         }
+        else if (key == ConsoleKey.F2 && mods == ConsoleModifiers.Control)
+        {
+            _ = ShowRenameAsync();
+            e.Handled = true;
+        }
         else if (key == ConsoleKey.F2 && mods == 0)
         {
             _ = ShowSignatureHelpAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.OemPeriod && mods == ConsoleModifiers.Control)
+        {
+            _ = ShowCodeActionsAsync();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.O && mods == ConsoleModifiers.Alt)
+        {
+            FocusSymbolsTab();
+            e.Handled = true;
+        }
+        else if (key == ConsoleKey.Oem1 && mods == ConsoleModifiers.Alt) // Alt+;
+        {
+            ToggleSidePanel();
             e.Handled = true;
         }
         else if (key == ConsoleKey.F && mods == (ConsoleModifiers.Alt | ConsoleModifiers.Shift))
@@ -1253,6 +1381,7 @@ public class IdeApp : IDisposable
         // View
         _commandRegistry.Register(new IdeCommand { Id = "view.toggle-explorer", Category = "View",  Label = "Toggle Explorer",   Keybinding = "Ctrl+B",     Execute = ToggleExplorer,                                                     Priority = 80 });
         _commandRegistry.Register(new IdeCommand { Id = "view.toggle-output",   Category = "View",  Label = "Toggle Output Panel",Keybinding = "Ctrl+J",    Execute = ToggleOutput,                                                       Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-side-panel",Category = "View", Label = "Toggle Side Panel", Keybinding = "Alt+;",      Execute = ToggleSidePanel,                                                    Priority = 70 });
 
         // Git
         _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = RefreshGitStatusAsync(),                                  Priority = 70 });
@@ -1260,16 +1389,22 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = GitCommandAsync("push"),                                   Priority = 60 });
 
         // LSP
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",  Keybinding = "F12",        Execute = () => _ = ShowGoToDefinitionAsync(),                                Priority = 90 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.nav-back",         Category = "LSP",   Label = "Navigate Back",     Keybinding = "Alt+\u2190", Execute = NavigateBack,                                                       Priority = 85 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.hover",            Category = "LSP",   Label = "Hover Tooltip",     Keybinding = "Ctrl+K",     Execute = () => _ = ShowHoverAsync(),                                         Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.signature",        Category = "LSP",   Label = "Signature Help",    Keybinding = "F2",         Execute = () => _ = ShowSignatureHelpAsync(),                                 Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",   Keybinding = "Alt+Shift+F",Execute = () => _ = FormatDocumentAsync(),                                    Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",  Keybinding = "Ctrl+Space", Execute = () => _ = ShowCompletionAsync(),                                    Priority = 65 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",    Keybinding = "F12",          Execute = () => _ = ShowGoToDefinitionAsync(),                              Priority = 90 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-impl",        Category = "LSP",   Label = "Go to Implementation",Keybinding = "Ctrl+F12",     Execute = () => _ = ShowGoToImplementationAsync(),                          Priority = 88 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.references",       Category = "LSP",   Label = "Find All References", Keybinding = "Shift+F12",    Execute = () => _ = ShowFindReferencesAsync(),                              Priority = 87 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.nav-back",         Category = "LSP",   Label = "Navigate Back",       Keybinding = "Alt+\u2190",   Execute = NavigateBack,                                                    Priority = 85 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.rename",           Category = "LSP",   Label = "Rename Symbol",       Keybinding = "Ctrl+F2",      Execute = () => _ = ShowRenameAsync(),                                      Priority = 83 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.code-action",      Category = "LSP",   Label = "Code Actions",        Keybinding = "Ctrl+.",        Execute = () => _ = ShowCodeActionsAsync(),                                 Priority = 82 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.document-symbols", Category = "LSP",   Label = "Focus Symbols",       Keybinding = "Alt+O", Execute = FocusSymbolsTab,                                                  Priority = 81 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.hover",            Category = "LSP",   Label = "Hover Tooltip",       Keybinding = "Ctrl+K",       Execute = () => _ = ShowHoverAsync(),                                       Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.signature",        Category = "LSP",   Label = "Signature Help",      Keybinding = "F2",           Execute = () => _ = ShowSignatureHelpAsync(),                                Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",     Keybinding = "Alt+Shift+F",  Execute = () => _ = FormatDocumentAsync(),                                   Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",    Keybinding = "Ctrl+Space",   Execute = () => _ = ShowCompletionAsync(),                                   Priority = 65 });
 
         // Tools
         _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Tools", Label = "Open Shell",        Keybinding = "F8",         Execute = OpenShell,                                                          Priority = 80 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Tools", Label = "Open Shell Tab",                               Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); },      Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Tools", Label = "Side Panel Shell",  Keybinding = "Shift+F8",   Execute = OpenSidePanelShell,                                                 Priority = 73 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "Tools", Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }, Priority = 70 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",          Category = "Tools", Label = "Add NuGet Package\u2026",                      Execute = ShowNuGetDialog,                                                    Priority = 65 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = OpenConfigFile,                                                     Priority = 60 });
@@ -1373,9 +1508,104 @@ public class IdeApp : IDisposable
         finally { _resizeCoupling = false; }
     }
 
+    private void ToggleSidePanel()
+    {
+        _sidePanelVisible = !_sidePanelVisible;
+        if (_sidePanelCol != null)
+            _sidePanelCol.Visible = _sidePanelVisible;
+        if (_sidePanelSplitter != null)
+            _sidePanelSplitter.Visible = _sidePanelVisible;
+        _mainWindow?.ForceRebuildLayout();
+        _mainWindow?.Invalidate(true);
+        if (_sidePanelVisible)
+        {
+            _sidePanel?.SwitchToSymbolsTab();
+            RefreshSymbolsForFile(_editorManager?.CurrentFilePath);
+        }
+    }
+
+    private void FocusSymbolsTab()
+    {
+        if (!_sidePanelVisible)
+            ToggleSidePanel();
+        _sidePanel?.SwitchToSymbolsTab();
+    }
+
+    private void OpenSidePanelShell()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+        if (!_sidePanelVisible)
+            ToggleSidePanel();
+        var terminal = _sidePanel?.LaunchShell(_projectService.RootPath);
+        if (terminal != null)
+        {
+            InvalidateSidePanel();
+            _mainWindow?.FocusControl(terminal);
+        }
+    }
+
+    private void InvalidateSidePanel()
+    {
+        _mainContent?.Invalidate();
+        _mainWindow?.ForceRebuildLayout();
+        _mainWindow?.Invalidate(true);
+    }
+
+    private void RefreshSymbolsForFile(string? filePath)
+    {
+        if (filePath == null || _lsp == null || _sidePanel == null || !_sidePanelVisible)
+            return;
+        if (!filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            _sidePanel.ClearSymbols();
+            InvalidateSidePanel();
+            return;
+        }
+        _ = RefreshSymbolsAsync(filePath);
+    }
+
+    private void ScheduleSymbolRefresh(string filePath)
+    {
+        if (!_sidePanelVisible || _sidePanel == null) return;
+        _symbolRefreshDebounce?.Dispose();
+        _symbolRefreshDebounce = new Timer(_ =>
+        {
+            _pendingUiActions.Enqueue(() => RefreshSymbolsForFile(filePath));
+        }, null, 500, Timeout.Infinite);
+    }
+
+    private async Task RefreshSymbolsAsync(string filePath)
+    {
+        if (_lsp == null || _sidePanel == null) return;
+        try
+        {
+            var symbols = await _lsp.DocumentSymbolAsync(filePath);
+            _sidePanel.UpdateSymbols(filePath, symbols);
+        }
+        catch
+        {
+            _sidePanel.ClearSymbols();
+        }
+        InvalidateSidePanel();
+    }
+
     // ──────────────────────────────────────────────────────────────
     // LSP: Hover & Completion
     // ──────────────────────────────────────────────────────────────
+
+    /// <summary>Common guard for LSP requests: checks LSP is running and editor is ready.</summary>
+    private async Task<T?> LspRequestAsync<T>(Func<Task<T?>> request, string featureName) where T : class
+    {
+        if (_lsp == null)
+        {
+            _ws.NotificationStateService.ShowNotification("LSP", "Language server not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+            return null;
+        }
+        var result = await request();
+        if (result == null)
+            _ws.NotificationStateService.ShowNotification(featureName, $"No {featureName.ToLower()} available.", SharpConsoleUI.Core.NotificationSeverity.Info);
+        return result;
+    }
 
     private async Task ShowHoverAsync()
     {
@@ -1402,15 +1632,7 @@ public class IdeApp : IDisposable
             .ToList();
         if (lines.Count == 0) return;
 
-        DismissTooltipPortal();
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspTooltipPortalContent(
-            lines, cursor.X, cursor.Y,
-            _mainWindow!.Width, _mainWindow.Height,
-            preferAbove: true);
-
-        _tooltipPortal     = portal;
-        _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
+        ShowTooltipPortal(lines);
     }
 
     private async Task ShowCompletionAsync()
@@ -1421,7 +1643,11 @@ public class IdeApp : IDisposable
         var path   = _editorManager.CurrentFilePath;
         if (path == null) return;
 
-        var items = await _lsp.CompletionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        // Capture position BEFORE the await — the user may type more while the LSP responds
+        int requestLine = editor.CurrentLine;
+        int requestCol  = editor.CurrentColumn;
+
+        var items = await _lsp.CompletionAsync(path, requestLine - 1, requestCol - 1);
         if (items.Count == 0)
         {
             _ws.NotificationStateService.ShowNotification(
@@ -1429,14 +1655,17 @@ public class IdeApp : IDisposable
             return;
         }
 
+        // If the user navigated to a different line during the await, abort
+        if (editor.CurrentLine != requestLine) return;
+
         DismissCompletionPortal();
 
         // If the cursor is mid-word (e.g. user typed "GetFo" then pressed Ctrl+Space),
         // walk back to the word start and use the partial word as the initial filter.
         // This also positions _completionTriggerColumn so subsequent keystrokes keep filtering.
         var lineContent = editor.Content.Split('\n');
-        int lineIdx = editor.CurrentLine - 1;
-        int cursorCol0 = editor.CurrentColumn - 1;  // 0-indexed position in the line
+        int lineIdx = requestLine - 1;
+        int cursorCol0 = editor.CurrentColumn - 1;  // 0-indexed position in the line (may have advanced)
         int wordStart0 = cursorCol0;
         if (lineIdx >= 0 && lineIdx < lineContent.Length)
         {
@@ -1463,12 +1692,10 @@ public class IdeApp : IDisposable
         if (initialFilter.Length > 0)
             portal.SetFilter(initialFilter);
 
+        // Set Container BEFORE CreatePortal so the first Invalidate() during creation works.
+        portal.Container = _mainWindow;
         _completionPortal     = portal;
         _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
-
-        // Give the portal a Container so its Invalidate() calls reach the window.
-        // Portal content is not added via AddControl, so Container is never set automatically.
-        portal.Container = _mainWindow;
 
         // Mouse click on an item: accept and insert, same as Enter/Tab.
         portal.ItemAccepted += (_, item) =>
@@ -1501,17 +1728,18 @@ public class IdeApp : IDisposable
             return;
         }
 
-        _navHistory.Push((path, editor.CurrentLine, editor.CurrentColumn));
-
-        var loc = locations[0];
-        _editorManager.OpenFile(LspClient.UriToPath(loc.Uri));
-
-        var targetEditor = _editorManager.CurrentEditor;
-        if (targetEditor != null)
+        if (locations.Count == 1)
         {
-            targetEditor.GoToLine(loc.Range.Start.Line + 1);
-            targetEditor.SetLogicalCursorPosition(
-                new System.Drawing.Point(loc.Range.Start.Character, loc.Range.Start.Line));
+            var loc = locations[0];
+            NavigateToLocation(new LspLocationEntry(
+                LspClient.UriToPath(loc.Uri),
+                loc.Range.Start.Line + 1,
+                loc.Range.Start.Character + 1,
+                ""));
+        }
+        else
+        {
+            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
         }
     }
 
@@ -1567,13 +1795,18 @@ public class IdeApp : IDisposable
         if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
             lines.Add(Markup.Escape(activeSig.Documentation!));
 
-        DismissTooltipPortal();
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspTooltipPortalContent(
-            lines, cursor.X, cursor.Y,
-            _mainWindow.Width, _mainWindow.Height,
-            preferAbove: true);
+        ShowTooltipPortal(lines);
+    }
 
+    private void ShowTooltipPortal(List<string> lines, bool preferAbove = true)
+    {
+        DismissTooltipPortal();
+        var editor = _editorManager?.CurrentEditor;
+        if (editor == null || _mainWindow == null) return;
+        var cursor = _editorManager!.GetCursorBounds();
+        var portal = new LspTooltipPortalContent(lines, cursor.X, cursor.Y,
+            _mainWindow.Width, _mainWindow.Height, preferAbove);
+        portal.Container   = _mainWindow;
         _tooltipPortal     = portal;
         _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
     }
@@ -1603,6 +1836,37 @@ public class IdeApp : IDisposable
             _tooltipPortalNode = null;
             _tooltipPortal = null;
         }
+    }
+
+    private void DismissLocationPortal()
+    {
+        if (_locationPortalNode != null && _mainWindow != null)
+        {
+            var editor = _editorManager?.CurrentEditor;
+            _mainWindow.RemovePortal(editor ?? (IWindowControl)_mainWindow, _locationPortalNode);
+            _locationPortalNode = null;
+            _locationPortal = null;
+        }
+    }
+
+    private void ShowLocationPortal(List<LspLocationEntry> entries, Action<LspLocationEntry> onAccepted)
+    {
+        DismissLocationPortal();
+        var editor = _editorManager?.CurrentEditor;
+        if (editor == null || _mainWindow == null) return;
+        var cursor = _editorManager!.GetCursorBounds();
+        var portal = new LspLocationListPortalContent(
+            entries, cursor.X, cursor.Y,
+            _mainWindow.Width, _mainWindow.Height);
+        portal.Container = _mainWindow;
+        _locationPortal = portal;
+        _locationPortalNode = _mainWindow.CreatePortal(editor, portal);
+
+        portal.ItemAccepted += (_, entry) =>
+        {
+            DismissLocationPortal();
+            onAccepted(entry);
+        };
     }
 
     private static bool IsIdentifierChar(char c) =>
@@ -1654,7 +1918,7 @@ public class IdeApp : IDisposable
 
     private void TryScheduleDotCompletion(string filePath, string content)
     {
-        // Only trigger auto-complete on '.' in C# files when the LSP is running
+        // Only trigger auto-complete on '.' and signature help on '(' / ',' in C# files
         if (_lsp == null || !filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
 
         var editor = _editorManager?.CurrentEditor;
@@ -1668,7 +1932,9 @@ public class IdeApp : IDisposable
         string currentLine = lines[lineIdx];
         if (col <= 0 || col > currentLine.Length) return;
 
-        if (currentLine[col - 1] == '.')
+        char lastChar = currentLine[col - 1];
+
+        if (lastChar == '.')
         {
             // Flush the pending DidChange immediately so the LSP has the dot before
             // we request completions.  Then wait ~300 ms for the server to process it.
@@ -1678,6 +1944,16 @@ public class IdeApp : IDisposable
             _dotTriggerDebounce = new Timer(
                 _ => _ = ShowCompletionAsync(),
                 null, 350, Timeout.Infinite);
+        }
+        else if (lastChar is '(' or ',')
+        {
+            // Auto-trigger signature help when entering function arguments
+            _ = _lsp.FlushPendingChangeAsync();
+
+            _dotTriggerDebounce?.Dispose();
+            _dotTriggerDebounce = new Timer(
+                _ => _ = ShowSignatureHelpAsync(),
+                null, 250, Timeout.Infinite);
         }
     }
 
@@ -1729,6 +2005,392 @@ public class IdeApp : IDisposable
     }
 
     // ──────────────────────────────────────────────────────────────
+    // LSP: Find References, Go-to-Impl, Rename, Code Actions, Symbols
+    // ──────────────────────────────────────────────────────────────
+
+    private void NavigateToLocation(LspLocationEntry entry)
+    {
+        var editor = _editorManager?.CurrentEditor;
+        var currentPath = _editorManager?.CurrentFilePath;
+        if (currentPath != null && editor != null)
+            _navHistory.Push((currentPath, editor.CurrentLine, editor.CurrentColumn));
+
+        _editorManager?.OpenFile(entry.FilePath);
+        var targetEditor = _editorManager?.CurrentEditor;
+        if (targetEditor != null)
+        {
+            targetEditor.GoToLine(entry.Line);
+            targetEditor.SetLogicalCursorPosition(
+                new System.Drawing.Point(entry.Column - 1, entry.Line - 1));
+        }
+    }
+
+    private List<LspLocationEntry> LocationsToEntries(List<LspLocation> locations)
+    {
+        return locations.Select(loc =>
+        {
+            var filePath = LspClient.UriToPath(loc.Uri);
+            var contextLine = TryReadLineFromFile(filePath, loc.Range.Start.Line);
+            return new LspLocationEntry(
+                filePath,
+                loc.Range.Start.Line + 1,
+                loc.Range.Start.Character + 1,
+                contextLine ?? "(location)");
+        }).ToList();
+    }
+
+    private async Task ShowFindReferencesAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null) return;
+        var editor = _editorManager.CurrentEditor;
+        var path = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var locations = await _lsp.ReferencesAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (locations.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "References", "No references found at cursor.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+    }
+
+    private async Task ShowGoToImplementationAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null) return;
+        var editor = _editorManager.CurrentEditor;
+        var path = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var locations = await _lsp.ImplementationAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
+        if (locations.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Implementation", "No implementation found at cursor.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        if (locations.Count == 1)
+        {
+            var loc = locations[0];
+            NavigateToLocation(new LspLocationEntry(
+                LspClient.UriToPath(loc.Uri),
+                loc.Range.Start.Line + 1,
+                loc.Range.Start.Character + 1,
+                ""));
+        }
+        else
+        {
+            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+        }
+    }
+
+    private async Task ShowRenameAsync()
+    {
+        try
+        {
+            if (_lsp == null || _editorManager?.CurrentEditor == null)
+            {
+                _ws.NotificationStateService.ShowNotification(
+                    "Rename", "LSP not running.", SharpConsoleUI.Core.NotificationSeverity.Warning);
+                return;
+            }
+            var editor = _editorManager.CurrentEditor;
+            var path = _editorManager.CurrentFilePath;
+            if (path == null) return;
+
+            // Extract the word under cursor (fast, no LSP round-trip)
+            string currentName = ExtractWordAtCursor(editor);
+            if (string.IsNullOrEmpty(currentName))
+            {
+                _ws.NotificationStateService.ShowNotification(
+                    "Rename", "No symbol at cursor.", SharpConsoleUI.Core.NotificationSeverity.Info);
+                return;
+            }
+
+            // Show dialog immediately with the locally extracted name
+            var newName = await RenameDialog.ShowAsync(_ws, currentName);
+            if (newName == null) return;
+
+            var workspaceEdit = await _lsp.RenameAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1, newName);
+            if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
+            {
+                _ws.NotificationStateService.ShowNotification(
+                    "Rename", "LSP returned no edits.",
+                    SharpConsoleUI.Core.NotificationSeverity.Info);
+                return;
+            }
+
+            ApplyWorkspaceEdit(workspaceEdit);
+            _ws.NotificationStateService.ShowNotification(
+                "Rename", $"Renamed '{currentName}' to '{newName}' in {workspaceEdit.Changes.Count} file(s).",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+        }
+        catch (Exception ex)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Rename Error", ex.Message, SharpConsoleUI.Core.NotificationSeverity.Danger);
+        }
+    }
+
+    private static string ExtractWordAtCursor(MultilineEditControl editor)
+    {
+        var lines = editor.Content.Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.Length) return "";
+        var line = lines[lineIdx];
+        int col = Math.Min(editor.CurrentColumn - 1, line.Length);
+        int start = col, end = col;
+        while (start > 0 && IsIdentifierChar(line[start - 1])) start--;
+        while (end < line.Length && IsIdentifierChar(line[end])) end++;
+        return start < end ? line[start..end] : "";
+    }
+
+    private async Task ShowCodeActionsAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null || _mainWindow == null) return;
+        var editor = _editorManager.CurrentEditor;
+        var path = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        int line = editor.CurrentLine - 1;
+        int col = editor.CurrentColumn - 1;
+
+        var actions = await _lsp.CodeActionAsync(path, line, col, line, col);
+        if (actions.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Code Actions", "No code actions available at cursor.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        // Show as a completion-style portal list
+        var items = actions.Select(a => new CompletionItem(a.Title, a.Kind, null, 1)).ToList();
+
+        DismissCompletionPortal();
+        var cursor = _editorManager.GetCursorBounds();
+        var portal = new LspCompletionPortalContent(
+            items, cursor.X, cursor.Y,
+            _mainWindow.Width, _mainWindow.Height);
+
+        portal.Container = _mainWindow;
+        _completionPortal = portal;
+        _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
+        _completionTriggerColumn = editor.CurrentColumn;
+        _completionTriggerLine = editor.CurrentLine;
+
+        portal.ItemAccepted += (_, item) =>
+        {
+            DismissCompletionPortal();
+            // Find the matching action by title
+            var action = actions.FirstOrDefault(a => a.Title == item.Label);
+            if (action?.Edit != null)
+            {
+                ApplyWorkspaceEdit(action.Edit);
+                _ws.NotificationStateService.ShowNotification(
+                    "Code Action", $"Applied: {action.Title}",
+                    SharpConsoleUI.Core.NotificationSeverity.Info);
+            }
+        };
+    }
+
+    private async Task ShowDocumentSymbolsAsync()
+    {
+        if (_lsp == null || _editorManager?.CurrentEditor == null) return;
+        var path = _editorManager.CurrentFilePath;
+        if (path == null) return;
+
+        var symbols = await _lsp.DocumentSymbolAsync(path);
+        if (symbols.Count == 0)
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Symbols", "No symbols found in document.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+            return;
+        }
+
+        // Flatten symbol tree into a list
+        var flat = new List<(string Display, DocumentSymbol Symbol, int Depth)>();
+        void Flatten(List<DocumentSymbol> syms, int depth)
+        {
+            foreach (var s in syms)
+            {
+                flat.Add((s.Name, s, depth));
+                if (s.Children != null)
+                    Flatten(s.Children, depth + 1);
+            }
+        }
+        Flatten(symbols, 0);
+
+        // Build command palette style using the same registry/dialog patterns
+        var tempRegistry = new CommandRegistry();
+        foreach (var (display, sym, depth) in flat)
+        {
+            var indent = new string(' ', depth * 2);
+            var kindName = GetSymbolKindName(sym.Kind);
+            var s = sym; // capture
+            tempRegistry.Register(new IdeCommand
+            {
+                Id = $"sym.{sym.SelectionRange.Start.Line}.{sym.Name}",
+                Category = kindName,
+                Label = $"{indent}{sym.Name}",
+                Keybinding = $"Ln {sym.SelectionRange.Start.Line + 1}",
+                Execute = () => NavigateToLocation(new LspLocationEntry(
+                    path!, s.SelectionRange.Start.Line + 1,
+                    s.SelectionRange.Start.Character + 1, s.Name)),
+                Priority = 100 - sym.SelectionRange.Start.Line  // sort by position
+            });
+        }
+
+        CommandPaletteDialog.Show(_ws, tempRegistry, cmd =>
+        {
+            if (cmd == null) return;
+            cmd.Execute();
+            var editor = _editorManager?.CurrentEditor;
+            if (editor != null) _mainWindow?.FocusControl(editor);
+        });
+    }
+
+    // ── Workspace edit application ───────────────────────────────────────────────
+
+    private void ApplyWorkspaceEdit(WorkspaceEdit edit)
+    {
+        if (edit.Changes == null) return;
+
+        foreach (var (uri, textEdits) in edit.Changes)
+        {
+            var filePath = LspClient.UriToPath(uri);
+
+            // Check if file is open in the editor
+            var openEditor = GetEditorForFile(filePath);
+            if (openEditor != null)
+            {
+                ApplyTextEdits(openEditor, textEdits);
+            }
+            else
+            {
+                // Apply to file on disk
+                try
+                {
+                    var content = FileService.ReadFile(filePath);
+                    var lines = content.Split('\n').ToList();
+                    ApplyTextEditsToLines(lines, textEdits);
+                    FileService.WriteFile(filePath, string.Join('\n', lines));
+                }
+                catch { }
+            }
+        }
+    }
+
+    private MultilineEditControl? GetEditorForFile(string filePath)
+    {
+        if (_editorManager == null) return null;
+        // Try to find an open editor tab for this file path
+        foreach (var (fp, content) in _editorManager.GetOpenDocuments())
+        {
+            if (string.Equals(fp, filePath, StringComparison.OrdinalIgnoreCase))
+            {
+                _editorManager.OpenFile(filePath); // Switch to it
+                return _editorManager.CurrentEditor;
+            }
+        }
+        return null;
+    }
+
+    private static void ApplyTextEdits(MultilineEditControl editor, List<TextEdit> edits)
+    {
+        var lines = editor.Content.Split('\n').ToList();
+        ApplyTextEditsToLines(lines, edits);
+        editor.Content = string.Join('\n', lines);
+    }
+
+    private static void ApplyTextEditsToLines(List<string> lines, List<TextEdit> edits)
+    {
+        // Apply in reverse order to preserve offsets
+        var sorted = edits
+            .OrderByDescending(e => e.Range.Start.Line)
+            .ThenByDescending(e => e.Range.Start.Character)
+            .ToList();
+
+        foreach (var edit in sorted)
+        {
+            int startLine = Math.Min(edit.Range.Start.Line, lines.Count - 1);
+            int startChar = edit.Range.Start.Character;
+            int endLine = Math.Min(edit.Range.End.Line, lines.Count - 1);
+            int endChar = edit.Range.End.Character;
+
+            if (startLine < 0) startLine = 0;
+            if (endLine < 0) endLine = 0;
+
+            if (startLine == endLine)
+            {
+                var line = lines[startLine];
+                startChar = Math.Min(startChar, line.Length);
+                endChar = Math.Min(endChar, line.Length);
+                lines[startLine] = line[..startChar] + edit.NewText + line[endChar..];
+            }
+            else
+            {
+                var startLineStr = lines[startLine];
+                var endLineStr = lines[endLine];
+                startChar = Math.Min(startChar, startLineStr.Length);
+                endChar = Math.Min(endChar, endLineStr.Length);
+                var combined = startLineStr[..startChar] + edit.NewText + endLineStr[endChar..];
+                lines.RemoveRange(startLine, endLine - startLine + 1);
+                lines.InsertRange(startLine, combined.Split('\n'));
+            }
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────────
+
+    private static string? TryReadLineFromFile(string filePath, int lineIndex)
+    {
+        try
+        {
+            var content = FileService.ReadFile(filePath);
+            var lines = content.Split('\n');
+            if (lineIndex >= 0 && lineIndex < lines.Length)
+                return lines[lineIndex].Trim();
+        }
+        catch { }
+        return null;
+    }
+
+    private static string GetSymbolKindName(int kind) => kind switch
+    {
+        1 => "File",
+        2 => "Module",
+        3 => "Namespace",
+        4 => "Package",
+        5 => "Class",
+        6 => "Method",
+        7 => "Property",
+        8 => "Field",
+        9 => "Constructor",
+        10 => "Enum",
+        11 => "Interface",
+        12 => "Function",
+        13 => "Variable",
+        14 => "Constant",
+        15 => "String",
+        16 => "Number",
+        17 => "Boolean",
+        18 => "Array",
+        19 => "Object",
+        22 => "Struct",
+        23 => "Event",
+        24 => "Operator",
+        25 => "TypeParam",
+        _ => "Symbol"
+    };
+
+    // ──────────────────────────────────────────────────────────────
     // Status bar updates
     // ──────────────────────────────────────────────────────────────
 
@@ -1753,8 +2415,8 @@ public class IdeApp : IDisposable
             lspLines = new List<string>
             {
                 "[dim]  LSP      ○ not found[/]",
-                "[dim]           Enables: IntelliSense · Go to Definition[/]",
-                "[dim]                    Signature Help · Hover · Formatting[/]",
+                "[dim]           Enables: IntelliSense · Go to Definition · References[/]",
+                "[dim]                    Rename · Code Actions · Signature Help[/]",
                 "[yellow]           Install: [/][italic]dotnet tool install -g csharp-ls[/]",
                 "[dim]           Alt:     [/][dim italic]OmniSharp  (omnisharp.net)[/]",
                 $"[dim]           Config:  [/][dim italic]{Markup.Escape(ConfigService.GetConfigPath())}[/]",
@@ -1780,7 +2442,8 @@ public class IdeApp : IDisposable
             "[dim]  ────────────────────────────[/]",
             "[dim]  F5  Run       F6  Build[/]",
             "[dim]  F7  Test      F8  Shell / Shell Tab[/]",
-            "[dim]  F12  Definition  Alt+←  Back[/]",
+            "[dim]  F12  Definition  Shift+F12  References[/]",
+            "[dim]  Ctrl+F2  Rename  Ctrl+.  Actions[/]",
             "[dim]  Ctrl+S  Save  Ctrl+W  Close[/]",
             "[dim]  Ctrl+B  Explorer  Ctrl+J  Output[/]",
         });

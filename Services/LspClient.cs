@@ -83,6 +83,11 @@ public class LspClient : IAsyncDisposable
                     completion = new { completionItem = new { snippetSupport = false } },
                     hover = new { contentFormat = new[] { "plaintext" } },
                     definition = new { },
+                    implementation = new { },
+                    references = new { },
+                    rename = new { prepareSupport = true },
+                    codeAction = new { },
+                    documentSymbol = new { },
                     signatureHelp = new { triggerCharacters = new[] { "(", "," } },
                     formatting = new { }
                 },
@@ -363,6 +368,227 @@ public class LspClient : IAsyncDisposable
         }
         catch { }
         return result;
+    }
+
+    public async Task<List<LspLocation>> ReferencesAsync(string filePath, int line, int character, bool includeDeclaration = true)
+    {
+        var result = new List<LspLocation>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/references", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character },
+                context = new { includeDeclaration }
+            }, timeout: 15000);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var loc in response.Value.EnumerateArray())
+                    ParseLocation(loc, result);
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    public async Task<List<LspLocation>> ImplementationAsync(string filePath, int line, int character)
+    {
+        var result = new List<LspLocation>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/implementation", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character }
+            });
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var loc in response.Value.EnumerateArray())
+                    ParseLocation(loc, result);
+            }
+            else if (response.Value.ValueKind == JsonValueKind.Object)
+            {
+                ParseLocation(response.Value, result);
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    public async Task<PrepareRenameResult?> PrepareRenameAsync(string filePath, int line, int character)
+    {
+        try
+        {
+            var response = await SendRequestAsync("textDocument/prepareRename", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character }
+            });
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return null;
+
+            // Response may be { range, placeholder } or just a Range
+            if (response.Value.TryGetProperty("placeholder", out var ph))
+            {
+                var range = ParseRange(response.Value);
+                return new PrepareRenameResult(range, ph.GetString() ?? "");
+            }
+            else if (response.Value.TryGetProperty("start", out _))
+            {
+                // It's a plain Range — extract the text from the range
+                var range = new LspRange(
+                    ParsePosition(response.Value, "start"),
+                    ParsePosition(response.Value, "end"));
+                return new PrepareRenameResult(range, "");
+            }
+            else
+            {
+                var range = ParseRange(response.Value);
+                return new PrepareRenameResult(range, "");
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    public async Task<WorkspaceEdit?> RenameAsync(string filePath, int line, int character, string newName)
+    {
+        try
+        {
+            var response = await SendRequestAsync("textDocument/rename", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                position = new { line, character },
+                newName
+            }, timeout: 10000);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return null;
+
+            return ParseWorkspaceEdit(response.Value);
+        }
+        catch { }
+        return null;
+    }
+
+    public async Task<List<CodeAction>> CodeActionAsync(string filePath, int startLine, int startChar, int endLine, int endChar, List<LspDiagnostic>? diagnostics = null)
+    {
+        var result = new List<CodeAction>();
+        try
+        {
+            var diagParams = diagnostics?.Select(d => new
+            {
+                range = new
+                {
+                    start = new { line = d.Range.Start.Line, character = d.Range.Start.Character },
+                    end = new { line = d.Range.End.Line, character = d.Range.End.Character }
+                },
+                message = d.Message,
+                severity = d.Severity,
+                code = d.Code
+            }).ToArray() ?? Array.Empty<object>();
+
+            var response = await SendRequestAsync("textDocument/codeAction", new
+            {
+                textDocument = new { uri = PathToUri(filePath) },
+                range = new
+                {
+                    start = new { line = startLine, character = startChar },
+                    end = new { line = endLine, character = endChar }
+                },
+                context = new { diagnostics = diagParams }
+            }, timeout: 10000);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var action in response.Value.EnumerateArray())
+                {
+                    var title = action.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+                    var kind = action.TryGetProperty("kind", out var k) ? k.GetString() : null;
+                    WorkspaceEdit? edit = null;
+                    if (action.TryGetProperty("edit", out var editEl))
+                        edit = ParseWorkspaceEdit(editEl);
+                    result.Add(new CodeAction(title, kind, edit, null));
+                }
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    public async Task<List<DocumentSymbol>> DocumentSymbolAsync(string filePath)
+    {
+        var result = new List<DocumentSymbol>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/documentSymbol", new
+            {
+                textDocument = new { uri = PathToUri(filePath) }
+            }, timeout: 10000);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (response.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var sym in response.Value.EnumerateArray())
+                    result.Add(ParseDocumentSymbol(sym));
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    private static DocumentSymbol ParseDocumentSymbol(JsonElement el)
+    {
+        var name = el.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+        var kind = el.TryGetProperty("kind", out var k) ? k.GetInt32() : 0;
+        var range = ParseRange(el);
+        var selectionRange = el.TryGetProperty("selectionRange", out var sr)
+            ? new LspRange(ParsePosition(sr, "start"), ParsePosition(sr, "end"))
+            : range;
+
+        List<DocumentSymbol>? children = null;
+        if (el.TryGetProperty("children", out var ch) && ch.ValueKind == JsonValueKind.Array)
+        {
+            children = new List<DocumentSymbol>();
+            foreach (var child in ch.EnumerateArray())
+                children.Add(ParseDocumentSymbol(child));
+        }
+
+        return new DocumentSymbol(name, kind, range, selectionRange, children);
+    }
+
+    private static WorkspaceEdit? ParseWorkspaceEdit(JsonElement el)
+    {
+        if (el.ValueKind != JsonValueKind.Object) return null;
+        var changes = new Dictionary<string, List<TextEdit>>();
+
+        if (el.TryGetProperty("changes", out var changesEl) && changesEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in changesEl.EnumerateObject())
+            {
+                var edits = new List<TextEdit>();
+                if (prop.Value.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var edit in prop.Value.EnumerateArray())
+                    {
+                        var range = ParseRange(edit);
+                        var newText = edit.TryGetProperty("newText", out var nt) ? nt.GetString() ?? "" : "";
+                        edits.Add(new TextEdit(range, newText));
+                    }
+                }
+                changes[prop.Name] = edits;
+            }
+        }
+
+        return new WorkspaceEdit(changes.Count > 0 ? changes : null);
     }
 
     public async Task ShutdownAsync()
