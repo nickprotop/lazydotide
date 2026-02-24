@@ -18,8 +18,8 @@ public record AboutInfo(
 
 public static class AboutDialog
 {
-    private const int DialogWidth  = 80;
-    private const int DialogHeight = 28;
+    private const int PreferredWidth  = 90;
+    private const int PreferredHeight = 34;
 
     public static Action Show(
         ConsoleWindowSystem windowSystem,
@@ -27,10 +27,13 @@ public static class AboutDialog
         Action onClosed)
     {
         var info = infoProvider();
+        var desktop = windowSystem.DesktopDimensions;
+        int width  = Math.Min(PreferredWidth, desktop.Width - 4);
+        int height = Math.Min(PreferredHeight, desktop.Height - 2);
 
         var modal = new WindowBuilder(windowSystem)
             .WithTitle("About lazydotide")
-            .WithSize(DialogWidth, DialogHeight)
+            .WithSize(width, height)
             .Centered()
             .AsModal()
             .WithBorderStyle(BorderStyle.Single)
@@ -38,7 +41,7 @@ public static class AboutDialog
             .Movable(true)
             .Minimizable(false)
             .Maximizable(true)
-            .WithColors(Color.Grey93, Color.Grey15)
+            .WithColors(Color.Grey93, Color.Grey11)
             .Build();
 
         // FigleControl header
@@ -64,7 +67,7 @@ public static class AboutDialog
             .WithMargin(0, 0, 0, 1)
             .Build());
 
-        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).Build());
+        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).WithMargin(1,0,1,0).Build());
 
         // Build environment tab with live-updatable markup
         var envMarkup = BuildEnvironmentTab(info);
@@ -76,8 +79,9 @@ public static class AboutDialog
             .AddTab("  Tools  ",       ScrollWrap(BuildToolsTab(info)))
             .WithHeaderStyle(TabHeaderStyle.Separator)
             .WithAlignment(HorizontalAlignment.Stretch)
+            .WithMargin(1,0,1,0)
             .Fill()
-            .WithBackgroundColor(Color.Grey15)
+            .WithBackgroundColor(Color.Grey11)
             .WithForegroundColor(Color.Grey93)
             .Build();
 
@@ -91,7 +95,7 @@ public static class AboutDialog
         modal.AddControl(tabControl);
 
         // Footer rule + bar (sticky bottom)
-        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).StickyBottom().Build());
+        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).WithMargin(1,0,1,0).StickyBottom().Build());
 
         var footerGrid = new HorizontalGridControl
         {
@@ -135,7 +139,7 @@ public static class AboutDialog
             .AddControl(content)
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
-            .WithBackgroundColor(Color.Grey15)
+            .WithBackgroundColor(Color.Grey11)
             .WithForegroundColor(Color.Grey93)
             .Build();
 
@@ -208,6 +212,18 @@ public static class AboutDialog
             $"  [grey50]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
             $"  [grey50]Architecture [/]{Markup.Escape(arch)}",
             $"  [grey50]Clipboard    [/]{Markup.Escape(clipBackend)}",
+        });
+        if (ClipboardHelper.Backend == ClipboardBackend.InternalFallback)
+        {
+            string installHint = OperatingSystem.IsLinux()
+                ? Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") != null
+                    ? "wl-clipboard"
+                    : "xclip  or  xsel"
+                : "a system clipboard tool";
+            result.Add($"[yellow]               Install:  [/][italic]{installHint}[/]");
+        }
+        result.AddRange(new[]
+        {
             $"  [grey50]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
             $"  [grey50]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
         });
