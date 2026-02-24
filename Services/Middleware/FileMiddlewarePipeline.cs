@@ -51,6 +51,10 @@ public class FileMiddlewarePipeline
         YamlFileMiddleware       => "YAML",
         DockerfileMiddleware     => "Dockerfile",
         SlnFileMiddleware        => "Solution",
+        CssFileMiddleware        => "CSS",
+        HtmlFileMiddleware       => "HTML",
+        JsFileMiddleware         => "JavaScript",
+        RazorFileMiddleware      => "Razor",
         DefaultFileMiddleware    => "Plain Text",
         _                        => middleware.GetType().Name
     };

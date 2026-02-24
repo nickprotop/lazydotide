@@ -151,6 +151,10 @@ public class IdeApp : IDisposable
         _pipeline.Register(new YamlFileMiddleware());
         _pipeline.Register(new DockerfileMiddleware());
         _pipeline.Register(new SlnFileMiddleware());
+        _pipeline.Register(new CssFileMiddleware());
+        _pipeline.Register(new HtmlFileMiddleware());
+        _pipeline.Register(new JsFileMiddleware());
+        _pipeline.Register(new RazorFileMiddleware());
         _pipeline.Register(new DefaultFileMiddleware());
 
         _editorManager = new EditorManager(_ws, _pipeline);
