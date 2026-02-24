@@ -144,6 +144,8 @@ public class IdeApp : IDisposable
         var pipeline = new FileMiddlewarePipeline();
         pipeline.Register(new CSharpFileMiddleware());
         pipeline.Register(new MarkdownFileMiddleware());
+        pipeline.Register(new JsonFileMiddleware());
+        pipeline.Register(new XmlFileMiddleware());
         pipeline.Register(new DefaultFileMiddleware());
 
         _editorManager = new EditorManager(_ws, pipeline);
