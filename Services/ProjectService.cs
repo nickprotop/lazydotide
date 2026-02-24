@@ -1,6 +1,3 @@
-using System.IO;
-using System.Collections.Generic;
-
 namespace DotNetIDE;
 
 public record FileNode(string Name, string FullPath, bool IsDirectory, List<FileNode> Children);
