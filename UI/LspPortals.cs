@@ -12,72 +12,6 @@ using Rectangle = System.Drawing.Rectangle;
 namespace DotNetIDE;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Shared helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-internal static class LspPortalLayout
-{
-    // Clamp a portal rectangle so it stays fully inside the window's inner area.
-    // windowWidth/Height include the 1-cell border on each side.
-    public static Rectangle Clamp(int x, int y, int w, int h, int windowWidth, int windowHeight)
-    {
-        int maxX = windowWidth  - 2;   // rightmost valid column (inside right border)
-        int maxY = windowHeight - 2;   // bottom-most valid row (inside bottom border)
-        int minX = 1;
-        int minY = 1;
-
-        // Clamp width / height first so they fit at all
-        w = Math.Max(4, Math.Min(w, maxX - minX + 1));
-        h = Math.Max(3, Math.Min(h, maxY - minY + 1));
-
-        // Then clamp origin
-        x = Math.Max(minX, Math.Min(x, maxX - w + 1));
-        y = Math.Max(minY, Math.Min(y, maxY - h + 1));
-
-        return new Rectangle(x, y, w, h);
-    }
-
-    // Pick Y position: prefer 'below' cursor; flip above if it would overflow.
-    // Returns the chosen Y, and may shrink 'h' if even after flipping there's still no room.
-    public static int PickY(int cursorY, int h, int windowHeight, bool preferAbove, out int finalH)
-    {
-        int maxY = windowHeight - 2;
-        int minY = 1;
-        finalH = h;
-
-        if (!preferAbove)
-        {
-            // Try below first
-            int below = cursorY + 1;
-            if (below + h - 1 <= maxY) return below;
-
-            // Try above
-            int above = cursorY - h;
-            if (above >= minY) return above;
-
-            // Neither fits exactly — go below and truncate
-            finalH = Math.Max(3, maxY - below + 1);
-            return Math.Max(minY, below);
-        }
-        else
-        {
-            // Try above first
-            int above = cursorY - h;
-            if (above >= minY) return above;
-
-            // Try below
-            int below = cursorY + 1;
-            if (below + h - 1 <= maxY) return below;
-
-            // Neither fits — go above and clamp
-            int y = Math.Max(minY, cursorY - h);
-            finalH = Math.Max(3, cursorY - y);
-            return y;
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Tooltip portal — used for hover info and signature help (read-only text)
 // Uses MarkupControl internally for all text rendering (Spectre markup support,
 // word-wrap, alignment) — only the rounded border is drawn directly.
@@ -102,6 +36,10 @@ internal class LspTooltipPortalContent : PortalContentBase
         bool preferAbove = true)
     {
         DismissOnOutsideClick = true;
+        BorderStyle = BoxChars.Rounded;
+        BorderColor = BorderFg;
+        BorderBackgroundColor = Bg;
+
         _markup = new MarkupControl(markupLines)
         {
             Margin = new Margin(1, 0, 1, 0)  // 1-column left/right padding inside border
@@ -127,8 +65,13 @@ internal class LspTooltipPortalContent : PortalContentBase
         }
         int popupH = wrappedLines + 2;  // +2 for top/bottom border
 
-        int y = LspPortalLayout.PickY(cursorY, popupH, windowHeight, preferAbove, out popupH);
-        _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
+        var pos = PortalPositioner.CalculateFromPoint(
+            new System.Drawing.Point(cursorX, cursorY),
+            new System.Drawing.Size(popupW, popupH),
+            new Rectangle(1, 1, windowWidth - 2, windowHeight - 2),
+            preferAbove ? PortalPlacement.AboveOrBelow : PortalPlacement.BelowOrAbove,
+            new System.Drawing.Size(4, 3));
+        _bounds = pos.Bounds;
     }
 
     public override Rectangle GetPortalBounds() => _bounds;
@@ -146,13 +89,8 @@ internal class LspTooltipPortalContent : PortalContentBase
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
     {
-        // Draw border
-        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
-
-        // Delegate all text rendering to MarkupControl — it handles markup parsing,
-        // color resolution, and buffer writing.
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_markup).PaintDOM(buffer, inner, clipRect, Fg, Bg);
+        // Bounds are already the inner area (border drawn by base class)
+        ((IDOMPaintable)_markup).PaintDOM(buffer, bounds, clipRect, Fg, Bg);
     }
 }
 
@@ -238,6 +176,10 @@ internal class LspCompletionPortalContent : PortalContentBase
         int windowWidth, int windowHeight)
     {
         DismissOnOutsideClick = true;
+        BorderStyle = BoxChars.Rounded;
+        BorderColor = BorderFg;
+        BorderBackgroundColor = Bg;
+
         _allItems      = items;
         _filteredItems = items;
 
@@ -275,8 +217,13 @@ internal class LspCompletionPortalContent : PortalContentBase
         int visibleItems = Math.Min(12, items.Count);
         int popupH = visibleItems + 2;  // +2 border
 
-        int y = LspPortalLayout.PickY(cursorY, popupH, windowHeight, preferAbove: false, out popupH);
-        _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
+        var pos = PortalPositioner.CalculateFromPoint(
+            new System.Drawing.Point(cursorX, cursorY),
+            new System.Drawing.Size(popupW, popupH),
+            new Rectangle(1, 1, windowWidth - 2, windowHeight - 2),
+            PortalPlacement.BelowOrAbove,
+            new System.Drawing.Size(4, 3));
+        _bounds = pos.Bounds;
     }
 
     public override Rectangle GetPortalBounds() => _bounds;
@@ -286,13 +233,10 @@ internal class LspCompletionPortalContent : PortalContentBase
         if (args.HasFlag(MouseFlags.WheeledUp))   { SelectPrev(); return true; }
         if (args.HasFlag(MouseFlags.WheeledDown)) { SelectNext(); return true; }
 
-        // Delegate clicks to inner ListControl, adjusting for the 1-cell border offset.
-        // After selection updates, fire ItemAccepted so IdeApp can insert the text.
+        // Coordinates are already adjusted for border offset by the base class.
         if (args.HasFlag(MouseFlags.Button1Clicked))
         {
-            var innerArgs = args.WithPosition(
-                new System.Drawing.Point(args.Position.X - 1, args.Position.Y - 1));
-            ((IMouseAwareControl)_list).ProcessMouseEvent(innerArgs);
+            ((IMouseAwareControl)_list).ProcessMouseEvent(args);
 
             var clicked = GetSelected();
             if (clicked != null)
@@ -309,13 +253,8 @@ internal class LspCompletionPortalContent : PortalContentBase
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
     {
-        // Draw border
-        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
-
-        // Delegate all item rendering to ListControl — it handles markup, scroll
-        // indicator, and selection highlighting.
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clipRect, Fg, Bg);
+        // Bounds are already the inner area (border drawn by base class)
+        ((IDOMPaintable)_list).PaintDOM(buffer, bounds, clipRect, Fg, Bg);
     }
 }
 
@@ -376,6 +315,10 @@ internal class LspLocationListPortalContent : PortalContentBase
         int windowWidth, int windowHeight)
     {
         DismissOnOutsideClick = true;
+        BorderStyle = BoxChars.Rounded;
+        BorderColor = BorderFg;
+        BorderBackgroundColor = Bg;
+
         _entries = entries;
 
         _list = new ListControl
@@ -406,8 +349,13 @@ internal class LspLocationListPortalContent : PortalContentBase
         int visibleItems = Math.Min(15, entries.Count);
         int popupH = visibleItems + 2;
 
-        int y = LspPortalLayout.PickY(cursorY, popupH, windowHeight, preferAbove: false, out popupH);
-        _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
+        var pos = PortalPositioner.CalculateFromPoint(
+            new System.Drawing.Point(cursorX, cursorY),
+            new System.Drawing.Size(popupW, popupH),
+            new Rectangle(1, 1, windowWidth - 2, windowHeight - 2),
+            PortalPlacement.BelowOrAbove,
+            new System.Drawing.Size(4, 3));
+        _bounds = pos.Bounds;
     }
 
     public override Rectangle GetPortalBounds() => _bounds;
@@ -417,11 +365,10 @@ internal class LspLocationListPortalContent : PortalContentBase
         if (args.HasFlag(MouseFlags.WheeledUp))   { SelectPrev(); return true; }
         if (args.HasFlag(MouseFlags.WheeledDown)) { SelectNext(); return true; }
 
+        // Coordinates are already adjusted for border offset by the base class.
         if (args.HasFlag(MouseFlags.Button1Clicked))
         {
-            var innerArgs = args.WithPosition(
-                new System.Drawing.Point(args.Position.X - 1, args.Position.Y - 1));
-            ((IMouseAwareControl)_list).ProcessMouseEvent(innerArgs);
+            ((IMouseAwareControl)_list).ProcessMouseEvent(args);
 
             var clicked = GetSelected();
             if (clicked != null)
@@ -437,9 +384,7 @@ internal class LspLocationListPortalContent : PortalContentBase
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
     {
-        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
-
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clipRect, Fg, Bg);
+        // Bounds are already the inner area (border drawn by base class)
+        ((IDOMPaintable)_list).PaintDOM(buffer, bounds, clipRect, Fg, Bg);
     }
 }

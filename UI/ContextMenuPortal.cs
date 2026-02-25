@@ -56,6 +56,9 @@ internal class ContextMenuPortal : PortalContentContainer
         BackgroundColor = MenuBg;
         ForegroundColor = MenuFg;
         DismissOnOutsideClick = true;
+        BorderStyle = BoxChars.Rounded;
+        BorderColor = Color.Grey50;
+        BorderBackgroundColor = MenuBg;
 
         // Build menu items from ContextMenuItems
         foreach (var item in items)
@@ -100,31 +103,30 @@ internal class ContextMenuPortal : PortalContentContainer
         int popupW = Math.Clamp(contentW + 2, 16, 50); // +2 for border
         int popupH = items.Count + 2; // +2 for border
 
-        int y = LspPortalLayout.PickY(anchorY, popupH, windowHeight, preferAbove: false, out popupH);
-        PortalBounds = LspPortalLayout.Clamp(anchorX, y, popupW, popupH, windowWidth, windowHeight);
+        var pos = PortalPositioner.CalculateFromPoint(
+            new Point(anchorX, anchorY),
+            new System.Drawing.Size(popupW, popupH),
+            new Rectangle(1, 1, windowWidth - 2, windowHeight - 2),
+            PortalPlacement.BelowOrAbove,
+            new System.Drawing.Size(16, 3));
+        PortalBounds = pos.Bounds;
     }
 
     /// <summary>
-    /// Adjusts mouse args to account for the 1-cell border, then delegates to the
-    /// PortalContentContainer base which routes to the MenuControl child.
+    /// Routes mouse events to the MenuControl child. Coordinates are already adjusted
+    /// for the border offset by the base class.
     /// </summary>
     public override bool ProcessMouseEvent(MouseEventArgs args)
     {
-        // Offset by (-1,-1) to account for the border we draw around the menu content.
-        // The portal receives coordinates relative to PortalBounds (0,0 = top-left of border),
-        // but PortalContentContainer.HitTestChild expects (0,0) = top-left of child content.
-        var adjusted = args.WithPosition(
-            new Point(args.Position.X - 1, args.Position.Y - 1));
-
         // Forward hover/mouse-move to the MenuControl for highlight tracking
         if (args.HasAnyFlag(SharpConsoleUI.Drivers.MouseFlags.ReportMousePosition))
         {
             if (_menu is IMouseAwareControl mac && mac.WantsMouseEvents)
-                mac.ProcessMouseEvent(adjusted);
+                mac.ProcessMouseEvent(args);
             return true;
         }
 
-        return base.ProcessMouseEvent(adjusted);
+        return base.ProcessMouseEvent(args);
     }
 
     public new bool ProcessKey(ConsoleKeyInfo key)
@@ -146,11 +148,7 @@ internal class ContextMenuPortal : PortalContentContainer
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
     {
-        // Draw rounded border
-        buffer.DrawBox(bounds, BoxChars.Rounded, Color.Grey50, MenuBg);
-
-        // Paint menu content inside border
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        base.PaintPortalContent(buffer, inner, clipRect, MenuFg, MenuBg);
+        // Bounds are already the inner area (border drawn by base class)
+        base.PaintPortalContent(buffer, bounds, clipRect, MenuFg, MenuBg);
     }
 }
