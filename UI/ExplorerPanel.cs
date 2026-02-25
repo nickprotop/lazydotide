@@ -15,8 +15,15 @@ public class ExplorerPanel
     private readonly ProjectService _projectService;
     private readonly TreeControl _tree;
     private readonly ScrollablePanelControl _panel;
+    private Dictionary<string, GitFileStatus> _gitStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private string? _repoWorkingDir;
 
     public event EventHandler<string>? FileOpenRequested;
+    public event EventHandler<string>? NewFileRequested;
+    public event EventHandler<string>? NewFolderRequested;
+    public event EventHandler<string>? RenameRequested;
+    public event EventHandler<string>? DeleteRequested;
+    public event EventHandler? RefreshRequested;
 
     public ExplorerPanel(ConsoleWindowSystem ws, ProjectService projectService)
     {
@@ -45,11 +52,68 @@ public class ExplorerPanel
     }
 
     public IWindowControl Control => _panel;
+    public bool HasFocus => _tree.HasFocus;
+
+    public string? GetSelectedPath()
+    {
+        return _tree.SelectedNode?.Tag as string;
+    }
+
+    public bool IsSelectedDirectory()
+    {
+        var path = GetSelectedPath();
+        return path != null && Directory.Exists(path);
+    }
+
+    public void UpdateGitStatuses(Dictionary<string, GitFileStatus> statuses, string? repoWorkingDir = null)
+    {
+        _gitStatuses = statuses;
+        _repoWorkingDir = repoWorkingDir;
+        Refresh();
+    }
 
     public void Refresh()
     {
         _tree.Clear();
         BuildTree();
+    }
+
+    public bool HandleKey(ConsoleKey key, ConsoleModifiers mods)
+    {
+        if (!_tree.HasFocus) return false;
+
+        var selectedPath = GetSelectedPath();
+        if (selectedPath == null) return false;
+
+        if (key == ConsoleKey.F2 && mods == 0)
+        {
+            RenameRequested?.Invoke(this, selectedPath);
+            return true;
+        }
+        if (key == ConsoleKey.Delete && mods == 0)
+        {
+            DeleteRequested?.Invoke(this, selectedPath);
+            return true;
+        }
+        if (key == ConsoleKey.N && mods == ConsoleModifiers.Control)
+        {
+            var dir = Directory.Exists(selectedPath) ? selectedPath : Path.GetDirectoryName(selectedPath);
+            if (dir != null) NewFileRequested?.Invoke(this, dir);
+            return true;
+        }
+        if (key == ConsoleKey.N && mods == (ConsoleModifiers.Control | ConsoleModifiers.Shift))
+        {
+            var dir = Directory.Exists(selectedPath) ? selectedPath : Path.GetDirectoryName(selectedPath);
+            if (dir != null) NewFolderRequested?.Invoke(this, dir);
+            return true;
+        }
+        if (key == ConsoleKey.F5 && mods == 0)
+        {
+            RefreshRequested?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+
+        return false;
     }
 
     private void BuildTree()
@@ -61,6 +125,12 @@ public class ExplorerPanel
     private void AddNode(FileNode fileNode, TreeNode? parent)
     {
         string label = fileNode.Name;
+
+        // Append git status badge
+        string badge = GetGitBadge(fileNode);
+        if (!string.IsNullOrEmpty(badge))
+            label += badge;
+
         TreeNode treeNode;
         if (parent == null)
         {
@@ -85,6 +155,53 @@ public class ExplorerPanel
         {
             treeNode.TextColor = GetFileColor(fileNode.Name);
         }
+    }
+
+    private string GetGitBadge(FileNode fileNode)
+    {
+        if (_gitStatuses.Count == 0) return "";
+
+        var relativePath = GetRelativePath(fileNode.FullPath);
+        if (relativePath == null) return "";
+
+        if (!fileNode.IsDirectory)
+        {
+            if (_gitStatuses.TryGetValue(relativePath, out var status))
+            {
+                return status switch
+                {
+                    GitFileStatus.Modified   => "[yellow] M[/]",
+                    GitFileStatus.Added      => "[green] A[/]",
+                    GitFileStatus.Deleted    => "[red] D[/]",
+                    GitFileStatus.Untracked  => "[grey] U[/]",
+                    GitFileStatus.Renamed    => "[blue] R[/]",
+                    GitFileStatus.Conflicted => "[red bold] ![/]",
+                    _ => ""
+                };
+            }
+            return "";
+        }
+
+        // For directories: check if any descendant has a status
+        var dirPrefix = relativePath.EndsWith('/') ? relativePath : relativePath + "/";
+        foreach (var key in _gitStatuses.Keys)
+        {
+            if (key.StartsWith(dirPrefix, StringComparison.OrdinalIgnoreCase))
+                return "[yellow] \u25cf[/]";
+        }
+        return "";
+    }
+
+    private string? GetRelativePath(string fullPath)
+    {
+        // Use the repo working directory if available, otherwise fall back to project root
+        var basePath = _repoWorkingDir ?? _projectService.RootPath;
+        if (!fullPath.StartsWith(basePath, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var relative = fullPath[basePath.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // LibGit2Sharp uses forward slashes
+        return relative.Replace('\\', '/');
     }
 
     private static Color GetFileColor(string name) =>

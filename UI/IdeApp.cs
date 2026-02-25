@@ -185,7 +185,7 @@ public class IdeApp : IDisposable
 
         _fileWatcher = new FileWatcher();
         _fileWatcher.FileChanged      += (_, path) => _pendingUiActions.Enqueue(() => HandleExternalFileChanged(path));
-        _fileWatcher.StructureChanged += (_, _)    => _pendingUiActions.Enqueue(() => _explorer?.Refresh());
+        _fileWatcher.StructureChanged += (_, _)    => _pendingUiActions.Enqueue(() => _ = RefreshExplorerAndGitAsync());
         _fileWatcher.Watch(_projectService.RootPath);
 
         // Open the shell tab at startup so it's ready immediately
@@ -227,10 +227,15 @@ public class IdeApp : IDisposable
             .AddItem("File", m => m
                 .AddItem("Open Folder...", () => _ = OpenFolderAsync())
                 .AddSeparator()
+                .AddItem("New File", "Ctrl+N", () => { var dir = _explorer?.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = HandleNewFileAsync(dir); } })
+                .AddItem("New Folder", "Ctrl+Shift+N", () => { var dir = _explorer?.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = HandleNewFolderAsync(dir); } })
+                .AddItem("Rename", "F2", () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleRenameAsync(p); })
+                .AddItem("Delete", "Del", () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleDeleteAsync(p); })
+                .AddSeparator()
                 .AddItem("Save", "Ctrl+S", () => _editorManager?.SaveCurrent())
                 .AddItem("Close Tab", "Ctrl+W", () => CloseCurrentTab())
                 .AddSeparator()
-                .AddItem("Refresh Explorer", () => _explorer?.Refresh())
+                .AddItem("Refresh Explorer", "F5", () => _ = RefreshExplorerAndGitAsync())
                 .AddSeparator()
                 .AddItem("Exit", "Alt+F4", () => _ws.Shutdown(0)))
             .AddItem("Edit", m =>
@@ -457,6 +462,12 @@ public class IdeApp : IDisposable
     {
         _explorer!.FileOpenRequested += (_, path) => _editorManager?.OpenFile(path);
 
+        _explorer.NewFileRequested += (_, dir) => _ = HandleNewFileAsync(dir);
+        _explorer.NewFolderRequested += (_, dir) => _ = HandleNewFolderAsync(dir);
+        _explorer.RenameRequested += (_, path) => _ = HandleRenameAsync(path);
+        _explorer.DeleteRequested += (_, path) => _ = HandleDeleteAsync(path);
+        _explorer.RefreshRequested += (_, _) => _ = RefreshExplorerAndGitAsync();
+
         _editorManager!.TabCloseRequested += (_, index) =>
         {
             if (_editorManager.IsTabDirty(index))
@@ -527,6 +538,7 @@ public class IdeApp : IDisposable
         };
         _editorManager.DocumentSaved   += (_, p) => _ = _lsp?.DidSaveAsync(p);
         _editorManager.DocumentSaved   += (_, savedPath) => _fileWatcher?.SuppressNext(savedPath);
+        _editorManager.DocumentSaved   += (_, _) => _ = RefreshGitFileStatusesAsync();
         _editorManager.DocumentSaved   += (_, savedPath) =>
         {
             if (string.Equals(savedPath, ConfigService.GetConfigPath(), StringComparison.OrdinalIgnoreCase))
@@ -808,6 +820,13 @@ public class IdeApp : IDisposable
     {
         var key  = e.KeyInfo.Key;
         var mods = e.KeyInfo.Modifiers;
+
+        // Let explorer handle F2/Delete/Ctrl+N/Ctrl+Shift+N/F5 when it has focus
+        if (_explorer != null && _explorer.HandleKey(key, mods))
+        {
+            e.Handled = true;
+            return;
+        }
 
         if (key == ConsoleKey.S && mods == ConsoleModifiers.Control)
         {
@@ -1296,6 +1315,34 @@ public class IdeApp : IDisposable
 
         _gitMarkup = bar.Render();
         UpdateInlineStatus();
+
+        await RefreshGitFileStatusesAsync();
+    }
+
+    private async Task RefreshGitFileStatusesAsync()
+    {
+        var fileStatuses = await _gitService.GetFileStatusesAsync(_projectService.RootPath);
+
+        // Determine the repo working directory for relative path computation
+        string? repoWorkingDir = null;
+        try
+        {
+            var repoPath = LibGit2Sharp.Repository.Discover(_projectService.RootPath);
+            if (repoPath != null)
+            {
+                using var repo = new LibGit2Sharp.Repository(repoPath);
+                repoWorkingDir = repo.Info.WorkingDirectory;
+            }
+        }
+        catch { }
+
+        _explorer?.UpdateGitStatuses(fileStatuses, repoWorkingDir);
+    }
+
+    private async Task RefreshExplorerAndGitAsync()
+    {
+        _explorer?.Refresh();
+        await RefreshGitFileStatusesAsync();
     }
 
     private async Task GitCommandAsync(string command)
@@ -1309,6 +1356,118 @@ public class IdeApp : IDisposable
             _cts.Token);
 
         await RefreshGitStatusAsync();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // File Actions
+    // ──────────────────────────────────────────────────────────────
+
+    private async Task HandleNewFileAsync(string parentDir)
+    {
+        var path = await NewFileDialog.ShowAsync(_ws, parentDir);
+        if (path == null) return;
+
+        try
+        {
+            await File.Create(path).DisposeAsync();
+            await RefreshExplorerAndGitAsync();
+            _editorManager?.OpenFile(path);
+        }
+        catch (Exception ex)
+        {
+            _ws.LogService.LogError($"Failed to create file: {ex.Message}");
+        }
+    }
+
+    private async Task HandleNewFolderAsync(string parentDir)
+    {
+        var path = await NewFileDialog.ShowAsync(_ws, parentDir, isFolder: true);
+        if (path == null) return;
+
+        try
+        {
+            Directory.CreateDirectory(path);
+            await RefreshExplorerAndGitAsync();
+        }
+        catch (Exception ex)
+        {
+            _ws.LogService.LogError($"Failed to create folder: {ex.Message}");
+        }
+    }
+
+    private async Task HandleRenameAsync(string currentPath)
+    {
+        var newPath = await FileRenameDialog.ShowAsync(_ws, currentPath);
+        if (newPath == null) return;
+
+        try
+        {
+            bool isDir = Directory.Exists(currentPath);
+            bool isOpenInEditor = !isDir && _editorManager?.IsFileOpen(currentPath) == true;
+
+            if (isDir)
+                Directory.Move(currentPath, newPath);
+            else
+                File.Move(currentPath, newPath);
+
+            // If file was open in editor, close old tab and open new path
+            if (isOpenInEditor)
+            {
+                // Find and close the tab by path
+                for (int i = 0; i < (_editorManager?.TabControl.TabCount ?? 0); i++)
+                {
+                    if (_editorManager!.GetTabFilePath(i) == currentPath)
+                    {
+                        _editorManager.CloseTabAt(i);
+                        break;
+                    }
+                }
+                _editorManager?.OpenFile(newPath);
+            }
+
+            await RefreshExplorerAndGitAsync();
+        }
+        catch (Exception ex)
+        {
+            _ws.LogService.LogError($"Failed to rename: {ex.Message}");
+        }
+    }
+
+    private async Task HandleDeleteAsync(string path)
+    {
+        var confirmed = await DeleteConfirmDialog.ShowAsync(_ws, path);
+        if (!confirmed) return;
+
+        try
+        {
+            bool isDir = Directory.Exists(path);
+
+            // Close any open editor tabs for this file/directory
+            if (_editorManager != null)
+            {
+                for (int i = _editorManager.TabControl.TabCount - 1; i >= 0; i--)
+                {
+                    var tabPath = _editorManager.GetTabFilePath(i);
+                    if (tabPath != null &&
+                        (tabPath == path ||
+                         (isDir && tabPath.StartsWith(path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))))
+                    {
+                        _editorManager.CloseTabAt(i);
+                    }
+                }
+            }
+
+            if (isDir)
+                Directory.Delete(path, recursive: true);
+            else
+                File.Delete(path);
+
+            await RefreshExplorerAndGitAsync();
+        }
+        catch (Exception ex)
+        {
+            _ws.LogService.LogError($"Failed to delete: {ex.Message}");
+        }
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -1360,7 +1519,11 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "file.save",            Category = "File",  Label = "Save",             Keybinding = "Ctrl+S",     Execute = () => _editorManager?.SaveCurrent(),                                Priority = 90 });
         _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",     Execute = CloseCurrentTab,                                                    Priority = 85 });
         _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                            Execute = () => _ = OpenFolderAsync(),                                        Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",                             Execute = () => _explorer?.Refresh(),                                         Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",  Keybinding = "F5",         Execute = () => _ = RefreshExplorerAndGitAsync(),                             Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.new-file",       Category = "File",  Label = "New File",          Keybinding = "Ctrl+N",     Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFileAsync(d); } }, Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.new-folder",     Category = "File",  Label = "New Folder",        Keybinding = "Ctrl+Shift+N", Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFolderAsync(d); } }, Priority = 74 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.rename",         Category = "File",  Label = "Rename",            Keybinding = "F2",         Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleRenameAsync(p); }, Priority = 73 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.delete",         Category = "File",  Label = "Delete",                                       Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleDeleteAsync(p); }, Priority = 72 });
         _commandRegistry.Register(new IdeCommand { Id = "file.exit",            Category = "File",  Label = "Exit",              Keybinding = "Alt+F4",     Execute = () => _ws.Shutdown(0),                                              Priority = 10 });
 
         // Edit

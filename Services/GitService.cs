@@ -1,29 +1,51 @@
-using System.Diagnostics;
+using LibGit2Sharp;
 
 namespace DotNetIDE;
 
+public enum GitFileStatus { Modified, Added, Deleted, Renamed, Untracked, Conflicted }
+
 public class GitService
 {
-    public async Task<string> GetBranchAsync(string path)
+    public string GetBranch(string path)
     {
         try
         {
-            var output = await RunGitAsync(path, "rev-parse", "--abbrev-ref", "HEAD");
-            return output.Trim();
+            var repoPath = Repository.Discover(path);
+            if (repoPath == null) return "";
+            using var repo = new Repository(repoPath);
+            return repo.Head.FriendlyName;
         }
         catch { return ""; }
     }
 
-    public async Task<string> GetStatusSummaryAsync(string path)
+    public string GetStatusSummary(string path)
     {
         try
         {
-            var output = await RunGitAsync(path, "status", "--short");
-            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            if (lines.Length == 0) return "";
-            var modified = lines.Count(l => l.StartsWith("M") || l.StartsWith(" M"));
-            var added = lines.Count(l => l.StartsWith("A") || l.StartsWith("?"));
-            var deleted = lines.Count(l => l.StartsWith("D") || l.StartsWith(" D"));
+            var repoPath = Repository.Discover(path);
+            if (repoPath == null) return "";
+            using var repo = new Repository(repoPath);
+            var status = repo.RetrieveStatus(new StatusOptions
+            {
+                IncludeUntracked = true,
+                IncludeIgnored = false
+            });
+
+            int modified = 0, added = 0, deleted = 0;
+            foreach (var entry in status)
+            {
+                if (entry.State.HasFlag(FileStatus.ModifiedInWorkdir) ||
+                    entry.State.HasFlag(FileStatus.ModifiedInIndex))
+                    modified++;
+                else if (entry.State.HasFlag(FileStatus.NewInWorkdir))
+                    added++;
+                else if (entry.State.HasFlag(FileStatus.NewInIndex))
+                    added++;
+                else if (entry.State.HasFlag(FileStatus.DeletedFromWorkdir) ||
+                         entry.State.HasFlag(FileStatus.DeletedFromIndex))
+                    deleted++;
+            }
+
             var parts = new List<string>();
             if (modified > 0) parts.Add($"M:{modified}");
             if (added > 0)    parts.Add($"A:{added}");
@@ -33,23 +55,48 @@ public class GitService
         catch { return ""; }
     }
 
-    private static async Task<string> RunGitAsync(string path, params string[] args)
+    public Dictionary<string, GitFileStatus> GetFileStatuses(string path)
     {
-        var allArgs = new List<string> { "-C", path };
-        allArgs.AddRange(args);
-
-        var psi = new ProcessStartInfo("git", allArgs)
+        var statuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
+        try
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return process.ExitCode == 0 ? output : "";
+            var repoPath = Repository.Discover(path);
+            if (repoPath == null) return statuses;
+            using var repo = new Repository(repoPath);
+            foreach (var entry in repo.RetrieveStatus(new StatusOptions
+            {
+                IncludeUntracked = true,
+                IncludeIgnored = false
+            }))
+            {
+                var gitStatus = MapStatus(entry.State);
+                if (gitStatus.HasValue)
+                    statuses[entry.FilePath] = gitStatus.Value;
+            }
+        }
+        catch { }
+        return statuses;
     }
+
+    private static GitFileStatus? MapStatus(FileStatus state)
+    {
+        if (state.HasFlag(FileStatus.Conflicted))
+            return GitFileStatus.Conflicted;
+        if (state.HasFlag(FileStatus.RenamedInIndex) || state.HasFlag(FileStatus.RenamedInWorkdir))
+            return GitFileStatus.Renamed;
+        if (state.HasFlag(FileStatus.ModifiedInWorkdir) || state.HasFlag(FileStatus.ModifiedInIndex))
+            return GitFileStatus.Modified;
+        if (state.HasFlag(FileStatus.NewInIndex))
+            return GitFileStatus.Added;
+        if (state.HasFlag(FileStatus.NewInWorkdir))
+            return GitFileStatus.Untracked;
+        if (state.HasFlag(FileStatus.DeletedFromWorkdir) || state.HasFlag(FileStatus.DeletedFromIndex))
+            return GitFileStatus.Deleted;
+        return null;
+    }
+
+    // Async wrappers for UI call sites
+    public Task<string> GetBranchAsync(string path) => Task.Run(() => GetBranch(path));
+    public Task<string> GetStatusSummaryAsync(string path) => Task.Run(() => GetStatusSummary(path));
+    public Task<Dictionary<string, GitFileStatus>> GetFileStatusesAsync(string path) => Task.Run(() => GetFileStatuses(path));
 }
