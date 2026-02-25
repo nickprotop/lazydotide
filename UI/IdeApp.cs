@@ -1805,6 +1805,7 @@ public class IdeApp : IDisposable
         var portal = new LspTooltipPortalContent(lines, cursor.X, cursor.Y,
             _mainWindow.Width, _mainWindow.Height, preferAbove);
         portal.Container   = _mainWindow;
+        portal.Clicked    += (_, _) => DismissTooltipPortal();
         _tooltipPortal     = portal;
         _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
     }

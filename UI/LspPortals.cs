@@ -7,10 +7,7 @@ using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
 using Color = Spectre.Console.Color;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 using Rectangle = System.Drawing.Rectangle;
-using Size = System.Drawing.Size;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 
@@ -84,9 +81,10 @@ internal static class LspPortalLayout
 // Tooltip portal — used for hover info and signature help (read-only text)
 // Uses MarkupControl internally for all text rendering (Spectre markup support,
 // word-wrap, alignment) — only the rounded border is drawn directly.
+// Click anywhere on the tooltip to dismiss it.
 // ──────────────────────────────────────────────────────────────────────────────
 
-internal class LspTooltipPortalContent : IWindowControl, IDOMPaintable, IHasPortalBounds
+internal class LspTooltipPortalContent : PortalContentBase
 {
     private readonly MarkupControl _markup;
     private Rectangle _bounds;
@@ -94,6 +92,9 @@ internal class LspTooltipPortalContent : IWindowControl, IDOMPaintable, IHasPort
     private static readonly Color Bg       = Color.Grey11;
     private static readonly Color Fg       = Color.Grey93;
     private static readonly Color BorderFg = Color.Grey50;
+
+    /// <summary>Fires when the user clicks the tooltip — signals IdeApp to dismiss.</summary>
+    public event EventHandler? Clicked;
 
     public LspTooltipPortalContent(
         List<string> markupLines, int cursorX, int cursorY,
@@ -129,48 +130,29 @@ internal class LspTooltipPortalContent : IWindowControl, IDOMPaintable, IHasPort
         _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
     }
 
-    public Rectangle GetPortalBounds() => _bounds;
+    public override Rectangle GetPortalBounds() => _bounds;
 
-    // ── IDOMPaintable ──────────────────────────────────────────────────────────
-
-    public LayoutSize MeasureDOM(LayoutConstraints c) => new(_bounds.Width, _bounds.Height);
-
-    public void PaintDOM(CharacterBuffer buffer, LayoutRect bounds, LayoutRect clip,
-                         Color defaultFg, Color defaultBg)
+    public override bool ProcessMouseEvent(MouseEventArgs args)
     {
-        _actualX = bounds.X; _actualY = bounds.Y;
-        _actualWidth = bounds.Width; _actualHeight = bounds.Height;
+        if (args.HasFlag(MouseFlags.Button1Clicked))
+        {
+            Clicked?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+        return false;
+    }
 
+    protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
+        LayoutRect clipRect, Color defaultFg, Color defaultBg)
+    {
         // Draw border
         buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
 
         // Delegate all text rendering to MarkupControl — it handles markup parsing,
         // color resolution, and buffer writing.
         var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_markup).PaintDOM(buffer, inner, clip, Fg, Bg);
+        ((IDOMPaintable)_markup).PaintDOM(buffer, inner, clipRect, Fg, Bg);
     }
-
-    // ── IWindowControl boilerplate ─────────────────────────────────────────────
-
-    private int _actualX, _actualY, _actualWidth, _actualHeight;
-    public int ActualX => _actualX;
-    public int ActualY => _actualY;
-    public int ActualWidth => _actualWidth;
-    public int ActualHeight => _actualHeight;
-    public int? ContentWidth  => _bounds.Width;
-    public int? ContentHeight => _bounds.Height;
-    public HorizontalAlignment HorizontalAlignment { get; set; } = HorizontalAlignment.Left;
-    public VerticalAlignment   VerticalAlignment   { get; set; } = VerticalAlignment.Top;
-    public IContainer? Container { get; set; }
-    public Margin Margin { get; set; } = new(0, 0, 0, 0);
-    public StickyPosition StickyPosition { get; set; } = StickyPosition.None;
-    public string? Name { get; set; }
-    public object? Tag { get; set; }
-    public bool Visible { get; set; } = true;
-    public int? Width { get; set; }
-    public Size GetLogicalContentSize() => new(_bounds.Width, _bounds.Height);
-    public void Invalidate() => Container?.Invalidate(true);
-    public void Dispose() { }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -179,7 +161,7 @@ internal class LspTooltipPortalContent : IWindowControl, IDOMPaintable, IHasPort
 // correct highlight colours) — only the rounded border is drawn directly.
 // ──────────────────────────────────────────────────────────────────────────────
 
-internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasPortalBounds, IMouseAwareControl
+internal class LspCompletionPortalContent : PortalContentBase
 {
     private readonly List<CompletionItem> _allItems;
     private List<CompletionItem> _filteredItems;
@@ -295,33 +277,9 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
         _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
     }
 
-    public Rectangle GetPortalBounds() => _bounds;
+    public override Rectangle GetPortalBounds() => _bounds;
 
-    // ── IDOMPaintable ──────────────────────────────────────────────────────────
-
-    public LayoutSize MeasureDOM(LayoutConstraints c) => new(_bounds.Width, _bounds.Height);
-
-    public void PaintDOM(CharacterBuffer buffer, LayoutRect bounds, LayoutRect clip,
-                         Color defaultFg, Color defaultBg)
-    {
-        _actualX = bounds.X; _actualY = bounds.Y;
-        _actualWidth = bounds.Width; _actualHeight = bounds.Height;
-
-        // Draw border
-        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
-
-        // Delegate all item rendering to ListControl — it handles markup, scroll
-        // indicator, and selection highlighting.
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clip, Fg, Bg);
-    }
-
-    // ── IMouseAwareControl — scroll wheel only ─────────────────────────────────
-
-    public bool WantsMouseEvents => true;
-    public bool CanFocusWithMouse => false;
-
-    public bool ProcessMouseEvent(MouseEventArgs args)
+    public override bool ProcessMouseEvent(MouseEventArgs args)
     {
         if (args.HasFlag(MouseFlags.WheeledUp))   { SelectPrev(); return true; }
         if (args.HasFlag(MouseFlags.WheeledDown)) { SelectNext(); return true; }
@@ -346,35 +304,17 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
         return false;
     }
 
-#pragma warning disable CS0067 // required by IMouseAwareControl; portal never fires these
-    public event EventHandler<MouseEventArgs>? MouseClick;
-    public event EventHandler<MouseEventArgs>? MouseDoubleClick;
-    public event EventHandler<MouseEventArgs>? MouseEnter;
-    public event EventHandler<MouseEventArgs>? MouseLeave;
-    public event EventHandler<MouseEventArgs>? MouseMove;
-#pragma warning restore CS0067
+    protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
+        LayoutRect clipRect, Color defaultFg, Color defaultBg)
+    {
+        // Draw border
+        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
 
-    // ── IWindowControl boilerplate ─────────────────────────────────────────────
-
-    private int _actualX, _actualY, _actualWidth, _actualHeight;
-    public int ActualX => _actualX;
-    public int ActualY => _actualY;
-    public int ActualWidth => _actualWidth;
-    public int ActualHeight => _actualHeight;
-    public int? ContentWidth  => _bounds.Width;
-    public int? ContentHeight => _bounds.Height;
-    public HorizontalAlignment HorizontalAlignment { get; set; } = HorizontalAlignment.Left;
-    public VerticalAlignment   VerticalAlignment   { get; set; } = VerticalAlignment.Top;
-    public IContainer? Container { get; set; }
-    public Margin Margin { get; set; } = new(0, 0, 0, 0);
-    public StickyPosition StickyPosition { get; set; } = StickyPosition.None;
-    public string? Name { get; set; }
-    public object? Tag { get; set; }
-    public bool Visible { get; set; } = true;
-    public int? Width { get; set; }
-    public Size GetLogicalContentSize() => new(_bounds.Width, _bounds.Height);
-    public void Invalidate() => Container?.Invalidate(true);
-    public void Dispose() { }
+        // Delegate all item rendering to ListControl — it handles markup, scroll
+        // indicator, and selection highlighting.
+        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
+        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clipRect, Fg, Bg);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -384,7 +324,7 @@ internal class LspCompletionPortalContent : IWindowControl, IDOMPaintable, IHasP
 
 internal record LspLocationEntry(string FilePath, int Line, int Column, string DisplayText);
 
-internal class LspLocationListPortalContent : IWindowControl, IDOMPaintable, IHasPortalBounds, IMouseAwareControl
+internal class LspLocationListPortalContent : PortalContentBase
 {
     private readonly List<LspLocationEntry> _entries;
     private readonly ListControl _list;
@@ -467,26 +407,9 @@ internal class LspLocationListPortalContent : IWindowControl, IDOMPaintable, IHa
         _bounds = LspPortalLayout.Clamp(cursorX, y, popupW, popupH, windowWidth, windowHeight);
     }
 
-    public Rectangle GetPortalBounds() => _bounds;
+    public override Rectangle GetPortalBounds() => _bounds;
 
-    public LayoutSize MeasureDOM(LayoutConstraints c) => new(_bounds.Width, _bounds.Height);
-
-    public void PaintDOM(CharacterBuffer buffer, LayoutRect bounds, LayoutRect clip,
-                         Color defaultFg, Color defaultBg)
-    {
-        _actualX = bounds.X; _actualY = bounds.Y;
-        _actualWidth = bounds.Width; _actualHeight = bounds.Height;
-
-        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
-
-        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
-        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clip, Fg, Bg);
-    }
-
-    public bool WantsMouseEvents => true;
-    public bool CanFocusWithMouse => false;
-
-    public bool ProcessMouseEvent(MouseEventArgs args)
+    public override bool ProcessMouseEvent(MouseEventArgs args)
     {
         if (args.HasFlag(MouseFlags.WheeledUp))   { SelectPrev(); return true; }
         if (args.HasFlag(MouseFlags.WheeledDown)) { SelectNext(); return true; }
@@ -508,31 +431,12 @@ internal class LspLocationListPortalContent : IWindowControl, IDOMPaintable, IHa
         return false;
     }
 
-#pragma warning disable CS0067
-    public event EventHandler<MouseEventArgs>? MouseClick;
-    public event EventHandler<MouseEventArgs>? MouseDoubleClick;
-    public event EventHandler<MouseEventArgs>? MouseEnter;
-    public event EventHandler<MouseEventArgs>? MouseLeave;
-    public event EventHandler<MouseEventArgs>? MouseMove;
-#pragma warning restore CS0067
+    protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
+        LayoutRect clipRect, Color defaultFg, Color defaultBg)
+    {
+        buffer.DrawBox(bounds, BoxChars.Rounded, BorderFg, Bg);
 
-    private int _actualX, _actualY, _actualWidth, _actualHeight;
-    public int ActualX => _actualX;
-    public int ActualY => _actualY;
-    public int ActualWidth => _actualWidth;
-    public int ActualHeight => _actualHeight;
-    public int? ContentWidth  => _bounds.Width;
-    public int? ContentHeight => _bounds.Height;
-    public HorizontalAlignment HorizontalAlignment { get; set; } = HorizontalAlignment.Left;
-    public VerticalAlignment   VerticalAlignment   { get; set; } = VerticalAlignment.Top;
-    public IContainer? Container { get; set; }
-    public Margin Margin { get; set; } = new(0, 0, 0, 0);
-    public StickyPosition StickyPosition { get; set; } = StickyPosition.None;
-    public string? Name { get; set; }
-    public object? Tag { get; set; }
-    public bool Visible { get; set; } = true;
-    public int? Width { get; set; }
-    public Size GetLogicalContentSize() => new(_bounds.Width, _bounds.Height);
-    public void Invalidate() => Container?.Invalidate(true);
-    public void Dispose() { }
+        var inner = new LayoutRect(bounds.X + 1, bounds.Y + 1, bounds.Width - 2, bounds.Height - 2);
+        ((IDOMPaintable)_list).PaintDOM(buffer, inner, clipRect, Fg, Bg);
+    }
 }
