@@ -2,20 +2,27 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>LazyDotIDE</AssemblyName>
     <RootNamespace>LazyDotIDE</RootNamespace>
 
-    <!-- Dotnet Tool Configuration -->
+    <!-- Publishing configuration for self-contained binaries (GitHub Releases) -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- Dotnet Tool Configuration (NuGet.org) -->
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>lazydotide</ToolCommandName>
 
     <!-- Package Metadata -->
     <PackageId>LazyDotIDE</PackageId>
-    <Version>0.1.0</Version>
     <Authors>Nick Protop</Authors>
     <Description>LazyDotIDE - A lightweight console-based .NET IDE built on SharpConsoleUI. Browse projects, edit files, build, run tests, and get LSP completions - all from a powerful terminal interface.</Description>
     <PackageTags>dotnet;ide;tui;terminal;console;cli;editor;lsp</PackageTags>
@@ -23,6 +30,7 @@
     <RepositoryUrl>https://github.com/nickprotop/lazydotide</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/nickprotop/lazydotide</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <!-- Conditional ConsoleEx reference: use local project if available, otherwise use NuGet package -->
@@ -37,6 +45,11 @@
   <ItemGroup>
     <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
     <PackageReference Include="Markdig" Version="1.0.0" />
+  </ItemGroup>
+
+  <!-- Include files for NuGet package -->
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
 </Project>

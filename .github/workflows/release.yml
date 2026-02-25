@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        rid: [linux-x64, linux-arm64, osx-x64, osx-arm64, win-x64, win-arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          dotnet publish -c Release \
+            -r "$RID" \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:Version=${{ steps.version.outputs.VERSION }} \
+            -o ./publish/"$RID"
+
+      - name: Rename binary
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          cd publish/"$RID"
+          if [[ "$RID" == win-* ]]; then
+            mv LazyDotIDE.exe "lazydotide-${RID}.exe"
+          else
+            mv LazyDotIDE "lazydotide-${RID}"
+            chmod +x "lazydotide-${RID}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.rid }}
+          path: publish/${{ matrix.rid }}/lazydotide-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: publish
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Copy scripts
+        run: |
+          cp install.sh ./publish/install.sh
+          cp uninstall.sh ./publish/uninstall.sh
+          cp install.ps1 ./publish/install.ps1
+          cp uninstall.ps1 ./publish/uninstall.ps1
+          chmod +x ./publish/install.sh
+          chmod +x ./publish/uninstall.sh
+
+      - name: Generate checksums
+        run: |
+          cd publish
+          sha256sum lazydotide-linux-x64 >> SHA256SUMS
+          sha256sum lazydotide-linux-arm64 >> SHA256SUMS
+          sha256sum lazydotide-osx-x64 >> SHA256SUMS
+          sha256sum lazydotide-osx-arm64 >> SHA256SUMS
+          sha256sum lazydotide-win-x64.exe >> SHA256SUMS
+          sha256sum lazydotide-win-arm64.exe >> SHA256SUMS
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          git fetch --tags --force
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+
+          if [ -z "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            CHANGELOG=$(git log "${PREV_TAG}..${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          echo "CHANGELOG<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/lazydotide-linux-x64
+            publish/lazydotide-linux-arm64
+            publish/lazydotide-osx-x64
+            publish/lazydotide-osx-arm64
+            publish/lazydotide-win-x64.exe
+            publish/lazydotide-win-arm64.exe
+            publish/install.sh
+            publish/uninstall.sh
+            publish/install.ps1
+            publish/uninstall.ps1
+            publish/SHA256SUMS
+          body: |
+            # LazyDotIDE ${{ steps.version.outputs.VERSION }}
+
+            A lightweight console-based .NET IDE built on SharpConsoleUI.
+
+            ## Installation
+
+            ### As a dotnet tool (requires .NET 10 SDK)
+            ```bash
+            dotnet tool install -g LazyDotIDE
+            ```
+
+            ### Linux
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/nickprotop/lazydotide/main/install.sh | bash
+            ```
+
+            ### macOS
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/nickprotop/lazydotide/main/install.sh | bash
+            ```
+            > If macOS blocks the binary, run: `xattr -d com.apple.quarantine $(which lazydotide)`
+
+            ### Windows (PowerShell)
+            ```powershell
+            irm https://raw.githubusercontent.com/nickprotop/lazydotide/main/install.ps1 | iex
+            ```
+
+            ### Manual Install
+            Download the binary for your platform:
+            | Platform | Binary |
+            |----------|--------|
+            | Linux x64 | `lazydotide-linux-x64` |
+            | Linux ARM64 | `lazydotide-linux-arm64` |
+            | macOS x64 (Intel) | `lazydotide-osx-x64` |
+            | macOS ARM64 (Apple Silicon) | `lazydotide-osx-arm64` |
+            | Windows x64 | `lazydotide-win-x64.exe` |
+            | Windows ARM64 | `lazydotide-win-arm64.exe` |
+
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ## Checksums
+
+            See `SHA256SUMS` for file verification.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
