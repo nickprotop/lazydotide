@@ -97,6 +97,11 @@ public class IdeApp : IDisposable
     private LspLocationListPortalContent? _locationPortal;
     private LayoutNode? _locationPortalNode;
 
+    // Context menu portal
+    private ContextMenuPortal? _contextMenuPortal;
+    private LayoutNode? _contextMenuPortalNode;
+    private IWindowControl? _contextMenuOwner;
+
     // Completion filter tracking — column at which completion was triggered (1-indexed)
     private int _completionTriggerColumn;
     private int _completionTriggerLine;
@@ -134,6 +139,7 @@ public class IdeApp : IDisposable
         _dotTriggerDebounce?.Dispose();
         _symbolRefreshDebounce?.Dispose();
         _fileWatcher?.Dispose();
+        DismissContextMenu();
         DismissCompletionPortal();
         DismissTooltipPortal();
         DismissLocationPortal();
@@ -467,6 +473,10 @@ public class IdeApp : IDisposable
         _explorer.RenameRequested += (_, path) => _ = HandleRenameAsync(path);
         _explorer.DeleteRequested += (_, path) => _ = HandleDeleteAsync(path);
         _explorer.RefreshRequested += (_, _) => _ = RefreshExplorerAndGitAsync();
+        _explorer.ContextMenuRequested += OnExplorerContextMenu;
+
+        _editorManager!.TabContextMenuRequested += OnTabContextMenu;
+        _editorManager!.EditorContextMenuRequested += OnEditorContextMenu;
 
         _editorManager!.TabCloseRequested += (_, index) =>
         {
@@ -693,6 +703,16 @@ public class IdeApp : IDisposable
             bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
             if (!isModifierOnly && !isArrowKey && !isCtrlCombo)
                 DismissTooltipPortal();
+        }
+
+        // Context menu portal handles all keys
+        if (_contextMenuPortal != null)
+        {
+            if (_contextMenuPortal.ProcessKey(e.KeyInfo))
+            {
+                e.Handled = true;
+                return;
+            }
         }
 
         // Escape: dismiss portals if open, then swallow — never let the editor exit editing mode
@@ -1872,6 +1892,9 @@ public class IdeApp : IDisposable
             _dotTriggerDebounce = null;
         };
 
+        // Library auto-dismisses portal on outside click; clean up local state
+        portal.DismissRequested += (_, _) => DismissCompletionPortal();
+
         // Subscribe to content changes so the filter updates as the user types
         editor.ContentChanged += OnEditorContentChangedForCompletion;
     }
@@ -1969,6 +1992,7 @@ public class IdeApp : IDisposable
             _mainWindow.Width, _mainWindow.Height, preferAbove);
         portal.Container   = _mainWindow;
         portal.Clicked    += (_, _) => DismissTooltipPortal();
+        portal.DismissRequested += (_, _) => DismissTooltipPortal();
         _tooltipPortal     = portal;
         _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
     }
@@ -1993,6 +2017,147 @@ public class IdeApp : IDisposable
     }
 
     // ── Portal helpers ─────────────────────────────────────────────────────────
+
+    private void DismissContextMenu()
+    {
+        if (_contextMenuPortalNode != null && _mainWindow != null && _contextMenuOwner != null)
+        {
+            _mainWindow.RemovePortal(_contextMenuOwner, _contextMenuPortalNode);
+            _contextMenuPortalNode = null;
+            _contextMenuPortal = null;
+            _contextMenuOwner = null;
+        }
+    }
+
+    private void ShowContextMenu(List<ContextMenuItem> items, int anchorX, int anchorY, IWindowControl? owner = null)
+    {
+        DismissContextMenu();
+        if (_mainWindow == null || items.Count == 0) return;
+
+        // Use provided owner or fall back to current editor or explorer
+        var portalOwner = owner ?? _editorManager?.CurrentEditor ?? _explorer?.Control;
+        if (portalOwner == null) return;
+
+        var portal = new ContextMenuPortal(items, anchorX, anchorY,
+            _mainWindow.Width, _mainWindow.Height);
+        portal.Container = _mainWindow;
+        _contextMenuPortal = portal;
+        _contextMenuOwner = portalOwner;
+        _contextMenuPortalNode = _mainWindow.CreatePortal(portalOwner, portal);
+
+        portal.ItemSelected += (_, item) =>
+        {
+            DismissContextMenu();
+            item.Action?.Invoke();
+        };
+
+        portal.Dismissed += (_, _) =>
+        {
+            DismissContextMenu();
+        };
+
+        // Library auto-dismisses portal on outside click; clean up local state
+        portal.DismissRequested += (_, _) =>
+        {
+            _contextMenuPortalNode = null;
+            _contextMenuPortal = null;
+            _contextMenuOwner = null;
+        };
+    }
+
+    private void OnExplorerContextMenu(object? sender, (string Path, System.Drawing.Point ScreenPosition, bool IsDirectory) e)
+    {
+        var items = new List<ContextMenuItem>();
+        var path = e.Path;
+        var parentDir = e.IsDirectory ? path : Path.GetDirectoryName(path);
+
+        items.Add(new ContextMenuItem("New File", "Ctrl+N",
+            () => { if (parentDir != null) _ = HandleNewFileAsync(parentDir); }));
+        items.Add(new ContextMenuItem("New Folder", "Ctrl+Shift+N",
+            () => { if (parentDir != null) _ = HandleNewFolderAsync(parentDir); }));
+        items.Add(new ContextMenuItem("-"));
+        items.Add(new ContextMenuItem("Rename", "F2",
+            () => _ = HandleRenameAsync(path)));
+        items.Add(new ContextMenuItem("Delete", "Del",
+            () => _ = HandleDeleteAsync(path)));
+        items.Add(new ContextMenuItem("-"));
+        items.Add(new ContextMenuItem("Copy Path", null,
+            () => ClipboardHelper.SetText(path)));
+        items.Add(new ContextMenuItem("Copy Relative Path", null,
+            () => CopyRelativePath(path)));
+
+        if (e.IsDirectory)
+        {
+            items.Add(new ContextMenuItem("-"));
+            items.Add(new ContextMenuItem("Refresh", "F5",
+                () => _ = RefreshExplorerAndGitAsync()));
+        }
+
+        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _explorer?.Control);
+    }
+
+    private void OnTabContextMenu(object? sender, (string FilePath, System.Drawing.Point ScreenPosition) e)
+    {
+        var filePath = e.FilePath;
+        var tabIndex = _editorManager!.GetTabIndexForPath(filePath);
+
+        var items = new List<ContextMenuItem>
+        {
+            new("Close", "Ctrl+W", () =>
+            {
+                if (tabIndex >= 0) _editorManager.CloseTabAt(tabIndex);
+            }),
+            new("Close Others", null, () => _editorManager.CloseOthers(filePath)),
+            new("Close All", null, () => _editorManager.CloseAll()),
+            new("-"),
+            new("Save", "Ctrl+S", () =>
+            {
+                if (tabIndex >= 0) _editorManager.SaveTabAt(tabIndex);
+            }),
+            new("-"),
+            new("Copy Path", null, () => ClipboardHelper.SetText(filePath)),
+            new("Copy Relative Path", null, () => CopyRelativePath(filePath)),
+        };
+
+        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _editorManager?.TabControl);
+    }
+
+    private void OnEditorContextMenu(object? sender, (string? FilePath, System.Drawing.Point ScreenPosition) e)
+    {
+        var editor = _editorManager?.CurrentEditor;
+        if (editor == null) return;
+
+        bool hasLsp = _lsp != null;
+
+        var items = new List<ContextMenuItem>
+        {
+            new("Cut", "Ctrl+X", () => editor.ProcessKey(new ConsoleKeyInfo('x', ConsoleKey.X, false, false, true))),
+            new("Copy", "Ctrl+C", () => editor.ProcessKey(new ConsoleKeyInfo('c', ConsoleKey.C, false, false, true))),
+            new("Paste", "Ctrl+V", () => editor.ProcessKey(new ConsoleKeyInfo('v', ConsoleKey.V, false, false, true))),
+            new("-"),
+            new("Select All", "Ctrl+A", () => editor.ProcessKey(new ConsoleKeyInfo('a', ConsoleKey.A, false, false, true))),
+            new("-"),
+            new("Go to Definition", "F12", () => _ = ShowGoToDefinitionAsync(), Enabled: hasLsp),
+            new("Find References", "Shift+F12", () => _ = ShowFindReferencesAsync(), Enabled: hasLsp),
+            new("Rename Symbol", "Ctrl+F2", () => _ = ShowRenameAsync(), Enabled: hasLsp),
+        };
+
+        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, editor);
+    }
+
+    private void CopyRelativePath(string fullPath)
+    {
+        var root = _projectService.RootPath;
+        if (fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = fullPath[root.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            ClipboardHelper.SetText(relative);
+        }
+        else
+        {
+            ClipboardHelper.SetText(fullPath);
+        }
+    }
 
     private void DismissCompletionPortal()
     {
@@ -2043,6 +2208,7 @@ public class IdeApp : IDisposable
             entries, cursor.X, cursor.Y,
             _mainWindow.Width, _mainWindow.Height);
         portal.Container = _mainWindow;
+        portal.DismissRequested += (_, _) => DismissLocationPortal();
         _locationPortal = portal;
         _locationPortalNode = _mainWindow.CreatePortal(editor, portal);
 
@@ -2375,6 +2541,8 @@ public class IdeApp : IDisposable
         _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
         _completionTriggerColumn = editor.CurrentColumn;
         _completionTriggerLine = editor.CurrentLine;
+
+        portal.DismissRequested += (_, _) => DismissCompletionPortal();
 
         portal.ItemAccepted += (_, item) =>
         {

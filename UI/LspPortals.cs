@@ -101,6 +101,7 @@ internal class LspTooltipPortalContent : PortalContentBase
         int windowWidth, int windowHeight,
         bool preferAbove = true)
     {
+        DismissOnOutsideClick = true;
         _markup = new MarkupControl(markupLines)
         {
             Margin = new Margin(1, 0, 1, 0)  // 1-column left/right padding inside border
@@ -236,6 +237,7 @@ internal class LspCompletionPortalContent : PortalContentBase
         List<CompletionItem> items, int cursorX, int cursorY,
         int windowWidth, int windowHeight)
     {
+        DismissOnOutsideClick = true;
         _allItems      = items;
         _filteredItems = items;
 
@@ -373,6 +375,7 @@ internal class LspLocationListPortalContent : PortalContentBase
         int cursorX, int cursorY,
         int windowWidth, int windowHeight)
     {
+        DismissOnOutsideClick = true;
         _entries = entries;
 
         _list = new ListControl

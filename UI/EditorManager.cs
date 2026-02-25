@@ -1,3 +1,4 @@
+using System.Drawing;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
@@ -39,6 +40,8 @@ public class EditorManager
     public event EventHandler<string>? DocumentSaved;
     public event EventHandler<string>? DocumentClosed;
     public event EventHandler<string>? SyntaxChanged;
+    public event EventHandler<(string FilePath, Point ScreenPosition)>? TabContextMenuRequested;
+    public event EventHandler<(string? FilePath, Point ScreenPosition)>? EditorContextMenuRequested;
 
     public string? CurrentFilePath =>
         _tabControl.ActiveTabIndex >= 0 && _tabData.TryGetValue(_tabControl.ActiveTabIndex, out var d) ? d.FilePath : null;
@@ -94,6 +97,7 @@ public class EditorManager
 
         _tabControl.TabChanged += OnTabChanged;
         _tabControl.TabCloseRequested += OnTabCloseRequested;
+        _tabControl.MouseRightClick += OnTabRightClick;
     }
 
     public void OpenFile(string path)
@@ -187,6 +191,14 @@ public class EditorManager
         editor.CursorPositionChanged += (_, pos) =>
         {
             CursorChanged?.Invoke(this, pos);
+        };
+
+        editor.MouseRightClick += (_, args) =>
+        {
+            int screenX = editor.ActualX + args.Position.X;
+            int screenY = editor.ActualY + args.Position.Y;
+            var filePath = CurrentFilePath;
+            EditorContextMenuRequested?.Invoke(this, (filePath, new Point(screenX, screenY)));
         };
 
         editor.ContentChanged += (_, _) =>
@@ -531,5 +543,45 @@ public class EditorManager
         // Advance to next match
         FindNext(query, caseSensitive);
         return true;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Context Menu Support
+    // ──────────────────────────────────────────────────────────────
+
+    private void OnTabRightClick(object? sender, MouseEventArgs args)
+    {
+        // Use whichever tab is currently active (TabControl selects on click before right-click fires)
+        var filePath = CurrentFilePath;
+        if (filePath == null) return;
+        int screenX = _tabControl.ActualX + args.Position.X;
+        int screenY = _tabControl.ActualY + args.Position.Y;
+        TabContextMenuRequested?.Invoke(this, (filePath, new Point(screenX, screenY)));
+    }
+
+    public void CloseOthers(string keepFilePath)
+    {
+        for (int i = _tabControl.TabCount - 1; i >= 0; i--)
+        {
+            var tabPath = GetTabFilePath(i);
+            if (tabPath != null && tabPath != keepFilePath)
+                CloseTabAt(i);
+            else if (tabPath == null)
+                CloseTabAt(i); // close non-file tabs too
+        }
+    }
+
+    public void SaveTabAt(int index)
+    {
+        if (index < 0 || index >= _tabControl.TabCount) return;
+        var prev = _tabControl.ActiveTabIndex;
+        _tabControl.ActiveTabIndex = index;
+        SaveCurrent();
+        _tabControl.ActiveTabIndex = prev;
+    }
+
+    public int GetTabIndexForPath(string path)
+    {
+        return _openFiles.TryGetValue(path, out var idx) ? idx : -1;
     }
 }

@@ -1,8 +1,10 @@
+using System.Drawing;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
+using Color = Spectre.Console.Color;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 using TreeNode = SharpConsoleUI.Controls.TreeNode;
@@ -24,6 +26,7 @@ public class ExplorerPanel
     public event EventHandler<string>? RenameRequested;
     public event EventHandler<string>? DeleteRequested;
     public event EventHandler? RefreshRequested;
+    public event EventHandler<(string Path, Point ScreenPosition, bool IsDirectory)>? ContextMenuRequested;
 
     public ExplorerPanel(ConsoleWindowSystem ws, ProjectService projectService)
     {
@@ -48,6 +51,7 @@ public class ExplorerPanel
         _panel.AddControl(_tree);
 
         _tree.NodeActivated += OnNodeActivated;
+        _tree.MouseRightClick += OnTreeRightClick;
         BuildTree();
     }
 
@@ -214,6 +218,18 @@ public class ExplorerPanel
             ".md" => Color.Magenta1,
             _ => Color.White
         };
+
+    private void OnTreeRightClick(object? sender, MouseEventArgs args)
+    {
+        var node = _tree.SelectedNode;
+        var path = node?.Tag as string;
+        if (path == null) return;
+        bool isDir = Directory.Exists(path);
+        // Use the tree control's actual screen position + mouse position for anchor
+        int screenX = _tree.ActualX + args.Position.X;
+        int screenY = _tree.ActualY + args.Position.Y;
+        ContextMenuRequested?.Invoke(this, (path, new Point(screenX, screenY), isDir));
+    }
 
     private void OnNodeActivated(object? sender, TreeNodeEventArgs args)
     {
