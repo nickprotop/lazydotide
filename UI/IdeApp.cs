@@ -278,8 +278,25 @@ public class IdeApp : IDisposable
                 .AddItem("Toggle Side Panel", "Alt+;", () => ToggleSidePanel()))
             .AddItem("Git", m => m
                 .AddItem("Refresh Status", () => _ = RefreshGitStatusAsync())
+                .AddSeparator()
+                .AddItem("Stage All", () => _ = GitStageAllAsync())
+                .AddItem("Unstage All", () => _ = GitUnstageAllAsync())
+                .AddSeparator()
+                .AddItem("Commit\u2026", "Ctrl+Enter", () => _ = GitCommitAsync())
+                .AddSeparator()
                 .AddItem("Pull", () => _ = GitCommandAsync("pull"))
-                .AddItem("Push", () => _ = GitCommandAsync("push")))
+                .AddItem("Push", () => _ = GitCommandAsync("push"))
+                .AddSeparator()
+                .AddItem("Stash\u2026", () => _ = GitStashAsync())
+                .AddItem("Stash Pop", () => _ = GitStashPopAsync())
+                .AddSeparator()
+                .AddItem("Switch Branch\u2026", () => _ = GitSwitchBranchAsync())
+                .AddItem("New Branch\u2026", () => _ = GitNewBranchAsync())
+                .AddSeparator()
+                .AddItem("Log", () => _ = GitShowLogAsync())
+                .AddItem("Diff All", () => _ = GitShowDiffAllAsync())
+                .AddSeparator()
+                .AddItem("Discard All Changes\u2026", () => _ = GitDiscardAllAsync()))
             .AddItem("Tools", m =>
             {
                 m.AddItem("Command Palette",  "Ctrl+P",         () => ShowCommandPalette())
@@ -393,6 +410,29 @@ public class IdeApp : IDisposable
         mainContent.AddSplitter(1, _sidePanelSplitter);
 
         _sidePanel.SymbolActivated += (_, entry) => NavigateToLocation(entry);
+        _sidePanel.GitStageRequested += (_, path) => _ = GitStageFileAsync(path);
+        _sidePanel.GitUnstageRequested += (_, path) => _ = GitUnstageFileAsync(path);
+
+        // Toolbar actions
+        _sidePanel.GitCommitRequested += (_, _) => _ = GitCommitAsync();
+        _sidePanel.GitRefreshRequested += (_, _) => _ = RefreshExplorerAndGitAsync();
+        _sidePanel.GitStageAllRequested += (_, _) => _ = GitStageAllAsync();
+        _sidePanel.GitUnstageAllRequested += (_, _) => _ = GitUnstageAllAsync();
+
+        // File interactions
+        _sidePanel.GitDiffRequested += (_, path) => _ = GitShowDiffAsync(path);
+        _sidePanel.GitOpenFileRequested += (_, path) => _editorManager?.OpenFile(path);
+
+        // Context menu
+        _sidePanel.GitContextMenuRequested += OnGitPanelContextMenu;
+
+        // Log entry
+        _sidePanel.GitLogEntryActivated += (_, entry) =>
+            OpenReadOnlyTab($"Commit: {entry.ShortSha}",
+                $"{entry.Sha}\n{entry.Author}\n{entry.When:yyyy-MM-dd HH:mm}\n\n{entry.MessageShort}");
+
+        // More menu
+        _sidePanel.GitMoreMenuRequested += (_, _) => ShowGitMoreMenu();
 
         _mainWindow!.AddControl(mainContent);
     }
@@ -549,6 +589,7 @@ public class IdeApp : IDisposable
         _editorManager.DocumentSaved   += (_, p) => _ = _lsp?.DidSaveAsync(p);
         _editorManager.DocumentSaved   += (_, savedPath) => _fileWatcher?.SuppressNext(savedPath);
         _editorManager.DocumentSaved   += (_, _) => _ = RefreshGitFileStatusesAsync();
+        _editorManager.DocumentSaved   += (_, savedPath) => _ = RefreshGitDiffMarkersForFileAsync(savedPath);
         _editorManager.DocumentSaved   += (_, savedPath) =>
         {
             if (string.Equals(savedPath, ConfigService.GetConfigPath(), StringComparison.OrdinalIgnoreCase))
@@ -1341,22 +1382,43 @@ public class IdeApp : IDisposable
 
     private async Task RefreshGitFileStatusesAsync()
     {
-        var fileStatuses = await _gitService.GetFileStatusesAsync(_projectService.RootPath);
+        var (detailedFiles, workingDir) = await _gitService.GetDetailedFileStatusesAsync(_projectService.RootPath);
 
-        // Determine the repo working directory for relative path computation
-        string? repoWorkingDir = null;
-        try
+        // Build the simple dictionary for the explorer tree decorations
+        var fileStatuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in detailedFiles)
         {
-            var repoPath = LibGit2Sharp.Repository.Discover(_projectService.RootPath);
-            if (repoPath != null)
-            {
-                using var repo = new LibGit2Sharp.Repository(repoPath);
-                repoWorkingDir = repo.Info.WorkingDirectory;
-            }
+            if (!fileStatuses.ContainsKey(f.RelativePath))
+                fileStatuses[f.RelativePath] = f.Status;
         }
-        catch { }
 
-        _explorer?.UpdateGitStatuses(fileStatuses, repoWorkingDir);
+        _explorer?.UpdateGitStatuses(fileStatuses, workingDir);
+
+        // Refresh diff gutter markers for all open editors
+        if (_editorManager != null)
+        {
+            var root = _projectService.RootPath;
+            await _editorManager.UpdateAllGitDiffMarkersAsync(
+                path => _gitService.GetLineDiffMarkersAsync(root, path)!);
+        }
+
+        // Update the side panel Git tab
+        if (_sidePanel != null)
+        {
+            var branch = await _gitService.GetBranchAsync(_projectService.RootPath);
+            var log = await _gitService.GetLogAsync(_projectService.RootPath, 15);
+            var sidePanelFiles = detailedFiles
+                .Select(f => (f.RelativePath, f.AbsolutePath, f.Status, f.IsStaged))
+                .ToList();
+            _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log);
+        }
+    }
+
+    private async Task RefreshGitDiffMarkersForFileAsync(string filePath)
+    {
+        if (_editorManager == null) return;
+        var markers = await _gitService.GetLineDiffMarkersAsync(_projectService.RootPath, filePath);
+        _editorManager.UpdateGitDiffMarkers(filePath, markers);
     }
 
     private async Task RefreshExplorerAndGitAsync()
@@ -1376,6 +1438,204 @@ public class IdeApp : IDisposable
             _cts.Token);
 
         await RefreshGitStatusAsync();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Git Operations
+    // ──────────────────────────────────────────────────────────────
+
+    private async Task GitStageFileAsync(string absolutePath)
+    {
+        await _gitService.StageAsync(_projectService.RootPath, absolutePath);
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitUnstageFileAsync(string absolutePath)
+    {
+        await _gitService.UnstageAsync(_projectService.RootPath, absolutePath);
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitStageAllAsync()
+    {
+        await _gitService.StageAllAsync(_projectService.RootPath);
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitUnstageAllAsync()
+    {
+        await _gitService.UnstageAllAsync(_projectService.RootPath);
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitDiscardFileAsync(string absolutePath)
+    {
+        var confirmed = await GitDiscardConfirmDialog.ShowAsync(_ws, absolutePath);
+        if (!confirmed) return;
+        await _gitService.DiscardChangesAsync(_projectService.RootPath, absolutePath);
+        ReloadIfOpen(absolutePath);
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitDiscardAllAsync()
+    {
+        var confirmed = await GitDiscardConfirmDialog.ShowAllAsync(_ws);
+        if (!confirmed) return;
+        await _gitService.DiscardAllAsync(_projectService.RootPath);
+        ReloadAllOpenFiles();
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitShowDiffAsync(string absolutePath)
+    {
+        var diff = await _gitService.GetDiffAsync(_projectService.RootPath, absolutePath);
+        if (string.IsNullOrEmpty(diff))
+        {
+            // Try staged diff
+            diff = await _gitService.GetStagedDiffAsync(_projectService.RootPath, absolutePath);
+        }
+        if (string.IsNullOrEmpty(diff)) return;
+
+        var fileName = Path.GetFileName(absolutePath);
+        OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter());
+    }
+
+    private async Task GitShowDiffAllAsync()
+    {
+        var diff = await _gitService.GetDiffAllAsync(_projectService.RootPath);
+        if (string.IsNullOrEmpty(diff)) return;
+        OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter());
+    }
+
+    private async Task GitCommitAsync()
+    {
+        var status = await _gitService.GetStatusSummaryAsync(_projectService.RootPath);
+        var message = await GitCommitDialog.ShowAsync(_ws, status);
+        if (message == null) return;
+
+        var result = await _gitService.CommitAsync(_projectService.RootPath, message);
+        _outputPanel?.ClearBuildOutput();
+        _outputPanel?.AppendBuildLine(result.StartsWith("Error")
+            ? result
+            : $"Committed: {result}");
+        _outputPanel?.SwitchToBuildTab();
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitStashAsync()
+    {
+        var message = await GitStashDialog.ShowAsync(_ws);
+        if (message == null) return;
+
+        var result = await _gitService.StashAsync(_projectService.RootPath, message);
+        _outputPanel?.ClearBuildOutput();
+        _outputPanel?.AppendBuildLine(result);
+        _outputPanel?.SwitchToBuildTab();
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitStashPopAsync()
+    {
+        var result = await _gitService.StashPopAsync(_projectService.RootPath);
+        _outputPanel?.ClearBuildOutput();
+        _outputPanel?.AppendBuildLine(result);
+        _outputPanel?.SwitchToBuildTab();
+        ReloadAllOpenFiles();
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitSwitchBranchAsync()
+    {
+        var branches = await _gitService.GetBranchesAsync(_projectService.RootPath);
+        if (branches.Count == 0) return;
+        var current = branches.Count > 0 ? branches[0] : "";
+        var selected = await GitBranchPickerDialog.ShowAsync(_ws, branches, current);
+        if (selected == null) return;
+
+        var result = await _gitService.CheckoutAsync(_projectService.RootPath, selected);
+        _outputPanel?.ClearBuildOutput();
+        _outputPanel?.AppendBuildLine(result.StartsWith("Error")
+            ? result
+            : $"Switched to branch: {result}");
+        _outputPanel?.SwitchToBuildTab();
+        ReloadAllOpenFiles();
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitNewBranchAsync()
+    {
+        var name = await GitNewBranchDialog.ShowAsync(_ws);
+        if (name == null) return;
+
+        var result = await _gitService.CreateBranchAsync(_projectService.RootPath, name);
+        _outputPanel?.ClearBuildOutput();
+        _outputPanel?.AppendBuildLine(result.StartsWith("Error")
+            ? result
+            : $"Created branch: {result}");
+        _outputPanel?.SwitchToBuildTab();
+        await RefreshGitStatusAsync();
+    }
+
+    private async Task GitShowLogAsync()
+    {
+        var entries = await _gitService.GetLogAsync(_projectService.RootPath);
+        if (entries.Count == 0) return;
+        var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
+        OpenReadOnlyTab("Git Log", string.Join('\n', lines));
+    }
+
+    private async Task GitShowFileLogAsync(string absolutePath)
+    {
+        var entries = await _gitService.GetFileLogAsync(_projectService.RootPath, absolutePath);
+        if (entries.Count == 0) return;
+        var fileName = Path.GetFileName(absolutePath);
+        var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
+        OpenReadOnlyTab($"Log: {fileName}", string.Join('\n', lines));
+    }
+
+    private async Task GitShowBlameAsync(string absolutePath)
+    {
+        var blameLines = await _gitService.GetBlameAsync(_projectService.RootPath, absolutePath);
+        if (blameLines.Count == 0) return;
+
+        // Read the file content to pair blame with source lines
+        string[] sourceLines;
+        try { sourceLines = await File.ReadAllLinesAsync(absolutePath); }
+        catch { return; }
+
+        var output = new List<string>();
+        for (int i = 0; i < sourceLines.Length; i++)
+        {
+            var blame = i < blameLines.Count ? blameLines[i] : null;
+            var prefix = blame != null
+                ? $"{blame.ShortSha} {blame.Author,-12} {blame.When:yy-MM-dd}"
+                : new string(' ', 27);
+            output.Add($"{prefix} | {sourceLines[i]}");
+        }
+
+        var fileName = Path.GetFileName(absolutePath);
+        OpenReadOnlyTab($"Blame: {fileName}", string.Join('\n', output));
+    }
+
+    private void OpenReadOnlyTab(string title, string content, ISyntaxHighlighter? highlighter = null)
+    {
+        if (_editorManager == null) return;
+        _editorManager.OpenReadOnlyTab(title, content, highlighter);
+    }
+
+    private void ReloadIfOpen(string absolutePath)
+    {
+        if (_editorManager == null) return;
+        var idx = _editorManager.GetTabIndexForPath(absolutePath);
+        if (idx >= 0)
+            _editorManager.ReloadTabFromDisk(idx);
+    }
+
+    private void ReloadAllOpenFiles()
+    {
+        if (_editorManager == null) return;
+        for (int i = 0; i < _editorManager.TabCount; i++)
+            _editorManager.ReloadTabFromDisk(i);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -1570,8 +1830,24 @@ public class IdeApp : IDisposable
 
         // Git
         _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = RefreshGitStatusAsync(),                                  Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.pull",             Category = "Git",   Label = "Pull",                                         Execute = () => _ = GitCommandAsync("pull"),                                   Priority = 65 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = GitCommandAsync("push"),                                   Priority = 60 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stage-file",       Category = "Git",   Label = "Stage Current File",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitStageFileAsync(p); }, Priority = 68 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-file",     Category = "Git",   Label = "Unstage Current File",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitUnstageFileAsync(p); }, Priority = 67 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stage-all",        Category = "Git",   Label = "Stage All",                                    Execute = () => _ = GitStageAllAsync(),                                       Priority = 66 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-all",      Category = "Git",   Label = "Unstage All",                                  Execute = () => _ = GitUnstageAllAsync(),                                     Priority = 65 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.commit",           Category = "Git",   Label = "Commit\u2026",          Keybinding = "Ctrl+Enter", Execute = () => _ = GitCommitAsync(),                                      Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.pull",             Category = "Git",   Label = "Pull",                                         Execute = () => _ = GitCommandAsync("pull"),                                   Priority = 64 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = GitCommandAsync("push"),                                   Priority = 63 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.diff-file",        Category = "Git",   Label = "Diff Current File",                            Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitShowDiffAsync(p); }, Priority = 60 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.diff-all",         Category = "Git",   Label = "Diff All Changes",                             Execute = () => _ = GitShowDiffAllAsync(),                                    Priority = 59 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.discard-file",     Category = "Git",   Label = "Discard Changes (Current File)",                Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitDiscardFileAsync(p); }, Priority = 40 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.discard-all",      Category = "Git",   Label = "Discard All Changes",                          Execute = () => _ = GitDiscardAllAsync(),                                     Priority = 35 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stash",            Category = "Git",   Label = "Stash\u2026",                                  Execute = () => _ = GitStashAsync(),                                          Priority = 55 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stash-pop",        Category = "Git",   Label = "Stash Pop",                                    Execute = () => _ = GitStashPopAsync(),                                       Priority = 54 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.log",              Category = "Git",   Label = "Log",                                          Execute = () => _ = GitShowLogAsync(),                                        Priority = 50 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.log-file",         Category = "Git",   Label = "Log (Current File)",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitShowFileLogAsync(p); }, Priority = 49 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.blame",            Category = "Git",   Label = "Blame (Current File)",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitShowBlameAsync(p); }, Priority = 48 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.switch-branch",    Category = "Git",   Label = "Switch Branch\u2026",                          Execute = () => _ = GitSwitchBranchAsync(),                                   Priority = 45 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.new-branch",       Category = "Git",   Label = "New Branch\u2026",                             Execute = () => _ = GitNewBranchAsync(),                                      Priority = 44 });
 
         // LSP
         _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",    Keybinding = "F12",          Execute = () => _ = ShowGoToDefinitionAsync(),                              Priority = 90 });
@@ -2065,7 +2341,62 @@ public class IdeApp : IDisposable
         };
     }
 
+    private void OnGitPanelContextMenu(object? sender, GitContextMenuEventArgs e)
+    {
+        var items = new List<ContextMenuItem>();
+        switch (e.Target)
+        {
+            case GitContextMenuTarget.StagedFile:
+                items.Add(new("Unstage", null, () => _ = GitUnstageFileAsync(e.FilePath!)));
+                items.Add(new("Open File", null, () => _editorManager?.OpenFile(e.FilePath!)));
+                items.Add(new("Diff", null, () => _ = GitShowDiffAsync(e.FilePath!)));
+                items.Add(new("-"));
+                items.Add(new("File Log", null, () => _ = GitShowFileLogAsync(e.FilePath!)));
+                items.Add(new("Blame", null, () => _ = GitShowBlameAsync(e.FilePath!)));
+                break;
+            case GitContextMenuTarget.UnstagedFile:
+                items.Add(new("Stage", null, () => _ = GitStageFileAsync(e.FilePath!)));
+                items.Add(new("Open File", null, () => _editorManager?.OpenFile(e.FilePath!)));
+                items.Add(new("Diff", null, () => _ = GitShowDiffAsync(e.FilePath!)));
+                items.Add(new("-"));
+                items.Add(new("Discard Changes", null, () => _ = GitDiscardFileAsync(e.FilePath!)));
+                items.Add(new("-"));
+                items.Add(new("File Log", null, () => _ = GitShowFileLogAsync(e.FilePath!)));
+                items.Add(new("Blame", null, () => _ = GitShowBlameAsync(e.FilePath!)));
+                break;
+            case GitContextMenuTarget.CommitEntry:
+                items.Add(new("Copy SHA", null, () => ClipboardHelper.SetText(e.LogEntry!.Sha)));
+                items.Add(new("Show Full Log", null, () => _ = GitShowLogAsync()));
+                break;
+        }
+        ShowContextMenu(items, e.ScreenX, e.ScreenY, _sidePanel?.TabControl);
+    }
+
+    private void ShowGitMoreMenu()
+    {
+        var items = new List<ContextMenuItem>
+        {
+            new("Stash…", null, () => _ = GitStashAsync()),
+            new("Stash Pop", null, () => _ = GitStashPopAsync()),
+            new("-"),
+            new("Switch Branch…", null, () => _ = GitSwitchBranchAsync()),
+            new("New Branch…", null, () => _ = GitNewBranchAsync()),
+            new("-"),
+            new("Discard All Changes", null, () => _ = GitDiscardAllAsync()),
+            new("-"),
+            new("Diff All", null, () => _ = GitShowDiffAllAsync()),
+            new("Full Log", null, () => _ = GitShowLogAsync()),
+        };
+        var sp = _sidePanel!.TabControl;
+        ShowContextMenu(items, sp.ActualX + 2, sp.ActualY + 3, sp);
+    }
+
     private void OnExplorerContextMenu(object? sender, (string Path, System.Drawing.Point ScreenPosition, bool IsDirectory) e)
+    {
+        _ = BuildExplorerContextMenuAsync(e);
+    }
+
+    private async Task BuildExplorerContextMenuAsync((string Path, System.Drawing.Point ScreenPosition, bool IsDirectory) e)
     {
         var items = new List<ContextMenuItem>();
         var path = e.Path;
@@ -2080,6 +2411,44 @@ public class IdeApp : IDisposable
             () => _ = HandleRenameAsync(path)));
         items.Add(new ContextMenuItem("Delete", "Del",
             () => _ = HandleDeleteAsync(path)));
+
+        // Git section — query file status
+        if (!e.IsDirectory)
+        {
+            var isStaged = await _gitService.IsStagedAsync(_projectService.RootPath, path);
+            var hasChanges = await _gitService.HasWorkingChangesAsync(_projectService.RootPath, path);
+            var gitStatus = await _gitService.GetFileStatusAsync(_projectService.RootPath, path);
+
+            if (isStaged || hasChanges || gitStatus != null)
+            {
+                items.Add(new ContextMenuItem("-"));
+                if (hasChanges || gitStatus == GitFileStatus.Untracked)
+                    items.Add(new ContextMenuItem("Git: Stage", null, () => _ = GitStageFileAsync(path)));
+                if (isStaged)
+                    items.Add(new ContextMenuItem("Git: Unstage", null, () => _ = GitUnstageFileAsync(path)));
+                if (hasChanges || isStaged)
+                    items.Add(new ContextMenuItem("Git: Diff", null, () => _ = GitShowDiffAsync(path)));
+                if (hasChanges)
+                    items.Add(new ContextMenuItem("Git: Discard Changes", null, () => _ = GitDiscardFileAsync(path)));
+            }
+
+            // Always show log/blame for tracked files
+            if (gitStatus != GitFileStatus.Untracked || gitStatus == null)
+            {
+                if (!items.Any(i => i.Label.StartsWith("Git:")))
+                    items.Add(new ContextMenuItem("-"));
+                items.Add(new ContextMenuItem("Git: Log", null, () => _ = GitShowFileLogAsync(path)));
+                items.Add(new ContextMenuItem("Git: Blame", null, () => _ = GitShowBlameAsync(path)));
+            }
+        }
+        else
+        {
+            // Directory-level git
+            items.Add(new ContextMenuItem("-"));
+            items.Add(new ContextMenuItem("Git: Stage Folder", null, () => _ = GitStageFileAsync(path)));
+            items.Add(new ContextMenuItem("Git: Unstage Folder", null, () => _ = GitUnstageFileAsync(path)));
+        }
+
         items.Add(new ContextMenuItem("-"));
         items.Add(new ContextMenuItem("Copy Path", null,
             () => ClipboardHelper.SetText(path)));
@@ -2098,6 +2467,11 @@ public class IdeApp : IDisposable
 
     private void OnTabContextMenu(object? sender, (string FilePath, System.Drawing.Point ScreenPosition) e)
     {
+        _ = BuildTabContextMenuAsync(e);
+    }
+
+    private async Task BuildTabContextMenuAsync((string FilePath, System.Drawing.Point ScreenPosition) e)
+    {
         var filePath = e.FilePath;
         var tabIndex = _editorManager!.GetTabIndexForPath(filePath);
 
@@ -2114,10 +2488,30 @@ public class IdeApp : IDisposable
             {
                 if (tabIndex >= 0) _editorManager.SaveTabAt(tabIndex);
             }),
-            new("-"),
-            new("Copy Path", null, () => ClipboardHelper.SetText(filePath)),
-            new("Copy Relative Path", null, () => CopyRelativePath(filePath)),
         };
+
+        // Git section for the tab's file
+        if (!filePath.StartsWith("__readonly:"))
+        {
+            var isStaged = await _gitService.IsStagedAsync(_projectService.RootPath, filePath);
+            var hasChanges = await _gitService.HasWorkingChangesAsync(_projectService.RootPath, filePath);
+
+            if (isStaged || hasChanges)
+            {
+                items.Add(new ContextMenuItem("-"));
+                if (hasChanges)
+                    items.Add(new ContextMenuItem("Git: Stage", null, () => _ = GitStageFileAsync(filePath)));
+                if (isStaged)
+                    items.Add(new ContextMenuItem("Git: Unstage", null, () => _ = GitUnstageFileAsync(filePath)));
+                items.Add(new ContextMenuItem("Git: Diff", null, () => _ = GitShowDiffAsync(filePath)));
+                if (hasChanges)
+                    items.Add(new ContextMenuItem("Git: Discard Changes", null, () => _ = GitDiscardFileAsync(filePath)));
+            }
+        }
+
+        items.Add(new ContextMenuItem("-"));
+        items.Add(new ContextMenuItem("Copy Path", null, () => ClipboardHelper.SetText(filePath)));
+        items.Add(new ContextMenuItem("Copy Relative Path", null, () => CopyRelativePath(filePath)));
 
         ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _editorManager?.TabControl);
     }
@@ -2141,6 +2535,15 @@ public class IdeApp : IDisposable
             new("Find References", "Shift+F12", () => _ = ShowFindReferencesAsync(), Enabled: hasLsp),
             new("Rename Symbol", "Ctrl+F2", () => _ = ShowRenameAsync(), Enabled: hasLsp),
         };
+
+        // Git items for the current file
+        if (e.FilePath != null && !e.FilePath.StartsWith("__readonly:"))
+        {
+            var filePath = e.FilePath;
+            items.Add(new ContextMenuItem("-"));
+            items.Add(new ContextMenuItem("Git: Diff", null, () => _ = GitShowDiffAsync(filePath)));
+            items.Add(new ContextMenuItem("Git: Blame", null, () => _ = GitShowBlameAsync(filePath)));
+        }
 
         ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, editor);
     }

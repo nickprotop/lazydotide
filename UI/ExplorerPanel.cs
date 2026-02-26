@@ -39,7 +39,8 @@ public class ExplorerPanel
             HighlightBackgroundColor = Color.SteelBlue,
             HighlightForegroundColor = Color.White,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
+            VerticalAlignment = VerticalAlignment.Fill,
+            SelectOnRightClick = true
         };
 
         _panel = new ScrollablePanelControl

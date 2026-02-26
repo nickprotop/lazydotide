@@ -13,7 +13,7 @@ public class EditorManager
 {
     private readonly ConsoleWindowSystem _ws;
     private readonly TabControl _tabControl;
-    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty, string? SyntaxOverride = null);
+    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty, string? SyntaxOverride = null, GitDiffGutterRenderer? DiffGutter = null);
 
     private readonly Dictionary<string, int> _openFiles = new();
     private readonly Dictionary<int, EditorTabData> _tabData = new();
@@ -92,7 +92,8 @@ public class EditorManager
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill,
-            HeaderStyle = TabHeaderStyle.Separator
+            HeaderStyle = TabHeaderStyle.Separator,
+            SelectOnRightClick = true
         };
 
         _tabControl.TabChanged += OnTabChanged;
@@ -139,11 +140,11 @@ public class EditorManager
             return;
         }
 
-        var editor = CreateEditor(path, fileContent);
-        AddTab(path, editor, editor: editor, isDirty: false);
+        var (editor, diffGutter) = CreateEditor(path, fileContent);
+        AddTab(path, editor, editor: editor, isDirty: false, diffGutter: diffGutter);
     }
 
-    private void AddTab(string path, IWindowControl content, MultilineEditControl? editor, bool isDirty)
+    private void AddTab(string path, IWindowControl content, MultilineEditControl? editor, bool isDirty, GitDiffGutterRenderer? diffGutter = null)
     {
         bool wasEmpty = _tabControl.TabCount == 0;
         var tabTitle = Path.GetFileName(path);
@@ -155,7 +156,7 @@ public class EditorManager
         if (editor != null)
             editor.FocusedBackgroundColor = editor.BackgroundColor;
 
-        _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty);
+        _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty, DiffGutter: diffGutter);
 
         _tabControl.ActiveTabIndex = tabIndex;
 
@@ -169,7 +170,7 @@ public class EditorManager
             OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private MultilineEditControl CreateEditor(string path, string content)
+    private (MultilineEditControl Editor, GitDiffGutterRenderer DiffGutter) CreateEditor(string path, string content)
     {
         var editor = new MultilineEditControl
         {
@@ -184,6 +185,10 @@ public class EditorManager
 
         editor.Content = content;
         editor.SyntaxHighlighter = _pipeline.GetHighlighter(path);
+
+        // Add git diff gutter renderer (inserted at position 0 so it appears left of line numbers)
+        var diffGutter = new GitDiffGutterRenderer();
+        editor.InsertGutterRenderer(0, diffGutter);
 
         // Always re-enter editing mode on focus (code editor is always "typing mode")
         editor.GotFocus += (_, _) => editor.IsEditing = true;
@@ -216,7 +221,7 @@ public class EditorManager
             }
         };
 
-        return editor;
+        return (editor, diffGutter);
     }
 
     public void SaveCurrent()
@@ -583,5 +588,101 @@ public class EditorManager
     public int GetTabIndexForPath(string path)
     {
         return _openFiles.TryGetValue(path, out var idx) ? idx : -1;
+    }
+
+    public int TabCount => _tabControl.TabCount;
+
+    /// <summary>
+    /// Opens a read-only tab with the given title and text content.
+    /// If a tab with the same title already exists, it is replaced.
+    /// </summary>
+    public void OpenReadOnlyTab(string title, string content, ISyntaxHighlighter? syntaxHighlighter = null)
+    {
+        var pseudoPath = $"__readonly:{title}";
+
+        // Check if a tab with this title already exists
+        if (_openFiles.TryGetValue(pseudoPath, out var existingIdx) &&
+            _tabData.TryGetValue(existingIdx, out var existing) &&
+            existing.Editor != null)
+        {
+            existing.Editor.Content = content;
+            if (syntaxHighlighter != null)
+                existing.Editor.SyntaxHighlighter = syntaxHighlighter;
+            _tabControl.ActiveTabIndex = existingIdx;
+            return;
+        }
+
+        var editor = new MultilineEditControl
+        {
+            ShowLineNumbers = true,
+            HighlightCurrentLine = false,
+            IsEditing = false,
+            ReadOnly = true,
+            WrapMode = WrapMode.NoWrap,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Fill
+        };
+
+        editor.Content = content;
+        if (syntaxHighlighter != null)
+            editor.SyntaxHighlighter = syntaxHighlighter;
+
+        bool wasEmpty = _tabControl.TabCount == 0;
+        _tabControl.AddTab(title, editor, isClosable: true);
+        var tabIndex = _tabControl.TabCount - 1;
+        _openFiles[pseudoPath] = tabIndex;
+        _tabData[tabIndex] = new EditorTabData(FilePath: pseudoPath, Editor: editor, IsDirty: false);
+
+        // Sync focused bg to match view-mode bg (same as regular editor tabs)
+        editor.FocusedBackgroundColor = editor.BackgroundColor;
+
+        _tabControl.ActiveTabIndex = tabIndex;
+
+        if (wasEmpty)
+            OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Reloads a tab's content from disk. No-op for read-only or binary tabs.
+    /// </summary>
+    public void ReloadTabFromDisk(int index)
+    {
+        if (!_tabData.TryGetValue(index, out var data)) return;
+        if (data.FilePath == null || data.FilePath.StartsWith("__readonly:")) return;
+        ReloadFile(data.FilePath);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Git diff gutter markers
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Updates git diff markers for a specific file tab and invalidates the editor.
+    /// </summary>
+    public void UpdateGitDiffMarkers(string filePath, Dictionary<int, GitLineChangeType>? markers)
+    {
+        if (!_openFiles.TryGetValue(filePath, out var tabIndex)) return;
+        if (!_tabData.TryGetValue(tabIndex, out var data)) return;
+        if (data.DiffGutter == null) return;
+
+        data.DiffGutter.UpdateMarkers(markers);
+        data.Editor?.Container?.Invalidate(true);
+    }
+
+    /// <summary>
+    /// Refreshes git diff markers for all open file tabs using the provided async factory.
+    /// </summary>
+    public async Task UpdateAllGitDiffMarkersAsync(Func<string, Task<Dictionary<int, GitLineChangeType>?>> getMarkers)
+    {
+        foreach (var (filePath, tabIndex) in _openFiles)
+        {
+            if (!_tabData.TryGetValue(tabIndex, out var data)) continue;
+            if (data.DiffGutter == null || data.FilePath == null) continue;
+            if (data.FilePath.StartsWith("__readonly:")) continue;
+
+            var markers = await getMarkers(data.FilePath);
+            data.DiffGutter.UpdateMarkers(markers);
+            data.Editor?.Container?.Invalidate(true);
+        }
     }
 }

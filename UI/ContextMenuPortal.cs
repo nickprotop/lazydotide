@@ -69,7 +69,8 @@ internal class ContextMenuPortal : PortalContentContainer
                 Shortcut = item.Shortcut,
                 IsSeparator = item.IsSeparator,
                 IsEnabled = item.Enabled && !item.IsSeparator,
-                Action = item.Action,
+                // Do NOT set Action here — MenuControl invokes both Action and ItemSelected,
+                // and we already handle ItemSelected below to fire our own event.
             };
             _menu.AddItem(mi);
             if (!item.IsSeparator)
