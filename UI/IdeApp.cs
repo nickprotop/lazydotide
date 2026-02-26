@@ -1837,6 +1837,7 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "view.toggle-side-panel",Category = "View", Label = "Toggle Side Panel", Keybinding = "Alt+;",      Execute = ToggleSidePanel,                                                    Priority = 70 });
 
         // Git
+        _commandRegistry.Register(new IdeCommand { Id = "git.source-control",    Category = "Git",   Label = "Source Control",    Keybinding = "Alt+G", Execute = ShowSourceControl,                                                Priority = 90 });
         _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = RefreshGitStatusAsync(),                                  Priority = 70 });
         _commandRegistry.Register(new IdeCommand { Id = "git.stage-file",       Category = "Git",   Label = "Stage Current File",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitStageFileAsync(p); }, Priority = 68 });
         _commandRegistry.Register(new IdeCommand { Id = "git.unstage-file",     Category = "Git",   Label = "Unstage Current File",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitUnstageFileAsync(p); }, Priority = 67 });
@@ -1975,6 +1976,19 @@ public class IdeApp : IDisposable
             }
         }
         finally { _resizeCoupling = false; }
+    }
+
+    private void ShowSourceControl()
+    {
+        if (!_sidePanelVisible)
+        {
+            _sidePanelVisible = true;
+            if (_sidePanelCol != null) _sidePanelCol.Visible = true;
+            if (_sidePanelSplitter != null) _sidePanelSplitter.Visible = true;
+            _mainWindow?.ForceRebuildLayout();
+            _mainWindow?.Invalidate(true);
+        }
+        _sidePanel?.SwitchToGitTab();
     }
 
     private void ToggleSidePanel()
