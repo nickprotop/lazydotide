@@ -277,6 +277,8 @@ public class IdeApp : IDisposable
                 .AddItem("Toggle Output Panel", "Ctrl+J", () => ToggleOutput())
                 .AddItem("Toggle Side Panel", "Alt+;", () => ToggleSidePanel()))
             .AddItem("Git", m => m
+                .AddItem("Source Control", "Alt+G", ShowSourceControl)
+                .AddSeparator()
                 .AddItem("Refresh Status", () => _ = RefreshGitStatusAsync())
                 .AddSeparator()
                 .AddItem("Stage All", () => _ = GitStageAllAsync())
@@ -2108,11 +2110,7 @@ public class IdeApp : IDisposable
             return;
         }
 
-        var lines = result.Contents.Split('\n')
-            .Select(l => Markup.Escape(l.TrimEnd()))  // escape so plain text survives markup pipeline
-            .Where(l => !string.IsNullOrEmpty(l))
-            .Take(8)
-            .ToList();
+        var lines = LspMarkdownHelper.ConvertToSpectreMarkup(result.Contents);
         if (lines.Count == 0) return;
 
         ShowTooltipPortal(lines);
@@ -2274,7 +2272,7 @@ public class IdeApp : IDisposable
 
         var lines = new List<string> { line1 };
         if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
-            lines.Add(Markup.Escape(activeSig.Documentation!));
+            lines.AddRange(LspMarkdownHelper.ConvertToSpectreMarkup(activeSig.Documentation!));
 
         ShowTooltipPortal(lines);
     }
@@ -2556,6 +2554,7 @@ public class IdeApp : IDisposable
             new("Go to Definition", "F12", () => _ = ShowGoToDefinitionAsync(), Enabled: hasLsp),
             new("Find References", "Shift+F12", () => _ = ShowFindReferencesAsync(), Enabled: hasLsp),
             new("Rename Symbol", "Ctrl+F2", () => _ = ShowRenameAsync(), Enabled: hasLsp),
+            new("Hover Info", "Ctrl+K", () => _ = ShowHoverAsync(), Enabled: hasLsp),
         };
 
         // Git items for the current file
