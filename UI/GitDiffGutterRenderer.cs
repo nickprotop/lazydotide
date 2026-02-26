@@ -36,15 +36,15 @@ public class GitDiffGutterRenderer : IGutterRenderer
             switch (changeType)
             {
                 case GitLineChangeType.Added:
-                    ch = '▎';
+                    ch = '▌';
                     fg = Color.Green;
                     break;
                 case GitLineChangeType.Modified:
-                    ch = '▎';
-                    fg = Color.Blue;
+                    ch = '▌';
+                    fg = Color.DodgerBlue1;
                     break;
                 case GitLineChangeType.Deleted:
-                    ch = '▸';
+                    ch = '▶';
                     fg = Color.Red;
                     break;
             }

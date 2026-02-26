@@ -778,4 +778,60 @@ public class GitService
     public Task<List<GitBlameLine>> GetBlameAsync(string repoRoot, string absolutePath) => Task.Run(() => GetBlame(repoRoot, absolutePath));
 
     public Task<Dictionary<int, GitLineChangeType>> GetLineDiffMarkersAsync(string repoRoot, string absolutePath) => Task.Run(() => GetLineDiffMarkers(repoRoot, absolutePath));
+
+    public Task<string> GetCommitDetailAsync(string repoRoot, string sha) => Task.Run(() => GetCommitDetail(repoRoot, sha));
+
+    public string GetCommitDetail(string repoRoot, string sha)
+    {
+        try
+        {
+            var repoPath = Repository.Discover(repoRoot);
+            if (repoPath == null) return $"Commit {sha} not found.";
+            using var repo = new Repository(repoPath);
+            var commit = repo.Lookup<Commit>(sha);
+            if (commit == null) return $"Commit {sha} not found.";
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"commit {commit.Sha}");
+            sb.AppendLine($"Author: {commit.Author.Name} <{commit.Author.Email}>");
+            sb.AppendLine($"Date:   {commit.Author.When:ddd MMM d HH:mm:ss yyyy zzz}");
+            sb.AppendLine();
+            // Full message, indented like git log
+            foreach (var line in commit.Message.TrimEnd().Split('\n'))
+                sb.AppendLine($"    {line}");
+            sb.AppendLine();
+
+            // Diff stats against parent
+            var parent = commit.Parents.FirstOrDefault();
+            var tree = commit.Tree;
+            var parentTree = parent?.Tree;
+            var diff = repo.Diff.Compare<Patch>(parentTree, tree);
+
+            int totalAdded = 0, totalDeleted = 0;
+            foreach (var entry in diff)
+            {
+                var status = entry.Status switch
+                {
+                    ChangeKind.Added => "A",
+                    ChangeKind.Deleted => "D",
+                    ChangeKind.Modified => "M",
+                    ChangeKind.Renamed => "R",
+                    ChangeKind.Copied => "C",
+                    _ => "?"
+                };
+                sb.AppendLine($" {status}  +{entry.LinesAdded,-4} -{entry.LinesDeleted,-4}  {entry.Path}");
+                totalAdded += entry.LinesAdded;
+                totalDeleted += entry.LinesDeleted;
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($" {diff.Count()} file(s) changed, {totalAdded} insertion(s), {totalDeleted} deletion(s)");
+
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            return $"Error reading commit {sha}: {ex.Message}";
+        }
+    }
 }

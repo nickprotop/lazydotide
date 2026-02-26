@@ -427,9 +427,7 @@ public class IdeApp : IDisposable
         _sidePanel.GitContextMenuRequested += OnGitPanelContextMenu;
 
         // Log entry
-        _sidePanel.GitLogEntryActivated += (_, entry) =>
-            OpenReadOnlyTab($"Commit: {entry.ShortSha}",
-                $"{entry.Sha}\n{entry.Author}\n{entry.When:yyyy-MM-dd HH:mm}\n\n{entry.MessageShort}");
+        _sidePanel.GitLogEntryActivated += (_, entry) => _ = ShowCommitDetailAsync(entry);
 
         // More menu
         _sidePanel.GitMoreMenuRequested += (_, _) => ShowGitMoreMenu();
@@ -579,7 +577,11 @@ public class IdeApp : IDisposable
         _editorManager.ValidationWarnings += (_, warnings) =>
             _outputPanel!.ShowWarnings(warnings);
 
-        _editorManager.DocumentOpened  += (_, a) => _ = _lsp?.DidOpenAsync(a.FilePath, a.Content);
+        _editorManager.DocumentOpened  += (_, a) =>
+        {
+            _ = _lsp?.DidOpenAsync(a.FilePath, a.Content);
+            _ = RefreshGitDiffMarkersForFileAsync(a.FilePath);
+        };
         _editorManager.DocumentChanged += (_, a) =>
         {
             _ = _lsp?.DidChangeAsync(a.FilePath, a.Content);
@@ -1574,6 +1576,12 @@ public class IdeApp : IDisposable
             : $"Created branch: {result}");
         _outputPanel?.SwitchToBuildTab();
         await RefreshGitStatusAsync();
+    }
+
+    private async Task ShowCommitDetailAsync(GitLogEntry entry)
+    {
+        var detail = await _gitService.GetCommitDetailAsync(_projectService.RootPath, entry.Sha);
+        OpenReadOnlyTab($"Commit: {entry.ShortSha}", detail, new CommitDetailSyntaxHighlighter());
     }
 
     private async Task GitShowLogAsync()

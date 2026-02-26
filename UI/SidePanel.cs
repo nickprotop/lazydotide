@@ -110,11 +110,6 @@ internal class SidePanel
             if (item?.Tag is string path)
                 GitDiffRequested?.Invoke(this, path);
         };
-        _stagedList.MouseDoubleClick += (_, args) =>
-        {
-            if (_stagedList.SelectedItem?.Tag is string path)
-                GitOpenFileRequested?.Invoke(this, path);
-        };
         _stagedList.MouseRightClick += (_, args) =>
         {
             var item = _stagedList.SelectedItem;
@@ -141,11 +136,6 @@ internal class SidePanel
         {
             if (item?.Tag is string path)
                 GitDiffRequested?.Invoke(this, path);
-        };
-        _unstagedList.MouseDoubleClick += (_, args) =>
-        {
-            if (_unstagedList.SelectedItem?.Tag is string path)
-                GitOpenFileRequested?.Invoke(this, path);
         };
         _unstagedList.MouseRightClick += (_, args) =>
         {
@@ -231,7 +221,7 @@ internal class SidePanel
 
         foreach (var f in files)
         {
-            var item = new ListItem(Markup.Escape(f.RelativePath))
+            var item = new ListItem($"  {Markup.Escape(f.RelativePath)}")
             {
                 Icon = GetStatusChar(f.Status),
                 IconColor = GetStatusColor(f.Status),
@@ -248,7 +238,7 @@ internal class SidePanel
         {
             foreach (var entry in recentLog.Take(20))
             {
-                var label = $"[grey50]{Markup.Escape(entry.ShortSha)}[/] {Markup.Escape(entry.MessageShort)}";
+                var label = $"  [grey50]{Markup.Escape(entry.ShortSha)}[/] {Markup.Escape(entry.MessageShort)}";
                 _logList.AddItem(new ListItem(label) { Tag = entry });
             }
         }
@@ -280,14 +270,15 @@ internal class SidePanel
         {
             _gitPanel.AddControl(new MarkupControl(new List<string>
             {
+                "",
                 $"[green]\u25B6 Staged Changes ({_stagedList.Items.Count})[/]"
             }));
             _gitPanel.AddControl(_stagedList);
-            _gitPanel.AddControl(new MarkupControl(new List<string> { "" }));
         }
 
         _gitPanel.AddControl(new MarkupControl(new List<string>
         {
+            "",
             $"[yellow]\u25CB Changes ({_unstagedList.Items.Count})[/]"
         }));
         if (_unstagedList.Items.Count > 0)
@@ -298,7 +289,7 @@ internal class SidePanel
         {
             _gitPanel.AddControl(new MarkupControl(new List<string>
             {
-                "[dim]  No changes[/]"
+                "  [dim]No changes[/]"
             }));
         }
 

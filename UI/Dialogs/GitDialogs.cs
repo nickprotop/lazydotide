@@ -19,8 +19,8 @@ public static class GitCommitDialog
         var tcs = new TaskCompletionSource<string?>();
 
         var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(60, Math.Max(40, desktop.Width - 4));
-        const int dialogHeight = 9;
+        int dialogWidth = Math.Min(72, Math.Max(50, desktop.Width - 4));
+        int dialogHeight = Math.Min(18, Math.Max(12, desktop.Height - 4));
         int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
         int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
 
@@ -44,33 +44,53 @@ public static class GitCommitDialog
                 .Build());
         }
 
-        var input = Controls.Prompt()
-            .WithPrompt("Message: ")
+        var editor = Controls.MultilineEdit()
+            .WithPlaceholder("Enter commit message...")
             .WithAlignment(HorizontalAlignment.Stretch)
+            .WithVerticalAlignment(VerticalAlignment.Fill)
+            .WithWrapMode(WrapMode.Wrap)
             .Build();
+        editor.IsEditing = true;
 
-        modal.AddControl(input);
+        modal.AddControl(editor);
 
+        string? result = null;
+
+        void DoCommit()
+        {
+            var msg = editor.Content?.Trim();
+            if (!string.IsNullOrEmpty(msg))
+            {
+                result = msg;
+                modal.Close();
+            }
+        }
+
+        var commitBtn = new ButtonControl { Text = "Commit", Width = 10 };
+        var cancelBtn = new ButtonControl { Text = "Cancel", Width = 10 };
+        commitBtn.Click += (_, _) => DoCommit();
+        cancelBtn.Click += (_, _) => modal.Close();
+
+        var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left, StickyPosition = StickyPosition.Bottom };
+        var commitCol = new ColumnContainer(buttonRow); commitCol.AddContent(commitBtn); buttonRow.AddColumn(commitCol);
+        var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
+
+        modal.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
+        modal.AddControl(buttonRow);
         modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Commit  \u2022  Escape: Cancel[/]")
+            .AddLine("[grey50]Ctrl+Enter: Commit  \u2022  Escape: Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
-
-        string? result = null;
 
         modal.OnClosed += (_, _) => tcs.TrySetResult(result);
 
         modal.KeyPressed += (_, e) =>
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
+            if (e.KeyInfo.Key == ConsoleKey.Enter &&
+                e.KeyInfo.Modifiers.HasFlag(ConsoleModifiers.Control))
             {
-                var msg = input.Input?.Trim();
-                if (!string.IsNullOrEmpty(msg))
-                {
-                    result = msg;
-                    modal.Close();
-                }
+                DoCommit();
                 e.Handled = true;
             }
             else if (e.KeyInfo.Key == ConsoleKey.Escape)
@@ -82,7 +102,7 @@ public static class GitCommitDialog
 
         ws.AddWindow(modal);
         ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
+        editor.SetFocus(true, FocusReason.Programmatic);
 
         return tcs.Task;
     }
