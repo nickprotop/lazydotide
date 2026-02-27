@@ -1451,6 +1451,10 @@ public class IdeApp : IDisposable
 
     private void HandleExternalFileChanged(string path)
     {
+        // .gitignore change affects explorer ignore state
+        if (Path.GetFileName(path).Equals(".gitignore", StringComparison.OrdinalIgnoreCase))
+            _ = RefreshExplorerAndGitAsync();
+
         if (!(_editorManager?.IsFileOpen(path) ?? false)) return;
 
         if (_editorManager.IsFileDirty(path))
@@ -1542,7 +1546,7 @@ public class IdeApp : IDisposable
     private async Task RefreshGitFileStatusesAsync()
     {
         var (detailedFiles, workingDir) = await _gitService.GetDetailedFileStatusesAsync(_projectService.RootPath);
-        var ignoredPaths = await _gitService.GetIgnoredPathsAsync(_projectService.RootPath);
+        var isPathIgnored = await _gitService.CreateIgnoreCheckerAsync(_projectService.RootPath);
 
         // Build the simple dictionary for the explorer tree decorations
         var fileStatuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
@@ -1552,7 +1556,7 @@ public class IdeApp : IDisposable
                 fileStatuses[f.RelativePath] = f.Status;
         }
 
-        _pendingUiActions.Enqueue(() => _explorer?.UpdateGitStatuses(fileStatuses, workingDir, ignoredPaths));
+        _pendingUiActions.Enqueue(() => _explorer?.UpdateGitStatuses(fileStatuses, workingDir, isPathIgnored));
 
         // Refresh diff gutter markers for all open editors
         if (_editorManager != null)

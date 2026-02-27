@@ -706,29 +706,53 @@ public class GitService
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns the set of repo-relative paths that are ignored by git.
-    /// Includes both files and directories.
+    /// Creates a function that checks whether a repo-relative path is ignored by git.
+    /// Uses libgit2's ignore rules engine which handles all .gitignore patterns correctly.
+    /// The returned function is safe to call from the UI thread (results are pre-cached).
     /// </summary>
-    public HashSet<string> GetIgnoredPaths(string repoRoot)
+    public Func<string, bool> CreateIgnoreChecker(string repoRoot)
     {
-        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         try
         {
             var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return ignored;
+            if (repoPath == null) return _ => false;
             using var repo = new Repository(repoPath);
-            foreach (var entry in repo.RetrieveStatus(new StatusOptions
+            var workDir = repo.Info.WorkingDirectory;
+            if (workDir == null) return _ => false;
+
+            // Walk the file system and check each path against git's ignore rules
+            void CheckDirectory(string dir, string relativePrefix)
             {
-                IncludeUntracked = true,
-                IncludeIgnored = true
-            }))
-            {
-                if (entry.State.HasFlag(FileStatus.Ignored))
-                    ignored.Add(entry.FilePath);
+                try
+                {
+                    foreach (var entry in Directory.EnumerateFileSystemEntries(dir))
+                    {
+                        var name = Path.GetFileName(entry);
+                        if (name == ".git") continue;
+
+                        var isDir = Directory.Exists(entry);
+                        var relativePath = string.IsNullOrEmpty(relativePrefix)
+                            ? name
+                            : relativePrefix + "/" + name;
+                        // libgit2 expects trailing slash for directory checks
+                        var checkPath = isDir ? relativePath + "/" : relativePath;
+                        bool ignored = repo.Ignore.IsPathIgnored(checkPath);
+                        cache[relativePath] = ignored;
+
+                        if (isDir && !ignored)
+                            CheckDirectory(entry, relativePath);
+                        // Don't recurse into ignored directories — all children are implicitly ignored
+                    }
+                }
+                catch { }
             }
+
+            CheckDirectory(workDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), "");
         }
         catch { }
-        return ignored;
+
+        return path => cache.TryGetValue(path, out var ignored) && ignored;
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -746,20 +770,7 @@ public class GitService
             if (repoPath == null) return false;
             using var repo = new Repository(repoPath);
             var relativePath = MakeRelative(repo, absolutePath);
-            var gitignorePath = Path.Combine(repo.Info.WorkingDirectory!, ".gitignore");
-            if (!File.Exists(gitignorePath)) return false;
-
-            var lines = File.ReadAllLines(gitignorePath);
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
-                // Match exact path or path with trailing /
-                var pattern = trimmed.TrimEnd('/');
-                if (pattern.Equals(relativePath, StringComparison.Ordinal) ||
-                    pattern.Equals(relativePath.TrimEnd('/'), StringComparison.Ordinal))
-                    return true;
-            }
+            return repo.Ignore.IsPathIgnored(relativePath);
         }
         catch { }
         return false;
@@ -894,7 +905,7 @@ public class GitService
 
     public Task<string> GetCommitDetailAsync(string repoRoot, string sha) => Task.Run(() => GetCommitDetail(repoRoot, sha));
 
-    public Task<HashSet<string>> GetIgnoredPathsAsync(string repoRoot) => Task.Run(() => GetIgnoredPaths(repoRoot));
+    public Task<Func<string, bool>> CreateIgnoreCheckerAsync(string repoRoot) => Task.Run(() => CreateIgnoreChecker(repoRoot));
     public Task<bool> IsInGitignoreAsync(string repoRoot, string absolutePath) => Task.Run(() => IsInGitignore(repoRoot, absolutePath));
     public Task AddToGitignoreAsync(string repoRoot, string absolutePath, bool isDirectory) => Task.Run(() => AddToGitignore(repoRoot, absolutePath, isDirectory));
     public Task RemoveFromGitignoreAsync(string repoRoot, string absolutePath) => Task.Run(() => RemoveFromGitignore(repoRoot, absolutePath));

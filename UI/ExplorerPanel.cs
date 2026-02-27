@@ -18,7 +18,7 @@ public class ExplorerPanel
     private readonly TreeControl _tree;
     private readonly ScrollablePanelControl _panel;
     private Dictionary<string, GitFileStatus> _gitStatuses = new(StringComparer.OrdinalIgnoreCase);
-    private HashSet<string> _gitIgnoredPaths = new(StringComparer.OrdinalIgnoreCase);
+    private Func<string, bool>? _isPathIgnored;
     private string? _repoWorkingDir;
 
     public event EventHandler<string>? FileOpenRequested;
@@ -72,10 +72,10 @@ public class ExplorerPanel
         return path != null && Directory.Exists(path);
     }
 
-    public void UpdateGitStatuses(Dictionary<string, GitFileStatus> statuses, string? repoWorkingDir = null, HashSet<string>? ignoredPaths = null)
+    public void UpdateGitStatuses(Dictionary<string, GitFileStatus> statuses, string? repoWorkingDir = null, Func<string, bool>? isPathIgnored = null)
     {
         _gitStatuses = statuses;
-        _gitIgnoredPaths = ignoredPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _isPathIgnored = isPathIgnored;
         _repoWorkingDir = repoWorkingDir;
         Refresh();
     }
@@ -212,34 +212,10 @@ public class ExplorerPanel
 
     private bool IsIgnored(FileNode fileNode)
     {
-        if (_gitIgnoredPaths.Count == 0) return false;
+        if (_isPathIgnored == null) return false;
         var relativePath = GetRelativePath(fileNode.FullPath);
         if (relativePath == null) return false;
-
-        // Check exact match (files are listed directly)
-        if (_gitIgnoredPaths.Contains(relativePath)) return true;
-
-        // Check if any ancestor directory is ignored (e.g. file inside bin/ when bin/ is ignored)
-        var parts = relativePath.Split('/');
-        for (int i = 1; i < parts.Length; i++)
-        {
-            var ancestorDir = string.Join('/', parts, 0, i) + "/";
-            if (_gitIgnoredPaths.Contains(ancestorDir)) return true;
-            // Also check without trailing slash
-            if (_gitIgnoredPaths.Contains(ancestorDir.TrimEnd('/'))) return true;
-        }
-
-        // For directories: check if any ignored path is a descendant
-        if (fileNode.IsDirectory)
-        {
-            var dirPrefix = relativePath.EndsWith('/') ? relativePath : relativePath + "/";
-            foreach (var key in _gitIgnoredPaths)
-            {
-                if (key.StartsWith(dirPrefix, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-        }
-        return false;
+        return _isPathIgnored(relativePath);
     }
 
     private string GetGitBadge(FileNode fileNode)
