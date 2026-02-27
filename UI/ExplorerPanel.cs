@@ -18,6 +18,7 @@ public class ExplorerPanel
     private readonly TreeControl _tree;
     private readonly ScrollablePanelControl _panel;
     private Dictionary<string, GitFileStatus> _gitStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _gitIgnoredPaths = new(StringComparer.OrdinalIgnoreCase);
     private string? _repoWorkingDir;
 
     public event EventHandler<string>? FileOpenRequested;
@@ -57,6 +58,7 @@ public class ExplorerPanel
     }
 
     public IWindowControl Control => _panel;
+    public TreeControl Tree => _tree;
     public bool HasFocus => _tree.HasFocus;
 
     public string? GetSelectedPath()
@@ -70,17 +72,55 @@ public class ExplorerPanel
         return path != null && Directory.Exists(path);
     }
 
-    public void UpdateGitStatuses(Dictionary<string, GitFileStatus> statuses, string? repoWorkingDir = null)
+    public void UpdateGitStatuses(Dictionary<string, GitFileStatus> statuses, string? repoWorkingDir = null, HashSet<string>? ignoredPaths = null)
     {
         _gitStatuses = statuses;
+        _gitIgnoredPaths = ignoredPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _repoWorkingDir = repoWorkingDir;
         Refresh();
     }
 
     public void Refresh()
     {
+        // Capture expanded paths and selection before rebuilding
+        var expandedTags = new HashSet<string>();
+        CollectExpandedTags(_tree.RootNodes, expandedTags);
+        var selectedTag = _tree.SelectedNode?.Tag as string;
+
         _tree.Clear();
         BuildTree();
+
+        // Restore expanded state
+        RestoreExpandedTags(_tree.RootNodes, expandedTags);
+
+        // Restore selection
+        if (selectedTag != null)
+        {
+            var node = _tree.FindNodeByTag(selectedTag);
+            if (node != null) _tree.SelectNode(node);
+        }
+    }
+
+    private static void CollectExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.IsExpanded && node.Tag is string path)
+                tags.Add(path);
+            if (node.Children.Count > 0)
+                CollectExpandedTags(node.Children, tags);
+        }
+    }
+
+    private static void RestoreExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.Tag is string path && tags.Contains(path))
+                node.IsExpanded = true;
+            if (node.Children.Count > 0)
+                RestoreExpandedTags(node.Children, tags);
+        }
     }
 
     public bool HandleKey(ConsoleKey key, ConsoleModifiers mods)
@@ -150,24 +190,58 @@ public class ExplorerPanel
 
         treeNode.Tag = fileNode.FullPath;
 
-        if (fileNode.IsDirectory)
+        if (IsIgnored(fileNode))
+        {
+            treeNode.TextColor = Color.Grey35;
+        }
+        else if (fileNode.IsDirectory)
         {
             treeNode.TextColor = Color.Cyan1;
-            foreach (var child in fileNode.Children)
-                AddNode(child, treeNode);
         }
         else
         {
             treeNode.TextColor = GetFileColor(fileNode.Name);
         }
+
+        if (fileNode.IsDirectory)
+        {
+            foreach (var child in fileNode.Children)
+                AddNode(child, treeNode);
+        }
+    }
+
+    private bool IsIgnored(FileNode fileNode)
+    {
+        if (_gitIgnoredPaths.Count == 0) return false;
+        var relativePath = GetRelativePath(fileNode.FullPath);
+        if (relativePath == null) return false;
+
+        // Check exact match (files are listed directly)
+        if (_gitIgnoredPaths.Contains(relativePath)) return true;
+
+        // For directories: check if any ignored path is a descendant
+        if (fileNode.IsDirectory)
+        {
+            var dirPrefix = relativePath.EndsWith('/') ? relativePath : relativePath + "/";
+            foreach (var key in _gitIgnoredPaths)
+            {
+                if (key.StartsWith(dirPrefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private string GetGitBadge(FileNode fileNode)
     {
-        if (_gitStatuses.Count == 0) return "";
-
         var relativePath = GetRelativePath(fileNode.FullPath);
         if (relativePath == null) return "";
+
+        // Show ignored badge
+        if (IsIgnored(fileNode))
+            return "[grey35] I[/]";
+
+        if (_gitStatuses.Count == 0) return "";
 
         if (!fileNode.IsDirectory)
         {

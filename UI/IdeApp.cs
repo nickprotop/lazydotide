@@ -19,6 +19,7 @@ public class IdeApp : IDisposable
     private readonly ProjectService _projectService;
     private readonly BuildService _buildService;
     private readonly GitService _gitService;
+    private readonly WorkspaceService _workspaceService;
     private LspClient? _lsp;
 
     private Window? _mainWindow;
@@ -127,10 +128,13 @@ public class IdeApp : IDisposable
         _projectService = new ProjectService(projectPath);
         _buildService = new BuildService();
         _gitService = new GitService();
+        _workspaceService = new WorkspaceService(projectPath);
         _hasLazyNuGet = DetectLazyNuGet() != null;
 
         InitBottomStatus();  // Must be before CreateLayout so DesktopDimensions accounts for the bar
         CreateLayout();
+        _workspaceService.Load();
+        RestoreWorkspaceState();
         InitializeCommands();
 
         // Async post-init: git status + optional LSP
@@ -143,6 +147,7 @@ public class IdeApp : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        try { CaptureWorkspaceState(); _workspaceService.Save(); } catch { }
         _cts.Cancel();
         _dotTriggerDebounce?.Dispose();
         _symbolRefreshDebounce?.Dispose();
@@ -477,8 +482,6 @@ public class IdeApp : IDisposable
         mainContent.AddSplitter(1, _sidePanelSplitter);
 
         _sidePanel.SymbolActivated += (_, entry) => NavigateToLocation(entry);
-        _sidePanel.GitStageRequested += (_, path) => _ = GitStageFileAsync(path);
-        _sidePanel.GitUnstageRequested += (_, path) => _ = GitUnstageFileAsync(path);
 
         // Toolbar actions
         _sidePanel.GitCommitRequested += (_, _) => _ = GitCommitAsync();
@@ -488,8 +491,6 @@ public class IdeApp : IDisposable
 
         // File interactions
         _sidePanel.GitDiffRequested += (_, path) => _ = GitShowDiffAsync(path);
-        _sidePanel.GitOpenFileRequested += (_, path) => _editorManager?.OpenFile(path);
-
         // Context menu
         _sidePanel.GitContextMenuRequested += OnGitPanelContextMenu;
 
@@ -1161,6 +1162,9 @@ public class IdeApp : IDisposable
                 {
                     foreach (var (filePath, content) in _editorManager.GetOpenDocuments())
                         await _lsp.DidOpenAsync(filePath, content);
+
+                    // Refresh symbols for the active file now that LSP is ready
+                    RefreshSymbolsForFile(_editorManager.CurrentFilePath);
                 }
             }
             else
@@ -1538,6 +1542,7 @@ public class IdeApp : IDisposable
     private async Task RefreshGitFileStatusesAsync()
     {
         var (detailedFiles, workingDir) = await _gitService.GetDetailedFileStatusesAsync(_projectService.RootPath);
+        var ignoredPaths = await _gitService.GetIgnoredPathsAsync(_projectService.RootPath);
 
         // Build the simple dictionary for the explorer tree decorations
         var fileStatuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
@@ -1547,7 +1552,7 @@ public class IdeApp : IDisposable
                 fileStatuses[f.RelativePath] = f.Status;
         }
 
-        _explorer?.UpdateGitStatuses(fileStatuses, workingDir);
+        _explorer?.UpdateGitStatuses(fileStatuses, workingDir, ignoredPaths);
 
         // Refresh diff gutter markers for all open editors
         if (_editorManager != null)
@@ -1609,6 +1614,22 @@ public class IdeApp : IDisposable
     {
         await _gitService.UnstageAsync(_projectService.RootPath, absolutePath);
         await RefreshGitStatusAsync();
+    }
+
+    private async Task GitAddToGitignoreAsync(string absolutePath, bool isDirectory)
+    {
+        await _gitService.AddToGitignoreAsync(_projectService.RootPath, absolutePath, isDirectory);
+        var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
+        ReloadIfOpen(gitignorePath);
+        await RefreshExplorerAndGitAsync();
+    }
+
+    private async Task GitRemoveFromGitignoreAsync(string absolutePath)
+    {
+        await _gitService.RemoveFromGitignoreAsync(_projectService.RootPath, absolutePath);
+        var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
+        ReloadIfOpen(gitignorePath);
+        await RefreshExplorerAndGitAsync();
     }
 
     private async Task GitStageAllAsync()
@@ -2010,6 +2031,8 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "git.blame",            Category = "Git",   Label = "Blame (Current File)",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = GitShowBlameAsync(p); }, Priority = 48 });
         _commandRegistry.Register(new IdeCommand { Id = "git.switch-branch",    Category = "Git",   Label = "Switch Branch\u2026",                          Execute = () => _ = GitSwitchBranchAsync(),                                   Priority = 45 });
         _commandRegistry.Register(new IdeCommand { Id = "git.new-branch",       Category = "Git",   Label = "New Branch\u2026",                             Execute = () => _ = GitNewBranchAsync(),                                      Priority = 44 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.add-to-gitignore",    Category = "Git",   Label = "Add to .gitignore",                            Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = GitAddToGitignoreAsync(p, Directory.Exists(p)); }, Priority = 42 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.remove-from-gitignore", Category = "Git", Label = "Remove from .gitignore",                       Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = GitRemoveFromGitignoreAsync(p); }, Priority = 41 });
 
         // LSP
         _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",    Keybinding = "F12",          Execute = () => _ = ShowGoToDefinitionAsync(),                              Priority = 90 });
@@ -2143,6 +2166,177 @@ public class IdeApp : IDisposable
     {
         if (_editorManager != null)
             _editorManager.WrapMode = mode;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Workspace state persistence
+    // ──────────────────────────────────────────────────────────────
+
+    private void CaptureWorkspaceState()
+    {
+        var state = _workspaceService.State;
+
+        // Layout visibility
+        state.ExplorerVisible = _explorerVisible;
+        state.OutputVisible = _outputVisible;
+        state.SidePanelVisible = _sidePanelVisible;
+        state.SplitRatio = _splitRatio;
+        if (_explorerCol != null)
+            state.ExplorerColumnWidth = _explorerCol.Width ?? _explorerCol.ActualWidth;
+        if (_sidePanelCol != null)
+            state.SidePanelColumnWidth = _sidePanelCol.Width ?? _sidePanelCol.ActualWidth;
+
+        // Wrap mode
+        if (_editorManager != null) state.WrapMode = _editorManager.WrapMode.ToString();
+
+        // Open files
+        state.OpenFiles.Clear();
+        if (_editorManager != null)
+        {
+            int tabCount = _editorManager.TabControl.TabCount;
+            int activeIdx = _editorManager.TabControl.ActiveTabIndex;
+            for (int i = 0; i < tabCount; i++)
+            {
+                var filePath = _editorManager.GetTabFilePath(i);
+                if (filePath == null) continue; // skip non-file tabs (shell, etc.)
+                var cursor = _editorManager.GetTabCursor(i);
+                state.OpenFiles.Add(new WorkspaceFile
+                {
+                    Path = _workspaceService.ToRelativePath(filePath),
+                    CursorLine = cursor?.Line ?? 1,
+                    CursorColumn = cursor?.Column ?? 1,
+                    IsActive = i == activeIdx
+                });
+            }
+        }
+
+        // Explorer expanded paths
+        state.ExpandedPaths.Clear();
+        if (_explorer != null)
+        {
+            CollectExpandedPaths(_explorer.Tree.RootNodes, state.ExpandedPaths);
+        }
+
+        // Explorer selected path
+        state.SelectedExplorerPath = null;
+        if (_explorer != null)
+        {
+            var selectedPath = _explorer.GetSelectedPath();
+            if (selectedPath != null)
+                state.SelectedExplorerPath = _workspaceService.ToRelativePath(selectedPath);
+        }
+
+        // Output tab
+        if (_outputPanel != null)
+            state.ActiveOutputTab = _outputPanel.TabControl.ActiveTabIndex;
+    }
+
+    private void CollectExpandedPaths(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, List<string> paths)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.IsExpanded && node.Tag is string fullPath)
+            {
+                paths.Add(_workspaceService.ToRelativePath(fullPath));
+            }
+            if (node.Children.Count > 0)
+                CollectExpandedPaths(node.Children, paths);
+        }
+    }
+
+    private void RestoreWorkspaceState()
+    {
+        var state = _workspaceService.State;
+
+        // Panel visibility — toggle only if different from defaults
+        if (!state.ExplorerVisible && _explorerVisible)
+            ToggleExplorer();
+        if (!state.OutputVisible && _outputVisible)
+            ToggleOutput();
+        if (state.SidePanelVisible && !_sidePanelVisible)
+            ToggleSidePanel();
+
+        // Column widths
+        if (_explorerCol != null && state.ExplorerColumnWidth > 0)
+            _explorerCol.Width = state.ExplorerColumnWidth;
+        if (_sidePanelCol != null && state.SidePanelColumnWidth > 0)
+            _sidePanelCol.Width = state.SidePanelColumnWidth;
+
+        // Split ratio
+        if (state.SplitRatio > 0.1 && state.SplitRatio < 0.95)
+        {
+            _splitRatio = state.SplitRatio;
+            var desktop = _ws.DesktopDimensions;
+            int mainH = (int)(desktop.Height * _splitRatio);
+            int outH = desktop.Height - mainH;
+            _resizeCoupling = true;
+            try
+            {
+                _mainWindow?.SetSize(desktop.Width, mainH);
+                _outputWindow?.SetSize(desktop.Width, outH);
+                _outputWindow?.SetPosition(new System.Drawing.Point(0, mainH));
+            }
+            finally { _resizeCoupling = false; }
+        }
+
+        // Wrap mode
+        if (_editorManager != null && Enum.TryParse<WrapMode>(state.WrapMode, out var wm))
+            _editorManager.WrapMode = wm;
+
+        // Open files
+        int activeTabIndex = -1;
+        for (int i = 0; i < state.OpenFiles.Count; i++)
+        {
+            var entry = state.OpenFiles[i];
+            var absolutePath = _workspaceService.ToAbsolutePath(entry.Path);
+            if (!File.Exists(absolutePath)) continue;
+
+            _editorManager?.OpenFile(absolutePath);
+
+            // Restore cursor position
+            var editor = _editorManager?.CurrentEditor;
+            if (editor != null && (entry.CursorLine > 1 || entry.CursorColumn > 1))
+            {
+                editor.SetLogicalCursorPosition(new System.Drawing.Point(
+                    entry.CursorColumn - 1, entry.CursorLine - 1));
+            }
+
+            if (entry.IsActive && _editorManager != null)
+                activeTabIndex = _editorManager.TabControl.ActiveTabIndex;
+        }
+
+        // Set active tab
+        if (activeTabIndex >= 0 && _editorManager != null)
+            _editorManager.TabControl.ActiveTabIndex = activeTabIndex;
+
+        // Explorer expanded paths
+        if (_explorer != null)
+        {
+            foreach (var relativePath in state.ExpandedPaths)
+            {
+                var absolutePath = _workspaceService.ToAbsolutePath(relativePath);
+                var node = _explorer.Tree.FindNodeByTag(absolutePath);
+                if (node != null) node.IsExpanded = true;
+            }
+        }
+
+        // Explorer selected path
+        if (_explorer != null && state.SelectedExplorerPath != null)
+        {
+            var absolutePath = _workspaceService.ToAbsolutePath(state.SelectedExplorerPath);
+            var node = _explorer.Tree.FindNodeByTag(absolutePath);
+            if (node != null) _explorer.Tree.SelectNode(node);
+        }
+
+        // Output tab
+        if (_outputPanel != null && state.ActiveOutputTab >= 0
+            && state.ActiveOutputTab < _outputPanel.TabControl.TabCount)
+        {
+            _outputPanel.TabControl.ActiveTabIndex = state.ActiveOutputTab;
+        }
+
+        _mainWindow?.ForceRebuildLayout();
+        _mainWindow?.Invalidate(true);
     }
 
     private void ToggleExplorer()
@@ -2668,6 +2862,13 @@ public class IdeApp : IDisposable
                 items.Add(new ContextMenuItem("Git: Log", null, () => _ = GitShowFileLogAsync(path)));
                 items.Add(new ContextMenuItem("Git: Blame", null, () => _ = GitShowBlameAsync(path)));
             }
+
+            // Gitignore
+            var inGitignore = await _gitService.IsInGitignoreAsync(_projectService.RootPath, path);
+            if (inGitignore)
+                items.Add(new ContextMenuItem("Git: Remove from .gitignore", null, () => _ = GitRemoveFromGitignoreAsync(path)));
+            else
+                items.Add(new ContextMenuItem("Git: Add to .gitignore", null, () => _ = GitAddToGitignoreAsync(path, false)));
         }
         else
         {
@@ -2675,6 +2876,13 @@ public class IdeApp : IDisposable
             items.Add(new ContextMenuItem("-"));
             items.Add(new ContextMenuItem("Git: Stage Folder", null, () => _ = GitStageFileAsync(path)));
             items.Add(new ContextMenuItem("Git: Unstage Folder", null, () => _ = GitUnstageFileAsync(path)));
+
+            // Gitignore
+            var inGitignore = await _gitService.IsInGitignoreAsync(_projectService.RootPath, path);
+            if (inGitignore)
+                items.Add(new ContextMenuItem("Git: Remove from .gitignore", null, () => _ = GitRemoveFromGitignoreAsync(path)));
+            else
+                items.Add(new ContextMenuItem("Git: Add to .gitignore", null, () => _ = GitAddToGitignoreAsync(path, true)));
         }
 
         items.Add(new ContextMenuItem("-"));

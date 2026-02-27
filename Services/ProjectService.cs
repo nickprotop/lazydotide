@@ -6,18 +6,6 @@ public class ProjectService
 {
     private string _rootPath;
 
-    private static readonly HashSet<string> SkippedDirs = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "bin", "obj", ".git", "node_modules", ".vs", ".idea", "packages", ".nuget"
-    };
-
-    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".cs", ".csproj", ".sln", ".json", ".md", ".txt", ".yaml", ".yml",
-        ".xml", ".config", ".props", ".targets", ".razor", ".cshtml",
-        ".sh", ".bat", ".ps1", ".env", ".gitignore", ".editorconfig"
-    };
-
     public ProjectService(string rootPath)
     {
         _rootPath = rootPath;
@@ -42,19 +30,15 @@ public class ProjectService
             foreach (var subDir in Directory.GetDirectories(dirPath).OrderBy(d => d))
             {
                 var dirName = Path.GetFileName(subDir);
-                if (dirName != null && !SkippedDirs.Contains(dirName))
+                if (dirName != null)
                     children.Add(BuildNodeForDirectory(subDir, dirName));
             }
 
             // Then files
             foreach (var file in Directory.GetFiles(dirPath).OrderBy(f => f))
             {
-                var ext = Path.GetExtension(file);
-                if (AllowedExtensions.Contains(ext))
-                {
-                    var fileName = Path.GetFileName(file);
-                    children.Add(new FileNode(fileName, file, false, new List<FileNode>()));
-                }
+                var fileName = Path.GetFileName(file);
+                children.Add(new FileNode(fileName, file, false, new List<FileNode>()));
             }
         }
         catch (UnauthorizedAccessException) { }

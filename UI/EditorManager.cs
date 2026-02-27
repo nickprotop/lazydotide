@@ -386,6 +386,12 @@ public class EditorManager
         _tabControl.SetTabTitle(tabIndex, "⚠ " + Path.GetFileName(path) + " *");
     }
 
+    public (int Line, int Column)? GetTabCursor(int index)
+    {
+        if (!_tabData.TryGetValue(index, out var data) || data.Editor == null) return null;
+        return (data.Editor.CurrentLine, data.Editor.CurrentColumn);
+    }
+
     public void GoToLine(int line)
     {
         CurrentEditor?.GoToLine(line);

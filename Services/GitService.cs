@@ -702,6 +702,119 @@ public class GitService
     }
 
     // ──────────────────────────────────────────────────────────────
+    // Ignored files
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the set of repo-relative paths that are ignored by git.
+    /// Includes both files and directories.
+    /// </summary>
+    public HashSet<string> GetIgnoredPaths(string repoRoot)
+    {
+        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var repoPath = Repository.Discover(repoRoot);
+            if (repoPath == null) return ignored;
+            using var repo = new Repository(repoPath);
+            foreach (var entry in repo.RetrieveStatus(new StatusOptions
+            {
+                IncludeUntracked = true,
+                IncludeIgnored = true
+            }))
+            {
+                if (entry.State.HasFlag(FileStatus.Ignored))
+                    ignored.Add(entry.FilePath);
+            }
+        }
+        catch { }
+        return ignored;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // .gitignore operations
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Checks if a path has a matching entry in .gitignore.
+    /// </summary>
+    public bool IsInGitignore(string repoRoot, string absolutePath)
+    {
+        try
+        {
+            var repoPath = Repository.Discover(repoRoot);
+            if (repoPath == null) return false;
+            using var repo = new Repository(repoPath);
+            var relativePath = MakeRelative(repo, absolutePath);
+            var gitignorePath = Path.Combine(repo.Info.WorkingDirectory!, ".gitignore");
+            if (!File.Exists(gitignorePath)) return false;
+
+            var lines = File.ReadAllLines(gitignorePath);
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+                // Match exact path or path with trailing /
+                var pattern = trimmed.TrimEnd('/');
+                if (pattern.Equals(relativePath, StringComparison.Ordinal) ||
+                    pattern.Equals(relativePath.TrimEnd('/'), StringComparison.Ordinal))
+                    return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// Adds a path to .gitignore. Appends trailing / for directories.
+    /// Creates .gitignore if it doesn't exist.
+    /// </summary>
+    public void AddToGitignore(string repoRoot, string absolutePath, bool isDirectory)
+    {
+        var repoPath = Repository.Discover(repoRoot);
+        if (repoPath == null) return;
+        using var repo = new Repository(repoPath);
+        var relativePath = MakeRelative(repo, absolutePath);
+        if (isDirectory && !relativePath.EndsWith('/'))
+            relativePath += '/';
+
+        var gitignorePath = Path.Combine(repo.Info.WorkingDirectory!, ".gitignore");
+        var content = File.Exists(gitignorePath) ? File.ReadAllText(gitignorePath) : "";
+
+        // Ensure file ends with newline before appending
+        if (content.Length > 0 && !content.EndsWith('\n'))
+            content += "\n";
+
+        content += relativePath + "\n";
+        File.WriteAllText(gitignorePath, content);
+    }
+
+    /// <summary>
+    /// Removes a path from .gitignore (with or without trailing /).
+    /// </summary>
+    public void RemoveFromGitignore(string repoRoot, string absolutePath)
+    {
+        var repoPath = Repository.Discover(repoRoot);
+        if (repoPath == null) return;
+        using var repo = new Repository(repoPath);
+        var relativePath = MakeRelative(repo, absolutePath);
+        var gitignorePath = Path.Combine(repo.Info.WorkingDirectory!, ".gitignore");
+        if (!File.Exists(gitignorePath)) return;
+
+        var lines = File.ReadAllLines(gitignorePath);
+        var filtered = lines.Where(line =>
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#')) return true;
+            var pattern = trimmed.TrimEnd('/');
+            return !pattern.Equals(relativePath, StringComparison.Ordinal) &&
+                   !pattern.Equals(relativePath.TrimEnd('/'), StringComparison.Ordinal);
+        }).ToList();
+
+        File.WriteAllLines(gitignorePath, filtered);
+    }
+
+    // ──────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────
 
@@ -780,6 +893,11 @@ public class GitService
     public Task<Dictionary<int, GitLineChangeType>> GetLineDiffMarkersAsync(string repoRoot, string absolutePath) => Task.Run(() => GetLineDiffMarkers(repoRoot, absolutePath));
 
     public Task<string> GetCommitDetailAsync(string repoRoot, string sha) => Task.Run(() => GetCommitDetail(repoRoot, sha));
+
+    public Task<HashSet<string>> GetIgnoredPathsAsync(string repoRoot) => Task.Run(() => GetIgnoredPaths(repoRoot));
+    public Task<bool> IsInGitignoreAsync(string repoRoot, string absolutePath) => Task.Run(() => IsInGitignore(repoRoot, absolutePath));
+    public Task AddToGitignoreAsync(string repoRoot, string absolutePath, bool isDirectory) => Task.Run(() => AddToGitignore(repoRoot, absolutePath, isDirectory));
+    public Task RemoveFromGitignoreAsync(string repoRoot, string absolutePath) => Task.Run(() => RemoveFromGitignore(repoRoot, absolutePath));
 
     public string GetCommitDetail(string repoRoot, string sha)
     {

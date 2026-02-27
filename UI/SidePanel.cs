@@ -43,14 +43,8 @@ internal class SidePanel
     public TerminalControl? ShellTerminal => _shellTerminal;
     public event EventHandler<LspLocationEntry>? SymbolActivated;
 
-    /// <summary>Fired when user activates a staged file (to unstage it).</summary>
-    public event EventHandler<string>? GitUnstageRequested;
-    /// <summary>Fired when user activates an unstaged file (to stage it).</summary>
-    public event EventHandler<string>? GitStageRequested;
-
     // File interactions
     public event EventHandler<string>? GitDiffRequested;
-    public event EventHandler<string>? GitOpenFileRequested;
 
     // Toolbar actions
     public event EventHandler? GitCommitRequested;
