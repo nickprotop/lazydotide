@@ -366,7 +366,7 @@ internal class SidePanel
             .Build();
         _shellTerminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         _shellTerminal.VerticalAlignment = VerticalAlignment.Fill;
-        _tabControl.AddTab("Shell", _shellTerminal);
+        _tabControl.AddTab("Shell", _shellTerminal, isClosable: true);
         _shellTabIndex = _tabControl.TabCount - 1;
         _tabControl.ActiveTabIndex = _shellTabIndex;
         return _shellTerminal;

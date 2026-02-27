@@ -61,11 +61,17 @@ public class IdeApp : IDisposable
 
     // Tool tab indices
     private int _lazyNuGetTabIndex = -1;
-    private int _shellTabIndex = -1;
+    private int _shellTabCount;
+    private int _outputShellCount;
+    private int _sidePanelShellCount;
     private readonly Dictionary<int, int> _toolTabIndices = new(); // config tool index → editor tab index
 
     // Config
     private IdeConfig _config = new();
+
+    // Menu bar (tracked for rebuild)
+    private IWindowControl? _menuControl;
+    private bool _hasLazyNuGet;
 
     // Command registry
     private readonly CommandRegistry _commandRegistry = new();
@@ -120,6 +126,7 @@ public class IdeApp : IDisposable
         _projectService = new ProjectService(projectPath);
         _buildService = new BuildService();
         _gitService = new GitService();
+        _hasLazyNuGet = DetectLazyNuGet() != null;
 
         InitBottomStatus();  // Must be before CreateLayout so DesktopDimensions accounts for the bar
         CreateLayout();
@@ -196,7 +203,10 @@ public class IdeApp : IDisposable
 
         // Open the shell tab at startup so it's ready immediately
         if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows())
+        {
             _outputPanel!.LaunchShell(_projectService.RootPath);
+            _outputShellCount = 1;  // Account for startup shell in numbering
+        }
 
         WireEvents();
     }
@@ -227,6 +237,10 @@ public class IdeApp : IDisposable
 
     private void AddMenuBar()
     {
+        // Remove previous menu control if rebuilding
+        if (_menuControl != null)
+            _mainWindow!.RemoveContent(_menuControl);
+
         var menu = Controls.Menu()
             .Horizontal()
             .Sticky()
@@ -272,10 +286,40 @@ public class IdeApp : IDisposable
             .AddItem("Run", m => m
                 .AddItem("Run", "F5", () => RunProject())
                 .AddItem("Stop", "F4", () => _buildService.Cancel()))
-            .AddItem("View", m => m
-                .AddItem("Toggle Explorer", "Ctrl+B", () => ToggleExplorer())
-                .AddItem("Toggle Output Panel", "Ctrl+J", () => ToggleOutput())
-                .AddItem("Toggle Side Panel", "Alt+;", () => ToggleSidePanel()))
+            .AddItem("View", m =>
+            {
+                m.AddItem("Toggle Explorer", "Ctrl+B", () => ToggleExplorer())
+                 .AddItem("Toggle Output Panel", "Ctrl+J", () => ToggleOutput())
+                 .AddItem("Toggle Side Panel", "Alt+;", () => ToggleSidePanel())
+                 .AddSeparator();
+
+                // Editor Tabs submenu (dynamic)
+                m.AddItem("Editor Tabs", sub =>
+                {
+                    if (_editorManager != null && _editorManager.TabControl.TabCount > 0)
+                    {
+                        var tabs = _editorManager.TabControl.TabPages;
+                        for (int i = 0; i < tabs.Count; i++)
+                        {
+                            int idx = i;
+                            sub.AddItem(tabs[i].Title, () => _editorManager.TabControl.ActiveTabIndex = idx);
+                        }
+                    }
+                    else
+                    {
+                        sub.AddItem("(no tabs open)", () => { });
+                    }
+                });
+
+                // Side Panel submenu
+                m.AddItem("Side Panel", sub =>
+                {
+                    sub.AddItem("Symbols", () => { if (!_sidePanelVisible) ToggleSidePanel(); _sidePanel?.SwitchToSymbolsTab(); });
+                    sub.AddItem("Git", () => ShowSourceControl());
+                    if (_sidePanel != null && _sidePanel.TabControl.HasTab("Shell"))
+                        sub.AddItem("Shell", () => { if (!_sidePanelVisible) ToggleSidePanel(); _sidePanel?.SwitchToShellTab(); });
+                });
+            })
             .AddItem("Git", m => m
                 .AddItem("Source Control", "Alt+G", ShowSourceControl)
                 .AddSeparator()
@@ -302,34 +346,52 @@ public class IdeApp : IDisposable
             .AddItem("Tools", m =>
             {
                 m.AddItem("Command Palette",  "Ctrl+P",         () => ShowCommandPalette())
-                 .AddSeparator()
-                 .AddItem("Go to Definition",    "F12",            () => _ = ShowGoToDefinitionAsync())
-                 .AddItem("Go to Implementation","Ctrl+F12",       () => _ = ShowGoToImplementationAsync())
-                 .AddItem("Find All References", "Shift+F12",      () => _ = ShowFindReferencesAsync())
-                 .AddItem("Navigate Back",       "Alt+Left",       () => NavigateBack())
-                 .AddSeparator()
-                 .AddItem("Rename Symbol",    "Ctrl+F2",         () => _ = ShowRenameAsync())
-                 .AddItem("Code Actions",     "Ctrl+.",          () => _ = ShowCodeActionsAsync())
-                 .AddItem("Focus Symbols",    "Alt+O",    () => FocusSymbolsTab())
-                 .AddSeparator()
-                 .AddItem("Signature Help",   "F2",              () => _ = ShowSignatureHelpAsync())
-                 .AddItem("Format Document",  "Alt+Shift+F",     () => _ = FormatDocumentAsync())
-                 .AddItem("Reload from Disk", "Alt+Shift+R",     () => ReloadCurrentFromDisk())
-                 .AddSeparator()
-                 .AddItem("Add NuGet Package", () => ShowNuGetDialog())
-                 .AddSeparator()
-                 .AddItem("Shell",      "F8", () => OpenShell())
-                 .AddItem("Shell Tab",  "",   () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); })
-                 .AddItem("Side Shell", "Shift+F8", () => OpenSidePanelShell())
-                 .AddItem("LazyNuGet",  "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); });
+                 .AddSeparator();
+
+                m.AddItem("Navigate", sub => sub
+                    .AddItem("Go to Definition",     "F12",       () => _ = ShowGoToDefinitionAsync())
+                    .AddItem("Go to Implementation", "Ctrl+F12",  () => _ = ShowGoToImplementationAsync())
+                    .AddItem("Find All References",  "Shift+F12", () => _ = ShowFindReferencesAsync())
+                    .AddItem("Navigate Back",        "Alt+Left",  () => NavigateBack()));
+
+                m.AddItem("Refactor", sub => sub
+                    .AddItem("Rename Symbol", "Ctrl+F2", () => _ = ShowRenameAsync())
+                    .AddItem("Code Actions",  "Ctrl+.",  () => _ = ShowCodeActionsAsync())
+                    .AddItem("Focus Symbols", "Alt+O",   () => FocusSymbolsTab()));
+
+                m.AddItem("Code", sub => sub
+                    .AddItem("Signature Help",   "F2",          () => _ = ShowSignatureHelpAsync())
+                    .AddItem("Format Document",  "Alt+Shift+F", () => _ = FormatDocumentAsync())
+                    .AddItem("Reload from Disk", "Alt+Shift+R", () => ReloadCurrentFromDisk()));
+
+                m.AddSeparator();
+
+                m.AddItem("NuGet", sub =>
+                {
+                    if (_hasLazyNuGet)
+                        sub.AddItem("LazyNuGet", "F9", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); });
+                    else
+                        sub.AddItem("Add NuGet Package", () => ShowNuGetDialog());
+                });
+
+                m.AddItem("Terminal", sub => sub
+                    .AddItem("Bottom Shell",     "F8",       () => OpenShell())
+                    .AddItem("Editor Shell Tab", "",         () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); })
+                    .AddItem("Side Panel Shell", "Shift+F8", () => OpenSidePanelShell()));
 
                 if (_config.Tools.Count > 0)
                 {
                     m.AddSeparator();
                     for (int i = 0; i < _config.Tools.Count; i++)
                     {
-                        int idx = i;  // capture for lambda
-                        m.AddItem(_config.Tools[i].Name, "", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolTab(idx); });
+                        int idx = i;
+                        var toolName = _config.Tools[i].Name;
+                        m.AddItem(toolName, sub =>
+                        {
+                            sub.AddItem("Open in Tab",          () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolTab(idx); });
+                            sub.AddItem("Open in Bottom Shell", () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolInOutputPanel(idx); });
+                            sub.AddItem("Open in Side Panel",   () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolInSidePanel(idx); });
+                        });
                     }
                 }
 
@@ -341,7 +403,8 @@ public class IdeApp : IDisposable
             .Build();
 
         menu.StickyPosition = StickyPosition.Top;
-        _mainWindow!.AddControl(menu);
+        _menuControl = menu;
+        _mainWindow!.InsertControl(0, menu);
     }
 
     private void AddToolbar()
@@ -643,6 +706,16 @@ public class IdeApp : IDisposable
         _mainWindow!.OnResize          += OnMainWindowResized;
         _outputWindow!.OnResize        += OnOutputWindowResized;
         _ws.ConsoleDriver.KeyPressed   += OnGlobalDriverKeyPressed;
+
+        // Rebuild menu when tabs change (for dynamic View > Editor Tabs / Side Panel submenus)
+        _editorManager!.TabControl.TabAdded   += (_, _) => _pendingUiActions.Enqueue(AddMenuBar);
+        _editorManager!.TabControl.TabRemoved += (_, _) => _pendingUiActions.Enqueue(AddMenuBar);
+        _sidePanel!.TabControl.TabAdded       += (_, _) => _pendingUiActions.Enqueue(AddMenuBar);
+        _sidePanel!.TabControl.TabRemoved     += (_, _) => _pendingUiActions.Enqueue(AddMenuBar);
+
+        // Handle close button on output panel and side panel tabs
+        _outputPanel!.TabControl.TabCloseRequested += (_, e) => _outputPanel.TabControl.RemoveTab(e.Index);
+        _sidePanel!.TabControl.TabCloseRequested   += (_, e) => _sidePanel.TabControl.RemoveTab(e.Index);
     }
 
     private void InitBottomStatus()
@@ -1172,9 +1245,21 @@ public class IdeApp : IDisposable
     private void OpenShell()
     {
         if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
-        var terminal = _outputPanel?.LaunchShell(_projectService.RootPath);
-        if (terminal == null || _outputWindow == null) return;
-        // Activate the output window so key events flow to it, then focus the terminal
+        if (_outputPanel == null || _outputWindow == null) return;
+
+        // Always create a new shell in the output panel
+        var terminal = Controls.Terminal()
+            .WithWorkingDirectory(_projectService.RootPath)
+            .Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        _outputShellCount++;
+        string tabName = _outputShellCount == 1 ? "Shell" : $"Shell {_outputShellCount}";
+        _outputPanel.TabControl.AddTab(tabName, terminal, isClosable: true);
+        _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
+
+        if (!_outputVisible) ToggleOutput();
         _ws.SetActiveWindow(_outputWindow);
         _outputWindow.FocusControl(terminal);
     }
@@ -1239,12 +1324,6 @@ public class IdeApp : IDisposable
     {
         if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
 
-        if (_shellTabIndex >= 0 && _shellTabIndex < _editorManager!.TabControl.TabCount)
-        {
-            _editorManager.TabControl.ActiveTabIndex = _shellTabIndex;
-            return;
-        }
-
         string exe = OperatingSystem.IsWindows() ? "cmd.exe" : "bash";
         var terminal = Controls.Terminal(exe)
             .WithWorkingDirectory(_projectService.RootPath)
@@ -1252,8 +1331,10 @@ public class IdeApp : IDisposable
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment   = VerticalAlignment.Fill;
 
-        _shellTabIndex = _editorManager!.OpenControlTab("Shell", terminal, isClosable: true);
-        terminal.ProcessExited += (_, _) => _shellTabIndex = -1;
+        // Always create a new shell tab, numbered sequentially
+        _shellTabCount++;
+        string tabName = _shellTabCount == 1 ? "Shell" : $"Shell {_shellTabCount}";
+        _editorManager!.OpenControlTab(tabName, terminal, isClosable: true);
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
@@ -1286,6 +1367,64 @@ public class IdeApp : IDisposable
         int tabIdx = _editorManager!.OpenControlTab(tool.Name, terminal, isClosable: true);
         _toolTabIndices[toolIndex] = tabIdx;
         terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OpenConfigToolInOutputPanel(int toolIndex)
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
+
+        var tool = _config.Tools[toolIndex];
+        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
+            ? _projectService.RootPath
+            : tool.WorkingDir;
+
+        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
+        if (tool.Args?.Length > 0)
+            builder = builder.WithArgs(tool.Args);
+
+        var terminal = builder.Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        _outputPanel!.TabControl.AddTab(tool.Name, terminal, isClosable: true);
+        _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
+
+        if (_outputWindow != null)
+        {
+            if (!_outputVisible) ToggleOutput();
+            _ws.SetActiveWindow(_outputWindow);
+            _outputWindow.FocusControl(terminal);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OpenConfigToolInSidePanel(int toolIndex)
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
+        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
+
+        var tool = _config.Tools[toolIndex];
+        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
+            ? _projectService.RootPath
+            : tool.WorkingDir;
+
+        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
+        if (tool.Args?.Length > 0)
+            builder = builder.WithArgs(tool.Args);
+
+        var terminal = builder.Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        if (!_sidePanelVisible) ToggleSidePanel();
+        _sidePanel!.TabControl.AddTab(tool.Name, terminal, isClosable: true);
+        _sidePanel.TabControl.ActiveTabIndex = _sidePanel.TabControl.TabCount - 1;
+        InvalidateSidePanel();
+        _mainWindow?.FocusControl(terminal);
     }
 
     private void OpenConfigFile()
@@ -1873,12 +2012,17 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",     Keybinding = "Alt+Shift+F",  Execute = () => _ = FormatDocumentAsync(),                                   Priority = 70 });
         _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",    Keybinding = "Ctrl+Space",   Execute = () => _ = ShowCompletionAsync(),                                   Priority = 65 });
 
+        // Terminal
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Terminal", Label = "Bottom Shell",       Keybinding = "F8",         Execute = OpenShell,                                                          Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Terminal", Label = "Editor Shell Tab",                             Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); },      Priority = 75 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Terminal", Label = "Side Panel Shell",   Keybinding = "Shift+F8",   Execute = OpenSidePanelShell,                                                 Priority = 73 });
+
+        // NuGet
+        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "NuGet",  Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }, Priority = 70 });
+        if (!_hasLazyNuGet)
+            _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",      Category = "NuGet",  Label = "Add NuGet Package\u2026",                      Execute = ShowNuGetDialog,                                                    Priority = 65 });
+
         // Tools
-        _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Tools", Label = "Open Shell",        Keybinding = "F8",         Execute = OpenShell,                                                          Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Tools", Label = "Open Shell Tab",                               Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenShellTab(); },      Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Tools", Label = "Side Panel Shell",  Keybinding = "Shift+F8",   Execute = OpenSidePanelShell,                                                 Priority = 73 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "Tools", Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenLazyNuGetTab(); }, Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",          Category = "Tools", Label = "Add NuGet Package\u2026",                      Execute = ShowNuGetDialog,                                                    Priority = 65 });
         _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = OpenConfigFile,                                                     Priority = 60 });
 
         // Help
@@ -1893,9 +2037,25 @@ public class IdeApp : IDisposable
             {
                 Id       = $"tools.custom.{idx}",
                 Category = "Tools",
-                Label    = tool.Name,
+                Label    = tool.Name + " (Tab)",
                 Execute  = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolTab(idx); },
                 Priority = 55
+            });
+            _commandRegistry.Register(new IdeCommand
+            {
+                Id       = $"tools.custom.{idx}.bottom",
+                Category = "Tools",
+                Label    = tool.Name + " (Bottom Shell)",
+                Execute  = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolInOutputPanel(idx); },
+                Priority = 54
+            });
+            _commandRegistry.Register(new IdeCommand
+            {
+                Id       = $"tools.custom.{idx}.side",
+                Category = "Tools",
+                Label    = tool.Name + " (Side Panel)",
+                Execute  = () => { if (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()) OpenConfigToolInSidePanel(idx); },
+                Priority = 53
             });
         }
     }
@@ -2021,12 +2181,20 @@ public class IdeApp : IDisposable
         if (!(OperatingSystem.IsLinux() || OperatingSystem.IsWindows())) return;
         if (!_sidePanelVisible)
             ToggleSidePanel();
-        var terminal = _sidePanel?.LaunchShell(_projectService.RootPath);
-        if (terminal != null)
-        {
-            InvalidateSidePanel();
-            _mainWindow?.FocusControl(terminal);
-        }
+
+        // Always create a new shell in the side panel
+        var terminal = Controls.Terminal()
+            .WithWorkingDirectory(_projectService.RootPath)
+            .Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+
+        _sidePanelShellCount++;
+        string tabName = _sidePanelShellCount == 1 ? "Shell" : $"Shell {_sidePanelShellCount}";
+        _sidePanel!.TabControl.AddTab(tabName, terminal, isClosable: true);
+        _sidePanel.TabControl.ActiveTabIndex = _sidePanel.TabControl.TabCount - 1;
+        InvalidateSidePanel();
+        _mainWindow?.FocusControl(terminal);
     }
 
     private void InvalidateSidePanel()
