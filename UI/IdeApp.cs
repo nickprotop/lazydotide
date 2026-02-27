@@ -75,7 +75,8 @@ public class IdeApp : IDisposable
 
     // Command registry
     private readonly CommandRegistry _commandRegistry = new();
-    private bool _commandPaletteOpen;
+    private CommandPalettePortal? _commandPalettePortal;
+    private LayoutNode? _commandPalettePortalNode;
     private bool _aboutOpen;
     private Action? _aboutRefresh;
 
@@ -146,6 +147,7 @@ public class IdeApp : IDisposable
         _dotTriggerDebounce?.Dispose();
         _symbolRefreshDebounce?.Dispose();
         _fileWatcher?.Dispose();
+        DismissCommandPalette();
         DismissContextMenu();
         DismissCompletionPortal();
         DismissTooltipPortal();
@@ -821,6 +823,16 @@ public class IdeApp : IDisposable
             bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
             if (!isModifierOnly && !isArrowKey && !isCtrlCombo)
                 DismissTooltipPortal();
+        }
+
+        // Command palette portal handles all keys
+        if (_commandPalettePortal != null)
+        {
+            if (_commandPalettePortal.ProcessKey(e.KeyInfo))
+            {
+                e.Handled = true;
+                return;
+            }
         }
 
         // Context menu portal handles all keys
@@ -2062,16 +2074,44 @@ public class IdeApp : IDisposable
 
     private void ShowCommandPalette()
     {
-        if (_commandPaletteOpen) return;
-        _commandPaletteOpen = true;
-        CommandPaletteDialog.Show(_ws, _commandRegistry, cmd =>
+        ShowCommandPalettePortal(_commandRegistry);
+    }
+
+    private void ShowCommandPalettePortal(CommandRegistry registry)
+    {
+        if (_mainWindow == null) return;
+
+        // Toggle: if already open, dismiss and re-create (also unblocks stuck portals)
+        if (_commandPalettePortal != null)
         {
-            _commandPaletteOpen = false;
-            if (cmd == null) return;
-            cmd.Execute();
+            DismissCommandPalette();
+            return;
+        }
+
+        var portal = new CommandPalettePortal(registry,
+            _mainWindow.Width, _mainWindow.Height);
+        portal.Container = _mainWindow;
+        _commandPalettePortal = portal;
+        _commandPalettePortalNode = _mainWindow.CreatePortal(_editorManager!.TabControl, portal);
+
+        portal.CommandSelected += (_, cmd) =>
+        {
+            DismissCommandPalette();
+            if (cmd != null) cmd.Execute();
             var editor = _editorManager?.CurrentEditor;
             if (editor != null) _mainWindow?.FocusControl(editor);
-        });
+        };
+
+        portal.DismissRequested += (_, _) => DismissCommandPalette();
+    }
+
+    private void DismissCommandPalette()
+    {
+        if (_commandPalettePortalNode == null || _mainWindow == null) return;
+
+        _mainWindow.RemovePortal(_editorManager!.TabControl, _commandPalettePortalNode);
+        _commandPalettePortalNode = null;
+        _commandPalettePortal = null;
     }
 
     private bool _findReplaceOpen = false;
@@ -3197,13 +3237,7 @@ public class IdeApp : IDisposable
             });
         }
 
-        CommandPaletteDialog.Show(_ws, tempRegistry, cmd =>
-        {
-            if (cmd == null) return;
-            cmd.Execute();
-            var editor = _editorManager?.CurrentEditor;
-            if (editor != null) _mainWindow?.FocusControl(editor);
-        });
+        ShowCommandPalettePortal(tempRegistry);
     }
 
     // ── Workspace edit application ───────────────────────────────────────────────

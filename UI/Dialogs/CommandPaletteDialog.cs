@@ -2,51 +2,51 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
+using SharpConsoleUI.Drawing;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
+using Rectangle = System.Drawing.Rectangle;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 
-public static class CommandPaletteDialog
+public class CommandPalettePortal : PortalContentContainer
 {
-    public static void Show(
-        ConsoleWindowSystem windowSystem,
-        CommandRegistry registry,
-        Action<IdeCommand?> onCommandSelected)
+    private readonly CommandRegistry _registry;
+    private readonly PromptControl _searchInput;
+    private readonly ListControl _commandList;
+    private readonly MarkupControl _statusText;
+
+    public event EventHandler<IdeCommand?>? CommandSelected;
+
+    public CommandPalettePortal(CommandRegistry registry, int windowWidth, int windowHeight)
     {
-        const int paletteWidth  = 85;
-        const int paletteHeight = 22;
-        var desktop = windowSystem.DesktopDimensions;
-        int px = Math.Max(0, (desktop.Width - paletteWidth) / 2);
-        int py = 0;
+        _registry = registry;
 
-        var modal = new WindowBuilder(windowSystem)
-            .WithTitle("Command Palette")
-            .WithSize(paletteWidth, paletteHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(true)
-            .Movable(true)
-            .Minimizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
+        // Portal style
+        DismissOnOutsideClick = true;
+        BorderStyle = BoxChars.Rounded;
+        BorderColor = Color.Grey50;
+        BorderBackgroundColor = Color.Grey15;
+        BackgroundColor = Color.Grey15;
+        ForegroundColor = Color.Grey93;
 
-        var searchInput = Controls.Prompt()
+        // Search input
+        _searchInput = Controls.Prompt()
             .WithPrompt("> ")
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithMargin(1, 0, 1, 0)
             .Build();
+        AddChild(_searchInput);
 
-        modal.AddControl(searchInput);
-
-        modal.AddControl(Controls.RuleBuilder()
+        // Top separator
+        AddChild(Controls.RuleBuilder()
             .WithColor(Color.Grey23)
             .Build());
 
-        var commandList = Controls.List()
+        // Command list
+        _commandList = Controls.List()
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
             .WithColors(Color.Grey93, Color.Grey15)
@@ -55,137 +55,132 @@ public static class CommandPaletteDialog
             .WithDoubleClickActivation(true)
             .WithTitle(string.Empty)
             .Build();
+        AddChild(_commandList);
 
-        modal.AddControl(commandList);
+        // Bottom separator
+        AddChild(Controls.RuleBuilder()
+            .WithColor(Color.Grey23)
+            .StickyBottom()
+            .Build());
 
-        var statusText = Controls.Markup()
+        // Status line
+        _statusText = Controls.Markup()
             .AddLine($"[grey50]{registry.All.Count} commands[/]")
             .WithAlignment(HorizontalAlignment.Left)
             .WithMargin(1, 0, 1, 0)
             .StickyBottom()
             .Build();
+        AddChild(_statusText);
 
-        modal.AddControl(Controls.RuleBuilder()
-            .WithColor(Color.Grey23)
-            .StickyBottom()
-            .Build());
-
-        modal.AddControl(statusText);
-
-        modal.AddControl(Controls.Markup()
+        // Hint line
+        AddChild(Controls.Markup()
             .AddLine("[grey70]Enter/Double-click: Execute  •  Escape: Cancel  •  ↑↓: Navigate[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .WithMargin(0, 0, 0, 0)
             .StickyBottom()
             .Build());
 
-        UpdateCommandList(commandList, statusText, registry, "");
+        // Calculate bounds
+        int w = Math.Min(85, windowWidth - 4);
+        int h = Math.Min(22, windowHeight - 2);
+        int x = (windowWidth - w) / 2;
+        int y = 1;
+        PortalBounds = new Rectangle(x, y, w, h);
 
-        // Track which command (if any) was chosen before the window closes.
-        // onCommandSelected is called exactly once from OnClosed, so every
-        // close path (title-bar X, Escape, Enter, double-click) resets the flag.
-        IdeCommand? selectedCommand = null;
+        // The list's scroll logic queries GetVisibleHeightForControl which returns the
+        // full portal viewport height, not just the list's portion.  Cap MaxVisibleItems
+        // to the actual rows available for the list (total height minus border minus the
+        // other fixed-height children: prompt 1, rule 1, rule 1, status 1, hint 1 = 5).
+        int listRows = h - 2 - 5; // 2 for border, 5 for other children
+        _commandList.MaxVisibleItems = Math.Max(1, listRows);
 
-        modal.OnClosed += (_, _) => onCommandSelected(selectedCommand);
+        // Populate initial list
+        UpdateCommandList("");
 
-        searchInput.InputChanged += (_, newText) =>
-        {
-            UpdateCommandList(commandList, statusText, registry, newText);
-        };
+        // Wire events
+        _searchInput.InputChanged += (_, newText) => UpdateCommandList(newText);
 
-        commandList.ItemActivated += (_, item) =>
+        _commandList.ItemActivated += (_, item) =>
         {
             if (item?.Tag is IdeCommand command)
-            {
-                selectedCommand = command;
-                modal.Close();
-            }
+                CommandSelected?.Invoke(this, command);
         };
 
-        modal.KeyPressed += (_, e) =>
-        {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                if (searchInput.HasFocus && commandList.Items.Count > 0)
-                {
-                    commandList.SetFocus(true, FocusReason.Keyboard);
-                    e.Handled = true;
-                }
-                else if (commandList.HasFocus)
-                {
-                    var selectedItem = commandList.SelectedItem;
-                    if (selectedItem?.Tag is IdeCommand command)
-                    {
-                        selectedCommand = command;
-                        modal.Close();
-                    }
-                    e.Handled = true;
-                }
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.DownArrow)
-            {
-                if (searchInput.HasFocus && commandList.Items.Count > 0)
-                {
-                    commandList.SetFocus(true, FocusReason.Keyboard);
-                    e.Handled = true;
-                }
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.UpArrow)
-            {
-                if (commandList.HasFocus && commandList.SelectedIndex <= 0)
-                {
-                    searchInput.SetFocus(true, FocusReason.Keyboard);
-                    e.Handled = true;
-                }
-            }
-            else if (commandList.HasFocus)
-            {
-                // While the list is focused, redirect printable characters and Backspace
-                // to the search prompt so typing keeps filtering without switching focus.
-                char ch = e.KeyInfo.KeyChar;
-                if (ch != '\0' && !char.IsControl(ch))
-                {
-                    searchInput.SetInput(searchInput.Input + ch);
-                    e.Handled = true;
-                }
-                else if (e.KeyInfo.Key == ConsoleKey.Backspace && searchInput.Input.Length > 0)
-                {
-                    searchInput.SetInput(searchInput.Input[..^1]);
-                    e.Handled = true;
-                }
-            }
-        };
-
-        windowSystem.AddWindow(modal);
-        windowSystem.SetActiveWindow(modal);
-        searchInput.SetFocus(true, FocusReason.Programmatic);
+        SetFocusOnFirstChild();
     }
 
-    private static void UpdateCommandList(
-        ListControl list,
-        MarkupControl status,
-        CommandRegistry registry,
-        string searchQuery)
+    public new bool ProcessKey(ConsoleKeyInfo key)
     {
-        list.ClearItems();
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CommandSelected?.Invoke(this, null);
+            return true;
+        }
 
-        var filtered = registry.Search(searchQuery);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            if (_searchInput.HasFocus && _commandList.Items.Count > 0)
+            {
+                _commandList.SetFocus(true, FocusReason.Keyboard);
+                return true;
+            }
+            if (_commandList.HasFocus)
+            {
+                var item = _commandList.SelectedItem;
+                if (item?.Tag is IdeCommand cmd)
+                    CommandSelected?.Invoke(this, cmd);
+                return true;
+            }
+        }
+
+        if (key.Key == ConsoleKey.DownArrow && _searchInput.HasFocus && _commandList.Items.Count > 0)
+        {
+            _commandList.SetFocus(true, FocusReason.Keyboard);
+            return true;
+        }
+
+        if (key.Key == ConsoleKey.UpArrow && _commandList.HasFocus && _commandList.SelectedIndex <= 0)
+        {
+            _searchInput.SetFocus(true, FocusReason.Keyboard);
+            return true;
+        }
+
+        // Redirect typing to search when list is focused
+        if (_commandList.HasFocus)
+        {
+            char ch = key.KeyChar;
+            if (ch != '\0' && !char.IsControl(ch))
+            {
+                _searchInput.SetInput(_searchInput.Input + ch);
+                return true;
+            }
+            if (key.Key == ConsoleKey.Backspace && _searchInput.Input.Length > 0)
+            {
+                _searchInput.SetInput(_searchInput.Input[..^1]);
+                return true;
+            }
+        }
+
+        base.ProcessKey(key);
+        return true; // swallow all keys while palette is open
+    }
+
+    private void UpdateCommandList(string searchQuery)
+    {
+        _commandList.ClearItems();
+
+        var filtered = _registry.Search(searchQuery);
 
         foreach (var cmd in filtered)
         {
             var label = $"{cmd.Icon} [dim]{cmd.Category,-8}[/] {cmd.Label,-34} [grey50]{cmd.Keybinding ?? ""}[/]";
-            list.AddItem(new ListItem(label) { Tag = cmd });
+            _commandList.AddItem(new ListItem(label) { Tag = cmd });
         }
 
         var statusLine = string.IsNullOrWhiteSpace(searchQuery)
             ? $"[grey50]{filtered.Count} commands[/]"
-            : $"[grey50]{filtered.Count} of {registry.All.Count} commands[/]";
+            : $"[grey50]{filtered.Count} of {_registry.All.Count} commands[/]";
 
-        status.SetContent(new List<string> { statusLine });
+        _statusText.SetContent(new List<string> { statusLine });
     }
 }
