@@ -219,6 +219,16 @@ public class ExplorerPanel
         // Check exact match (files are listed directly)
         if (_gitIgnoredPaths.Contains(relativePath)) return true;
 
+        // Check if any ancestor directory is ignored (e.g. file inside bin/ when bin/ is ignored)
+        var parts = relativePath.Split('/');
+        for (int i = 1; i < parts.Length; i++)
+        {
+            var ancestorDir = string.Join('/', parts, 0, i) + "/";
+            if (_gitIgnoredPaths.Contains(ancestorDir)) return true;
+            // Also check without trailing slash
+            if (_gitIgnoredPaths.Contains(ancestorDir.TrimEnd('/'))) return true;
+        }
+
         // For directories: check if any ignored path is a descendant
         if (fileNode.IsDirectory)
         {

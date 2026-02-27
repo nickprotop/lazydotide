@@ -1483,7 +1483,7 @@ public class IdeApp : IDisposable
 
         _projectService.ChangeRootPath(selected);
         _editorManager?.CloseAll();
-        _explorer?.Refresh();
+        _pendingUiActions.Enqueue(() => _explorer?.Refresh());
         _ = RefreshGitStatusAsync();
         _fileWatcher?.Watch(selected);
 
@@ -1552,7 +1552,7 @@ public class IdeApp : IDisposable
                 fileStatuses[f.RelativePath] = f.Status;
         }
 
-        _explorer?.UpdateGitStatuses(fileStatuses, workingDir, ignoredPaths);
+        _pendingUiActions.Enqueue(() => _explorer?.UpdateGitStatuses(fileStatuses, workingDir, ignoredPaths));
 
         // Refresh diff gutter markers for all open editors
         if (_editorManager != null)
@@ -1583,7 +1583,7 @@ public class IdeApp : IDisposable
 
     private async Task RefreshExplorerAndGitAsync()
     {
-        _explorer?.Refresh();
+        _pendingUiActions.Enqueue(() => _explorer?.Refresh());
         await RefreshGitFileStatusesAsync();
     }
 
