@@ -173,6 +173,11 @@ public class IdeApp : IDisposable
         _menuBar.ReloadCurrentFromDisk = ReloadCurrentFromDisk;
         _menuBar.ShowCommandPalette = ShowCommandPalette;
 
+        // Menu/toolbar were no-ops during BuildMainWindow (_menuBar was null).
+        // Now that _menuBar is ready, insert them into their sticky-top slots.
+        AddMenuBar();
+        AddToolbar();
+
         _contextMenu = new ContextMenuBuilder(
             _gitService, _projectService, _editorManager!, _explorer!, _sidePanel!,
             _gitOps!, _lspCoord);

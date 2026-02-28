@@ -27,6 +27,7 @@ internal class MenuBarBuilder
 
     private Window? _mainWindow;
     private IWindowControl? _menuControl;
+    private IWindowControl? _toolbarControl;
 
     public MenuBarBuilder(
         ConsoleWindowSystem ws,
@@ -232,6 +233,9 @@ internal class MenuBarBuilder
 
     public void AddToolbar()
     {
+        if (_toolbarControl != null)
+            _mainWindow!.RemoveContent(_toolbarControl);
+
         var toolbar = Controls.Toolbar()
             .AddButton("Run F5", (_, _) => _buildOps.RunProject())
             .AddButton("Build F6", (_, _) => _ = _buildOps.BuildProjectAsync())
@@ -246,6 +250,7 @@ internal class MenuBarBuilder
             .StickyTop()
             .Build();
 
-        _mainWindow!.AddControl(toolbar);
+        _toolbarControl = toolbar;
+        _mainWindow!.InsertControl(2, toolbar);
     }
 }
