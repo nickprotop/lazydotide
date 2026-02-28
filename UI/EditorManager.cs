@@ -300,6 +300,9 @@ public class EditorManager
 
         if (_tabControl.TabCount == 0)
             OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
+
+        ActiveFileChanged?.Invoke(this, CurrentFilePath);
+        SyntaxChanged?.Invoke(this, CurrentSyntaxName);
     }
 
     public void CloseAll()
