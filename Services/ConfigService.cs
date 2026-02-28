@@ -48,7 +48,7 @@ public static class ConfigService
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, DefaultConfigJson);
         }
-        catch { }
+        catch { } // Best effort — non-critical if default config cannot be written
     }
 
     public static IdeConfig Load()
@@ -62,6 +62,6 @@ public static class ConfigService
                 new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                 ?? new IdeConfig();
         }
-        catch { return new IdeConfig(); }
+        catch { return new IdeConfig(); } // Fall back to defaults on parse failure
     }
 }

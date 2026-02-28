@@ -23,6 +23,9 @@ internal record ContextMenuItem(string Label, string? Shortcut = null, Action? A
 /// </summary>
 internal class ContextMenuPortal : PortalContentContainer
 {
+    private const int MenuMaxWidth = 50;
+    private const int MenuMinWidth = 16;
+
     private readonly MenuControl _menu;
     private readonly List<ContextMenuItem> _items;
     private readonly Dictionary<MenuItem, ContextMenuItem> _menuItemMap = new();
@@ -101,7 +104,7 @@ internal class ContextMenuPortal : PortalContentContainer
 
         // width = padding(2) + label + gap(2) + shortcut + padding(2) + border(2)
         int contentW = maxLabelW + (maxShortcutW > 0 ? maxShortcutW + 2 : 0) + 4;
-        int popupW = Math.Clamp(contentW + 2, 16, 50); // +2 for border
+        int popupW = Math.Clamp(contentW + 2, MenuMinWidth, MenuMaxWidth); // +2 for border
         int popupH = items.Count + 2; // +2 for border
 
         var pos = PortalPositioner.CalculateFromPoint(

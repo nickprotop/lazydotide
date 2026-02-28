@@ -380,7 +380,7 @@ public class EditorManager
             _tabData[tabIndex] = data with { IsDirty = false };
             _tabControl.SetTabTitle(tabIndex, Path.GetFileName(path));
         }
-        catch { }
+        catch { } // Best effort reload — keep existing content if file read fails
     }
 
     public void MarkFileConflict(string path)
@@ -682,8 +682,14 @@ public class EditorManager
     /// <summary>
     /// Refreshes git diff markers for all open file tabs using the provided async factory.
     /// </summary>
-    public async Task UpdateAllGitDiffMarkersAsync(Func<string, Task<Dictionary<int, GitLineChangeType>?>> getMarkers)
+    /// <summary>
+    /// Collects git diff markers for all open file tabs (async, no UI calls).
+    /// Returns a list of (tabIndex, markers) to be applied on the UI thread via ApplyGitDiffMarkers.
+    /// </summary>
+    public async Task<List<(int TabIndex, Dictionary<int, GitLineChangeType>? Markers)>> CollectGitDiffMarkersAsync(
+        Func<string, Task<Dictionary<int, GitLineChangeType>?>> getMarkers)
     {
+        var results = new List<(int, Dictionary<int, GitLineChangeType>?)>();
         foreach (var (filePath, tabIndex) in _openFiles)
         {
             if (!_tabData.TryGetValue(tabIndex, out var data)) continue;
@@ -691,6 +697,20 @@ public class EditorManager
             if (data.FilePath.StartsWith(IdeConstants.ReadOnlyTabPrefix)) continue;
 
             var markers = await getMarkers(data.FilePath);
+            results.Add((tabIndex, markers));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Applies previously collected diff markers to editor tabs. Must be called on the UI thread.
+    /// </summary>
+    public void ApplyGitDiffMarkers(List<(int TabIndex, Dictionary<int, GitLineChangeType>? Markers)> updates)
+    {
+        foreach (var (tabIndex, markers) in updates)
+        {
+            if (!_tabData.TryGetValue(tabIndex, out var data)) continue;
+            if (data.DiffGutter == null) continue;
             data.DiffGutter.UpdateMarkers(markers);
             data.Editor?.Container?.Invalidate(true);
         }

@@ -28,7 +28,7 @@ public static class FileService
             }
             return false;
         }
-        catch { return true; }
+        catch { return true; } // Treat unreadable files as binary
     }
 
     public static bool Exists(string path) => File.Exists(path);

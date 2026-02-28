@@ -15,6 +15,8 @@ namespace DotNetIDE;
 
 public class IdeApp : IDisposable
 {
+    private const int RenderFrameMs = 80;
+
     private readonly ConsoleWindowSystem _ws;
     private readonly ProjectService _projectService;
     private readonly BuildService _buildService;
@@ -77,6 +79,45 @@ public class IdeApp : IDisposable
 
     // Context menu
     private ContextMenuBuilder? _contextMenu;
+
+    // Named constants for command priorities (higher = more important in palette ordering)
+    private static class CommandPriority
+    {
+        public const int Critical      = 90;  // Save, Build, Run, Source Control, Go to Definition
+        public const int CriticalMinus = 88;  // Go to Implementation
+        public const int CriticalLow   = 87;  // Find All References
+        public const int High          = 85;  // Close Tab, Test, Navigate Back
+        public const int HighMinus     = 83;  // Rename Symbol
+        public const int HighLow       = 82;  // Code Actions
+        public const int HighLowest    = 81;  // Document Symbols
+        public const int Medium        = 80;  // Open Folder, Stop, Commit, Find, Toggle Explorer, Shell, Hover
+        public const int Normal        = 75;  // New File, Replace, Toggle Output, Shell Tab, Signature Help
+        public const int NormalMinus   = 74;  // New Folder
+        public const int NormalLow     = 73;  // Rename, Side Panel Shell
+        public const int NormalLowest  = 72;  // Delete
+        public const int Default       = 70;  // Refresh, Clean, Format, Toggle Side Panel, LazyNuGet
+        public const int GitStage      = 68;  // Stage File
+        public const int GitUnstage    = 67;  // Unstage File
+        public const int GitStageAll   = 66;  // Stage All
+        public const int Low           = 65;  // Completions, NuGet, Unstage All
+        public const int GitPull       = 64;  // Pull
+        public const int GitPush       = 63;  // Push
+        public const int Lower         = 60;  // Reload, Edit Config, Diff File
+        public const int GitDiffAll    = 59;  // Diff All Changes
+        public const int CustomTool    = 55;  // Custom tool (tab)
+        public const int CustomToolAlt = 54;  // Custom tool (bottom shell), Stash Pop
+        public const int CustomToolSide = 53; // Custom tool (side panel)
+        public const int Minor         = 50;  // Wrap modes, Log
+        public const int GitLogFile    = 49;  // Log (Current File)
+        public const int GitBlame      = 48;  // Blame
+        public const int GitBranch     = 45;  // Switch Branch
+        public const int GitNewBranch  = 44;  // New Branch
+        public const int GitIgnoreAdd  = 42;  // Add to .gitignore
+        public const int GitIgnoreRemove = 41; // Remove from .gitignore
+        public const int GitDiscard    = 40;  // Discard Changes (Current File)
+        public const int GitDiscardAll = 35;  // Discard All Changes
+        public const int Least         = 10;  // Exit, About
+    }
 
     public IdeApp(string projectPath)
     {
@@ -153,7 +194,7 @@ public class IdeApp : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        try { CaptureWorkspaceState(); _workspaceState?.Save(); } catch { }
+        try { CaptureWorkspaceState(); _workspaceState?.Save(); } catch { } // Best effort — don't prevent shutdown
         _cts.Cancel();
         _fileWatcher?.Dispose();
         _contextMenu?.DismissContextMenu();
@@ -734,10 +775,10 @@ public class IdeApp : IDisposable
                 while (_pendingUiActions.TryDequeue(out var action))
                     action();
 
-                await Task.Delay(80, ct);
+                await Task.Delay(RenderFrameMs, ct);
             }
             catch (OperationCanceledException) { break; }
-            catch { }
+            catch { } // Suppress render loop errors to keep UI responsive
         }
     }
 
@@ -944,90 +985,90 @@ public class IdeApp : IDisposable
     private void InitializeCommands()
     {
         // File
-        _commandRegistry.Register(new IdeCommand { Id = "file.save",            Category = "File",  Label = "Save",             Keybinding = "Ctrl+S",     Execute = () => _editorManager?.SaveCurrent(),                                Priority = 90 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",     Execute = CloseCurrentTab,                                                    Priority = 85 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                            Execute = () => _ = OpenFolderAsync(),                                        Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",  Keybinding = "F5",         Execute = () => _ = _gitOps!.RefreshExplorerAndGitAsync(),                             Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.new-file",       Category = "File",  Label = "New File",          Keybinding = "Ctrl+N",     Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFileAsync(d); } }, Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.new-folder",     Category = "File",  Label = "New Folder",        Keybinding = "Ctrl+Shift+N", Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFolderAsync(d); } }, Priority = 74 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.rename",         Category = "File",  Label = "Rename",            Keybinding = "F2",         Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleRenameAsync(p); }, Priority = 73 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.delete",         Category = "File",  Label = "Delete",                                       Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleDeleteAsync(p); }, Priority = 72 });
-        _commandRegistry.Register(new IdeCommand { Id = "file.exit",            Category = "File",  Label = "Exit",              Keybinding = "Alt+F4",     Execute = () => _ws.Shutdown(0),                                              Priority = 10 });
+        _commandRegistry.Register(new IdeCommand { Id = "file.save",            Category = "File",  Label = "Save",             Keybinding = "Ctrl+S",     Execute = () => _editorManager?.SaveCurrent(),                                Priority = CommandPriority.Critical });
+        _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",     Execute = CloseCurrentTab,                                                    Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                            Execute = () => _ = OpenFolderAsync(),                                        Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",  Keybinding = "F5",         Execute = () => _ = _gitOps!.RefreshExplorerAndGitAsync(),                             Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "file.new-file",       Category = "File",  Label = "New File",          Keybinding = "Ctrl+N",     Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFileAsync(d); } }, Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "file.new-folder",     Category = "File",  Label = "New Folder",        Keybinding = "Ctrl+Shift+N", Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFolderAsync(d); } }, Priority = CommandPriority.NormalMinus });
+        _commandRegistry.Register(new IdeCommand { Id = "file.rename",         Category = "File",  Label = "Rename",            Keybinding = "F2",         Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleRenameAsync(p); }, Priority = CommandPriority.NormalLow });
+        _commandRegistry.Register(new IdeCommand { Id = "file.delete",         Category = "File",  Label = "Delete",                                       Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleDeleteAsync(p); }, Priority = CommandPriority.NormalLowest });
+        _commandRegistry.Register(new IdeCommand { Id = "file.exit",            Category = "File",  Label = "Exit",              Keybinding = "Alt+F4",     Execute = () => _ws.Shutdown(0),                                              Priority = CommandPriority.Least });
 
         // Edit
-        _commandRegistry.Register(new IdeCommand { Id = "edit.find",            Category = "Edit",  Label = "Find\u2026",        Keybinding = "Ctrl+F",     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "edit.replace",         Category = "Edit",  Label = "Replace\u2026",     Keybinding = "Ctrl+H",     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "edit.reload",          Category = "Edit",  Label = "Reload from Disk",  Keybinding = "Alt+Shift+R",Execute = ReloadCurrentFromDisk,                                              Priority = 60 });
-        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-word",       Category = "Edit",  Label = "Word Wrap",                                    Execute = () => _layout?.SetWrapMode(WrapMode.WrapWords),                               Priority = 50 });
-        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-char",       Category = "Edit",  Label = "Character Wrap",                               Execute = () => _layout?.SetWrapMode(WrapMode.Wrap),                                   Priority = 50 });
-        _commandRegistry.Register(new IdeCommand { Id = "edit.no-wrap",         Category = "Edit",  Label = "No Wrap",                                      Execute = () => _layout?.SetWrapMode(WrapMode.NoWrap),                                 Priority = 50 });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.find",            Category = "Edit",  Label = "Find\u2026",        Keybinding = "Ctrl+F",     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.replace",         Category = "Edit",  Label = "Replace\u2026",     Keybinding = "Ctrl+H",     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.reload",          Category = "Edit",  Label = "Reload from Disk",  Keybinding = "Alt+Shift+R",Execute = ReloadCurrentFromDisk,                                              Priority = CommandPriority.Lower });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-word",       Category = "Edit",  Label = "Word Wrap",                                    Execute = () => _layout?.SetWrapMode(WrapMode.WrapWords),                               Priority = CommandPriority.Minor });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-char",       Category = "Edit",  Label = "Character Wrap",                               Execute = () => _layout?.SetWrapMode(WrapMode.Wrap),                                   Priority = CommandPriority.Minor });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.no-wrap",         Category = "Edit",  Label = "No Wrap",                                      Execute = () => _layout?.SetWrapMode(WrapMode.NoWrap),                                 Priority = CommandPriority.Minor });
 
         // Build
-        _commandRegistry.Register(new IdeCommand { Id = "build.build",          Category = "Build", Label = "Build",             Keybinding = "F6",         Execute = () => _ = _buildOps!.BuildProjectAsync(),                                      Priority = 90 });
-        _commandRegistry.Register(new IdeCommand { Id = "build.test",           Category = "Build", Label = "Test",              Keybinding = "F7",         Execute = () => _ = _buildOps!.TestProjectAsync(),                                       Priority = 85 });
-        _commandRegistry.Register(new IdeCommand { Id = "build.clean",          Category = "Build", Label = "Clean",                                        Execute = () => _ = _buildOps!.CleanProjectAsync(),                                      Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "build.stop",           Category = "Build", Label = "Stop",              Keybinding = "F4",         Execute = () => _buildService.Cancel(),                                       Priority = 80 });
+        _commandRegistry.Register(new IdeCommand { Id = "build.build",          Category = "Build", Label = "Build",             Keybinding = "F6",         Execute = () => _ = _buildOps!.BuildProjectAsync(),                                      Priority = CommandPriority.Critical });
+        _commandRegistry.Register(new IdeCommand { Id = "build.test",           Category = "Build", Label = "Test",              Keybinding = "F7",         Execute = () => _ = _buildOps!.TestProjectAsync(),                                       Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "build.clean",          Category = "Build", Label = "Clean",                                        Execute = () => _ = _buildOps!.CleanProjectAsync(),                                      Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "build.stop",           Category = "Build", Label = "Stop",              Keybinding = "F4",         Execute = () => _buildService.Cancel(),                                       Priority = CommandPriority.Medium });
 
         // Run
-        _commandRegistry.Register(new IdeCommand { Id = "run.run",              Category = "Run",   Label = "Run",               Keybinding = "F5",         Execute = () => _buildOps!.RunProject(),                                                         Priority = 90 });
+        _commandRegistry.Register(new IdeCommand { Id = "run.run",              Category = "Run",   Label = "Run",               Keybinding = "F5",         Execute = () => _buildOps!.RunProject(),                                                         Priority = CommandPriority.Critical });
 
         // View
-        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-explorer", Category = "View",  Label = "Toggle Explorer",   Keybinding = "Ctrl+B",     Execute = () => _layout?.ToggleExplorer(),                                                     Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-output",   Category = "View",  Label = "Toggle Output Panel",Keybinding = "Ctrl+J",    Execute = () => _layout?.ToggleOutput(),                                                       Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-side-panel",Category = "View", Label = "Toggle Side Panel", Keybinding = "Alt+;",      Execute = () => _layout?.ToggleSidePanel(),                                                    Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-explorer", Category = "View",  Label = "Toggle Explorer",   Keybinding = "Ctrl+B",     Execute = () => _layout?.ToggleExplorer(),                                                     Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-output",   Category = "View",  Label = "Toggle Output Panel",Keybinding = "Ctrl+J",    Execute = () => _layout?.ToggleOutput(),                                                       Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "view.toggle-side-panel",Category = "View", Label = "Toggle Side Panel", Keybinding = "Alt+;",      Execute = () => _layout?.ToggleSidePanel(),                                                    Priority = CommandPriority.Default });
 
         // Git
-        _commandRegistry.Register(new IdeCommand { Id = "git.source-control",    Category = "Git",   Label = "Source Control",    Keybinding = "Alt+G", Execute = () => _layout?.ShowSourceControl(),                                                Priority = 90 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = _gitOps!.RefreshGitStatusAsync(),                                  Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.stage-file",       Category = "Git",   Label = "Stage Current File",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitStageFileAsync(p); }, Priority = 68 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-file",     Category = "Git",   Label = "Unstage Current File",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitUnstageFileAsync(p); }, Priority = 67 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.stage-all",        Category = "Git",   Label = "Stage All",                                    Execute = () => _ = _gitOps!.GitStageAllAsync(),                                       Priority = 66 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-all",      Category = "Git",   Label = "Unstage All",                                  Execute = () => _ = _gitOps!.GitUnstageAllAsync(),                                     Priority = 65 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.commit",           Category = "Git",   Label = "Commit\u2026",          Keybinding = "Ctrl+Enter", Execute = () => _ = _gitOps!.GitCommitAsync(),                                      Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.pull",             Category = "Git",   Label = "Pull",                                         Execute = () => _ = _gitOps!.GitCommandAsync("pull"),                                   Priority = 64 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = _gitOps!.GitCommandAsync("push"),                                   Priority = 63 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.diff-file",        Category = "Git",   Label = "Diff Current File",                            Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowDiffAsync(p); }, Priority = 60 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.diff-all",         Category = "Git",   Label = "Diff All Changes",                             Execute = () => _ = _gitOps!.GitShowDiffAllAsync(),                                    Priority = 59 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.discard-file",     Category = "Git",   Label = "Discard Changes (Current File)",                Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitDiscardFileAsync(p); }, Priority = 40 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.discard-all",      Category = "Git",   Label = "Discard All Changes",                          Execute = () => _ = _gitOps!.GitDiscardAllAsync(),                                     Priority = 35 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.stash",            Category = "Git",   Label = "Stash\u2026",                                  Execute = () => _ = _gitOps!.GitStashAsync(),                                          Priority = 55 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.stash-pop",        Category = "Git",   Label = "Stash Pop",                                    Execute = () => _ = _gitOps!.GitStashPopAsync(),                                       Priority = 54 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.log",              Category = "Git",   Label = "Log",                                          Execute = () => _ = _gitOps!.GitShowLogAsync(),                                        Priority = 50 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.log-file",         Category = "Git",   Label = "Log (Current File)",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowFileLogAsync(p); }, Priority = 49 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.blame",            Category = "Git",   Label = "Blame (Current File)",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowBlameAsync(p); }, Priority = 48 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.switch-branch",    Category = "Git",   Label = "Switch Branch\u2026",                          Execute = () => _ = _gitOps!.GitSwitchBranchAsync(),                                   Priority = 45 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.new-branch",       Category = "Git",   Label = "New Branch\u2026",                             Execute = () => _ = _gitOps!.GitNewBranchAsync(),                                      Priority = 44 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.add-to-gitignore",    Category = "Git",   Label = "Add to .gitignore",                            Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitAddToGitignoreAsync(p, Directory.Exists(p)); }, Priority = 42 });
-        _commandRegistry.Register(new IdeCommand { Id = "git.remove-from-gitignore", Category = "Git", Label = "Remove from .gitignore",                       Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitRemoveFromGitignoreAsync(p); }, Priority = 41 });
+        _commandRegistry.Register(new IdeCommand { Id = "git.source-control",    Category = "Git",   Label = "Source Control",    Keybinding = "Alt+G", Execute = () => _layout?.ShowSourceControl(),                                                Priority = CommandPriority.Critical });
+        _commandRegistry.Register(new IdeCommand { Id = "git.refresh",          Category = "Git",   Label = "Refresh Status",                               Execute = () => _ = _gitOps!.RefreshGitStatusAsync(),                                  Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stage-file",       Category = "Git",   Label = "Stage Current File",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitStageFileAsync(p); }, Priority = CommandPriority.GitStage });
+        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-file",     Category = "Git",   Label = "Unstage Current File",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitUnstageFileAsync(p); }, Priority = CommandPriority.GitUnstage });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stage-all",        Category = "Git",   Label = "Stage All",                                    Execute = () => _ = _gitOps!.GitStageAllAsync(),                                       Priority = CommandPriority.GitStageAll });
+        _commandRegistry.Register(new IdeCommand { Id = "git.unstage-all",      Category = "Git",   Label = "Unstage All",                                  Execute = () => _ = _gitOps!.GitUnstageAllAsync(),                                     Priority = CommandPriority.Low });
+        _commandRegistry.Register(new IdeCommand { Id = "git.commit",           Category = "Git",   Label = "Commit\u2026",          Keybinding = "Ctrl+Enter", Execute = () => _ = _gitOps!.GitCommitAsync(),                                      Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "git.pull",             Category = "Git",   Label = "Pull",                                         Execute = () => _ = _gitOps!.GitCommandAsync("pull"),                                   Priority = CommandPriority.GitPull });
+        _commandRegistry.Register(new IdeCommand { Id = "git.push",             Category = "Git",   Label = "Push",                                         Execute = () => _ = _gitOps!.GitCommandAsync("push"),                                   Priority = CommandPriority.GitPush });
+        _commandRegistry.Register(new IdeCommand { Id = "git.diff-file",        Category = "Git",   Label = "Diff Current File",                            Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowDiffAsync(p); }, Priority = CommandPriority.Lower });
+        _commandRegistry.Register(new IdeCommand { Id = "git.diff-all",         Category = "Git",   Label = "Diff All Changes",                             Execute = () => _ = _gitOps!.GitShowDiffAllAsync(),                                    Priority = CommandPriority.GitDiffAll });
+        _commandRegistry.Register(new IdeCommand { Id = "git.discard-file",     Category = "Git",   Label = "Discard Changes (Current File)",                Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitDiscardFileAsync(p); }, Priority = CommandPriority.GitDiscard });
+        _commandRegistry.Register(new IdeCommand { Id = "git.discard-all",      Category = "Git",   Label = "Discard All Changes",                          Execute = () => _ = _gitOps!.GitDiscardAllAsync(),                                     Priority = CommandPriority.GitDiscardAll });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stash",            Category = "Git",   Label = "Stash\u2026",                                  Execute = () => _ = _gitOps!.GitStashAsync(),                                          Priority = CommandPriority.CustomTool });
+        _commandRegistry.Register(new IdeCommand { Id = "git.stash-pop",        Category = "Git",   Label = "Stash Pop",                                    Execute = () => _ = _gitOps!.GitStashPopAsync(),                                       Priority = CommandPriority.CustomToolAlt });
+        _commandRegistry.Register(new IdeCommand { Id = "git.log",              Category = "Git",   Label = "Log",                                          Execute = () => _ = _gitOps!.GitShowLogAsync(),                                        Priority = CommandPriority.Minor });
+        _commandRegistry.Register(new IdeCommand { Id = "git.log-file",         Category = "Git",   Label = "Log (Current File)",                           Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowFileLogAsync(p); }, Priority = CommandPriority.GitLogFile });
+        _commandRegistry.Register(new IdeCommand { Id = "git.blame",            Category = "Git",   Label = "Blame (Current File)",                         Execute = () => { var p = _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitShowBlameAsync(p); }, Priority = CommandPriority.GitBlame });
+        _commandRegistry.Register(new IdeCommand { Id = "git.switch-branch",    Category = "Git",   Label = "Switch Branch\u2026",                          Execute = () => _ = _gitOps!.GitSwitchBranchAsync(),                                   Priority = CommandPriority.GitBranch });
+        _commandRegistry.Register(new IdeCommand { Id = "git.new-branch",       Category = "Git",   Label = "New Branch\u2026",                             Execute = () => _ = _gitOps!.GitNewBranchAsync(),                                      Priority = CommandPriority.GitNewBranch });
+        _commandRegistry.Register(new IdeCommand { Id = "git.add-to-gitignore",    Category = "Git",   Label = "Add to .gitignore",                            Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitAddToGitignoreAsync(p, Directory.Exists(p)); }, Priority = CommandPriority.GitIgnoreAdd });
+        _commandRegistry.Register(new IdeCommand { Id = "git.remove-from-gitignore", Category = "Git", Label = "Remove from .gitignore",                       Execute = () => { var p = _explorer?.GetSelectedPath() ?? _editorManager?.CurrentFilePath; if (p != null) _ = _gitOps!.GitRemoveFromGitignoreAsync(p); }, Priority = CommandPriority.GitIgnoreRemove });
 
         // LSP
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",    Keybinding = "F12",          Execute = () => _ = _lspCoord!.ShowGoToDefinitionAsync(),                    Priority = 90 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-impl",        Category = "LSP",   Label = "Go to Implementation",Keybinding = "Ctrl+F12",     Execute = () => _ = _lspCoord!.ShowGoToImplementationAsync(),                Priority = 88 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.references",       Category = "LSP",   Label = "Find All References", Keybinding = "Shift+F12",    Execute = () => _ = _lspCoord!.ShowFindReferencesAsync(),                    Priority = 87 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.nav-back",         Category = "LSP",   Label = "Navigate Back",       Keybinding = "Alt+\u2190",   Execute = () => _lspCoord!.NavigateBack(),                                  Priority = 85 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.rename",           Category = "LSP",   Label = "Rename Symbol",       Keybinding = "Ctrl+F2",      Execute = () => _ = _lspCoord!.ShowRenameAsync(_ws),                        Priority = 83 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.code-action",      Category = "LSP",   Label = "Code Actions",        Keybinding = "Ctrl+.",        Execute = () => _ = _lspCoord!.ShowCodeActionsAsync(_ws),                   Priority = 82 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.document-symbols", Category = "LSP",   Label = "Focus Symbols",       Keybinding = "Alt+O", Execute = () => _layout?.FocusSymbolsTab(),                                                  Priority = 81 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.hover",            Category = "LSP",   Label = "Hover Tooltip",       Keybinding = "Ctrl+K",       Execute = () => _ = _lspCoord!.ShowHoverAsync(),                            Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.signature",        Category = "LSP",   Label = "Signature Help",      Keybinding = "F2",           Execute = () => _ = _lspCoord!.ShowSignatureHelpAsync(),                     Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",     Keybinding = "Alt+Shift+F",  Execute = () => _ = _lspCoord!.FormatDocumentAsync(),                        Priority = 70 });
-        _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",    Keybinding = "Ctrl+Space",   Execute = () => _ = _lspCoord!.ShowCompletionAsync(),                        Priority = 65 });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-def",         Category = "LSP",   Label = "Go to Definition",    Keybinding = "F12",          Execute = () => _ = _lspCoord!.ShowGoToDefinitionAsync(),                    Priority = CommandPriority.Critical });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.goto-impl",        Category = "LSP",   Label = "Go to Implementation",Keybinding = "Ctrl+F12",     Execute = () => _ = _lspCoord!.ShowGoToImplementationAsync(),                Priority = CommandPriority.CriticalMinus });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.references",       Category = "LSP",   Label = "Find All References", Keybinding = "Shift+F12",    Execute = () => _ = _lspCoord!.ShowFindReferencesAsync(),                    Priority = CommandPriority.CriticalLow });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.nav-back",         Category = "LSP",   Label = "Navigate Back",       Keybinding = "Alt+\u2190",   Execute = () => _lspCoord!.NavigateBack(),                                  Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.rename",           Category = "LSP",   Label = "Rename Symbol",       Keybinding = "Ctrl+F2",      Execute = () => _ = _lspCoord!.ShowRenameAsync(_ws),                        Priority = CommandPriority.HighMinus });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.code-action",      Category = "LSP",   Label = "Code Actions",        Keybinding = "Ctrl+.",        Execute = () => _ = _lspCoord!.ShowCodeActionsAsync(_ws),                   Priority = CommandPriority.HighLow });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.document-symbols", Category = "LSP",   Label = "Focus Symbols",       Keybinding = "Alt+O", Execute = () => _layout?.FocusSymbolsTab(),                                                  Priority = CommandPriority.HighLowest });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.hover",            Category = "LSP",   Label = "Hover Tooltip",       Keybinding = "Ctrl+K",       Execute = () => _ = _lspCoord!.ShowHoverAsync(),                            Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.signature",        Category = "LSP",   Label = "Signature Help",      Keybinding = "F2",           Execute = () => _ = _lspCoord!.ShowSignatureHelpAsync(),                     Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.format",           Category = "LSP",   Label = "Format Document",     Keybinding = "Alt+Shift+F",  Execute = () => _ = _lspCoord!.FormatDocumentAsync(),                        Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "lsp.complete",         Category = "LSP",   Label = "Show Completions",    Keybinding = "Ctrl+Space",   Execute = () => _ = _lspCoord!.ShowCompletionAsync(),                        Priority = CommandPriority.Low });
 
         // Terminal
-        _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Terminal", Label = "Bottom Shell",       Keybinding = "F8",         Execute = () => _buildOps!.OpenShell(),                                                          Priority = 80 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Terminal", Label = "Editor Shell Tab",                             Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenShellTab(); },      Priority = 75 });
-        _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Terminal", Label = "Side Panel Shell",   Keybinding = "Shift+F8",   Execute = () => { if (IdeConstants.IsDesktopOs) _layout?.OpenSidePanelShell(); },                                                 Priority = 73 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell",          Category = "Terminal", Label = "Bottom Shell",       Keybinding = "F8",         Execute = () => _buildOps!.OpenShell(),                                                          Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.shell-tab",      Category = "Terminal", Label = "Editor Shell Tab",                             Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenShellTab(); },      Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Terminal", Label = "Side Panel Shell",   Keybinding = "Shift+F8",   Execute = () => { if (IdeConstants.IsDesktopOs) _layout?.OpenSidePanelShell(); },                                                 Priority = CommandPriority.NormalLow });
 
         // NuGet
-        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "NuGet",  Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenLazyNuGetTab(); }, Priority = 70 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "NuGet",  Label = "LazyNuGet",         Keybinding = "F9",         Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenLazyNuGetTab(); }, Priority = CommandPriority.Default });
         if (!_buildOps!.HasLazyNuGet)
-            _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",      Category = "NuGet",  Label = "Add NuGet Package\u2026",                      Execute = () => _buildOps!.ShowNuGetDialog(),                                                    Priority = 65 });
+            _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",      Category = "NuGet",  Label = "Add NuGet Package\u2026",                      Execute = () => _buildOps!.ShowNuGetDialog(),                                                    Priority = CommandPriority.Low });
 
         // Tools
-        _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = () => _buildOps!.OpenConfigFile(),                                                     Priority = 60 });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.config",         Category = "Tools", Label = "Edit Config",                                  Execute = () => _buildOps!.OpenConfigFile(),                                                     Priority = CommandPriority.Lower });
 
         // Help
-        _commandRegistry.Register(new IdeCommand { Id = "help.about",           Category = "Help",  Label = "About lazydotide\u2026",                       Execute = () => _layout?.ShowAbout(),                                                          Priority = 10 });
+        _commandRegistry.Register(new IdeCommand { Id = "help.about",           Category = "Help",  Label = "About lazydotide\u2026",                       Execute = () => _layout?.ShowAbout(),                                                          Priority = CommandPriority.Least });
 
         // Dynamic tool commands from config
         for (int i = 0; i < _config.Tools.Count; i++)
@@ -1040,7 +1081,7 @@ public class IdeApp : IDisposable
                 Category = "Tools",
                 Label    = tool.Name + " (Tab)",
                 Execute  = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenConfigToolTab(idx); },
-                Priority = 55
+                Priority = CommandPriority.CustomTool
             });
             _commandRegistry.Register(new IdeCommand
             {
@@ -1048,7 +1089,7 @@ public class IdeApp : IDisposable
                 Category = "Tools",
                 Label    = tool.Name + " (Bottom Shell)",
                 Execute  = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenConfigToolInOutputPanel(idx); },
-                Priority = 54
+                Priority = CommandPriority.CustomToolAlt
             });
             _commandRegistry.Register(new IdeCommand
             {
@@ -1056,7 +1097,7 @@ public class IdeApp : IDisposable
                 Category = "Tools",
                 Label    = tool.Name + " (Side Panel)",
                 Execute  = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenConfigToolInSidePanel(idx, () => { if (!_layout!.SidePanelVisible) _layout.ToggleSidePanel(); }, () => _layout?.InvalidateSidePanel()); },
-                Priority = 53
+                Priority = CommandPriority.CustomToolSide
             });
         }
     }

@@ -68,7 +68,7 @@ public class ProjectService
                 if (content.Contains("<OutputType>Exe</OutputType>", StringComparison.OrdinalIgnoreCase))
                     return csproj;
             }
-            catch { }
+            catch { } // Skip unparseable project files
         }
         return Directory.GetFiles(_rootPath, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
     }

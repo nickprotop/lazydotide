@@ -28,7 +28,7 @@ public class LspClient : IAsyncDisposable
     private static void Log(string msg)
     {
         try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
-        catch { }
+        catch { } // Cannot log if log file write itself fails
     }
 
     private Process? _process;
@@ -81,7 +81,7 @@ public class LspClient : IAsyncDisposable
                     var stderr = _process!.StandardError;
                     while (!_disposed && stderr.ReadLine() is not null) { }
                 }
-                catch { }
+                catch (Exception ex) { Log($"LSP-stderr drain: {ex.Message}"); }
             }) { IsBackground = true, Name = "LSP-stderr" };
             stderrThread.Start();
 

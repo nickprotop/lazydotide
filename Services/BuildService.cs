@@ -45,7 +45,7 @@ public class BuildService
         lock (_lock)
         {
             try { _currentProcess?.Kill(entireProcessTree: true); }
-            catch { }
+            catch { } // Best effort — process may have already exited
         }
     }
 
@@ -103,7 +103,7 @@ public class BuildService
         }
         catch (OperationCanceledException)
         {
-            try { process.Kill(entireProcessTree: true); } catch { }
+            try { process.Kill(entireProcessTree: true); } catch { } // Best effort — process may have already exited
             success = false;
         }
         finally

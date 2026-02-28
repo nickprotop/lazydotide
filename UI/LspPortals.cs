@@ -20,6 +20,8 @@ namespace DotNetIDE;
 
 internal class LspTooltipPortalContent : PortalContentBase
 {
+    private const int TooltipMaxWidth = 80;
+
     private readonly MarkupControl _markup;
     private Rectangle _bounds;
 
@@ -49,7 +51,7 @@ internal class LspTooltipPortalContent : PortalContentBase
         int contentW = markupLines.Count > 0
             ? markupLines.Max(l => AnsiConsoleHelper.StripSpectreLength(l)) + 4  // +2 border + 2 padding
             : 20;
-        int popupW = Math.Min(80, contentW);
+        int popupW = Math.Min(TooltipMaxWidth, contentW);
 
         // Account for word wrapping: MarkupControl wraps by default, so long lines
         // produce more rendered lines than input lines.  The inner width available
@@ -102,6 +104,10 @@ internal class LspTooltipPortalContent : PortalContentBase
 
 internal class LspCompletionPortalContent : PortalContentBase
 {
+    private const int CompletionMaxItems = 20;
+    private const int CompletionVisibleItems = 12;
+    private const int CompletionMaxWidth = 60;
+
     private readonly List<CompletionItem> _allItems;
     private List<CompletionItem> _filteredItems;
     private string _filterText = string.Empty;
@@ -205,16 +211,16 @@ internal class LspCompletionPortalContent : PortalContentBase
         if (items.Count > 0) _list.SelectedIndex = 0;
 
         // Width: icon + space + label + "  " + detail — cap at 60
-        int maxLabel = items.Take(20).Max(i =>
+        int maxLabel = items.Take(CompletionMaxItems).Max(i =>
         {
             string icon  = GetKindIcon(i.Kind);
             string label = icon + " " + i.Label;
             if (i.Detail != null) label += "  " + i.Detail;
             return AnsiConsoleHelper.StripSpectreLength(label);
         });
-        int popupW = Math.Min(60, maxLabel + 4);  // +2 border + 2 padding
+        int popupW = Math.Min(CompletionMaxWidth, maxLabel + 4);  // +2 border + 2 padding
 
-        int visibleItems = Math.Min(12, items.Count);
+        int visibleItems = Math.Min(CompletionVisibleItems, items.Count);
         int popupH = visibleItems + 2;  // +2 border
 
         var pos = PortalPositioner.CalculateFromPoint(
@@ -267,6 +273,10 @@ internal record LspLocationEntry(string FilePath, int Line, int Column, string D
 
 internal class LspLocationListPortalContent : PortalContentBase
 {
+    private const int LocationListMinWidth = 30;
+    private const int LocationListVisibleItems = 15;
+    private const int LocationListMaxWidth = 80;
+
     private readonly List<LspLocationEntry> _entries;
     private readonly ListControl _list;
     private Rectangle _bounds;
@@ -345,8 +355,8 @@ internal class LspLocationListPortalContent : PortalContentBase
             var fileName = Path.GetFileName(e.FilePath);
             return fileName.Length + 1 + e.Line.ToString().Length + 1 + e.DisplayText.Length;
         });
-        int popupW = Math.Min(80, Math.Max(30, maxWidth + 6));
-        int visibleItems = Math.Min(15, entries.Count);
+        int popupW = Math.Min(LocationListMaxWidth, Math.Max(LocationListMinWidth, maxWidth + 6));
+        int visibleItems = Math.Min(LocationListVisibleItems, entries.Count);
         int popupH = visibleItems + 2;
 
         var pos = PortalPositioner.CalculateFromPoint(

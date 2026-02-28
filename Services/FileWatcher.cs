@@ -2,6 +2,9 @@ namespace DotNetIDE;
 
 public class FileWatcher : IDisposable
 {
+    private const int FileChangedDebounceMs = 300;
+    private const int StructureChangedDebounceMs = 500;
+
     private FileSystemWatcher? _watcher;
     private readonly object _lock = new();
     private readonly Dictionary<string, Timer> _fileDebounceTimers = new(StringComparer.OrdinalIgnoreCase);
@@ -74,7 +77,7 @@ public class FileWatcher : IDisposable
         {
             if (_fileDebounceTimers.TryGetValue(fullPath, out var existing))
             {
-                existing.Change(300, Timeout.Infinite);
+                existing.Change(FileChangedDebounceMs, Timeout.Infinite);
                 return;
             }
 
@@ -86,7 +89,7 @@ public class FileWatcher : IDisposable
                     if (_suppressedPaths.Remove(fullPath)) return;
                 }
                 FileChanged?.Invoke(this, fullPath);
-            }, null, 300, Timeout.Infinite);
+            }, null, FileChangedDebounceMs, Timeout.Infinite);
 
             _fileDebounceTimers[fullPath] = timer;
         }
@@ -106,11 +109,11 @@ public class FileWatcher : IDisposable
                         _structureDebounceTimer = null;
                     }
                     StructureChanged?.Invoke(this, EventArgs.Empty);
-                }, null, 500, Timeout.Infinite);
+                }, null, StructureChangedDebounceMs, Timeout.Infinite);
             }
             else
             {
-                _structureDebounceTimer.Change(500, Timeout.Infinite);
+                _structureDebounceTimer.Change(StructureChangedDebounceMs, Timeout.Infinite);
             }
         }
     }

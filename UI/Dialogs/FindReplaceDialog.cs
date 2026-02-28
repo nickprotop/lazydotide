@@ -7,6 +7,9 @@ namespace DotNetIDE;
 
 public class FindReplaceDialog : DialogBase<bool>
 {
+    private const int DialogWidth = 60;
+    private const int DialogHeight = 13;
+
     private readonly EditorManager _editorManager;
     private PromptControl _findPrompt    = null!;
     private PromptControl _replacePrompt = null!;
@@ -22,7 +25,7 @@ public class FindReplaceDialog : DialogBase<bool>
         => new FindReplaceDialog(editorManager).ShowAsync(ws);
 
     protected override string GetTitle() => "Find & Replace";
-    protected override (int width, int height) GetSize() => (60, 13);
+    protected override (int width, int height) GetSize() => (DialogWidth, DialogHeight);
     protected override bool IsModal => false;
     protected override bool AlwaysOnTop => true;
     protected override bool GetDefaultResult() => false;

@@ -100,21 +100,22 @@ internal class GitCoordinator
         _pendingUiActions.Enqueue(() => _explorer.UpdateGitStatuses(fileStatuses, workingDir, isPathIgnored));
 
         var root = _projectService.RootPath;
-        await _editorManager.UpdateAllGitDiffMarkersAsync(
+        var diffUpdates = await _editorManager.CollectGitDiffMarkersAsync(
             path => _gitService.GetLineDiffMarkersAsync(root, path)!);
+        _pendingUiActions.Enqueue(() => _editorManager.ApplyGitDiffMarkers(diffUpdates));
 
         var branch = await _gitService.GetBranchAsync(_projectService.RootPath);
         var log = await _gitService.GetLogAsync(_projectService.RootPath, 15);
         var sidePanelFiles = detailedFiles
             .Select(f => (f.RelativePath, f.AbsolutePath, f.Status, f.IsStaged))
             .ToList();
-        _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log);
+        _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log));
     }
 
     public async Task RefreshGitDiffMarkersForFileAsync(string filePath)
     {
         var markers = await _gitService.GetLineDiffMarkersAsync(_projectService.RootPath, filePath);
-        _editorManager.UpdateGitDiffMarkers(filePath, markers);
+        _pendingUiActions.Enqueue(() => _editorManager.UpdateGitDiffMarkers(filePath, markers));
     }
 
     public async Task RefreshExplorerAndGitAsync()
@@ -313,7 +314,7 @@ internal class GitCoordinator
 
         string[] sourceLines;
         try { sourceLines = await File.ReadAllLinesAsync(absolutePath); }
-        catch { return; }
+        catch { return; } // Cannot show blame if source file is unreadable
 
         var output = new List<string>();
         for (int i = 0; i < sourceLines.Length; i++)

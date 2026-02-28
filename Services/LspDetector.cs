@@ -56,6 +56,6 @@ public static class LspDetector
             p?.WaitForExit(2000);
             return p?.ExitCode == 0;
         }
-        catch { return false; }
+        catch { return false; } // Expected when tool is not installed
     }
 }

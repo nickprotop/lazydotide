@@ -20,7 +20,7 @@ public class GitService
     private static void LogError(string context, Exception ex)
     {
         try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
-        catch { }
+        catch { } // Cannot log if log file write itself fails
     }
 
     private static Repository? OpenRepo(string repoRoot)

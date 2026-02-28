@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Controls.Terminal;
 using SharpConsoleUI.Layout;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
@@ -164,7 +165,7 @@ internal class BuildCoordinator
             if (!string.IsNullOrEmpty(output))
                 return "lazynuget";
         }
-        catch { }
+        catch { } // Expected when lazynuget is not installed
         return null;
     }
 
@@ -215,11 +216,28 @@ internal class BuildCoordinator
         _editorManager.OpenControlTab(tabName, terminal, isClosable: true);
     }
 
+    private TerminalControl? CreateToolTerminal(int toolIndex)
+    {
+        if (!IdeConstants.IsDesktopOs) return null;
+        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return null;
+
+        var tool = _config.Tools[toolIndex];
+        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
+            ? _projectService.RootPath
+            : tool.WorkingDir;
+
+        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
+        if (tool.Args?.Length > 0)
+            builder = builder.WithArgs(tool.Args);
+
+        var terminal = builder.Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment   = VerticalAlignment.Fill;
+        return terminal;
+    }
+
     public void OpenConfigToolTab(int toolIndex)
     {
-        if (!(IdeConstants.IsDesktopOs)) return;
-        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
-
         if (_toolTabIndices.TryGetValue(toolIndex, out int existingTab) &&
             existingTab >= 0 && existingTab < _editorManager.TabControl.TabCount)
         {
@@ -227,42 +245,22 @@ internal class BuildCoordinator
             return;
         }
 
+        var terminal = CreateToolTerminal(toolIndex);
+        if (terminal == null) return;
+
         var tool = _config.Tools[toolIndex];
-        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
-            ? _projectService.RootPath
-            : tool.WorkingDir;
-
-        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
-        if (tool.Args?.Length > 0)
-            builder = builder.WithArgs(tool.Args);
-
-        var terminal = builder.Build();
-        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
-        terminal.VerticalAlignment   = VerticalAlignment.Fill;
-
         int tabIdx = _editorManager.OpenControlTab(tool.Name, terminal, isClosable: true);
         _toolTabIndices[toolIndex] = tabIdx;
-        terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
+        if (IdeConstants.IsDesktopOs) // Redundant guard for CA1416 — CreateToolTerminal already checks this
+            terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
     }
 
     public void OpenConfigToolInOutputPanel(int toolIndex)
     {
-        if (!(IdeConstants.IsDesktopOs)) return;
-        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
+        var terminal = CreateToolTerminal(toolIndex);
+        if (terminal == null) return;
 
         var tool = _config.Tools[toolIndex];
-        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
-            ? _projectService.RootPath
-            : tool.WorkingDir;
-
-        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
-        if (tool.Args?.Length > 0)
-            builder = builder.WithArgs(tool.Args);
-
-        var terminal = builder.Build();
-        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
-        terminal.VerticalAlignment   = VerticalAlignment.Fill;
-
         _outputPanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
         _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
 
@@ -276,23 +274,12 @@ internal class BuildCoordinator
 
     public void OpenConfigToolInSidePanel(int toolIndex, Action toggleSidePanel, Action invalidateSidePanel)
     {
-        if (!(IdeConstants.IsDesktopOs)) return;
-        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return;
         if (_sidePanel == null) return;
 
+        var terminal = CreateToolTerminal(toolIndex);
+        if (terminal == null) return;
+
         var tool = _config.Tools[toolIndex];
-        string workDir = string.IsNullOrEmpty(tool.WorkingDir)
-            ? _projectService.RootPath
-            : tool.WorkingDir;
-
-        var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
-        if (tool.Args?.Length > 0)
-            builder = builder.WithArgs(tool.Args);
-
-        var terminal = builder.Build();
-        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
-        terminal.VerticalAlignment   = VerticalAlignment.Fill;
-
         toggleSidePanel();
         _sidePanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
         _sidePanel.TabControl.ActiveTabIndex = _sidePanel.TabControl.TabCount - 1;

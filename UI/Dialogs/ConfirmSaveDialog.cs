@@ -9,6 +9,9 @@ public enum DialogResult { Save, DontSave, Cancel }
 
 public class ConfirmSaveDialog : DialogBase<DialogResult>
 {
+    private const int DialogWidth = 50;
+    private const int DialogHeight = 8;
+
     private readonly string _fileName;
 
     private ConfirmSaveDialog(string fileName) { _fileName = fileName; }
@@ -17,7 +20,7 @@ public class ConfirmSaveDialog : DialogBase<DialogResult>
         => new ConfirmSaveDialog(fileName).ShowAsync(ws);
 
     protected override string GetTitle() => "Unsaved Changes";
-    protected override (int width, int height) GetSize() => (50, 8);
+    protected override (int width, int height) GetSize() => (DialogWidth, DialogHeight);
     protected override DialogResult GetDefaultResult() => DialogResult.Cancel;
 
     protected override void BuildContent()

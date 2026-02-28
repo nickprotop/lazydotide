@@ -13,6 +13,9 @@ namespace DotNetIDE;
 
 public class CommandPalettePortal : PortalContentContainer
 {
+    private const int PaletteMaxWidth = 85;
+    private const int PaletteMaxHeight = 22;
+
     private readonly CommandRegistry _registry;
     private readonly PromptControl _searchInput;
     private readonly ListControl _commandList;
@@ -81,8 +84,8 @@ public class CommandPalettePortal : PortalContentContainer
             .Build());
 
         // Calculate bounds
-        int w = Math.Min(85, windowWidth - 4);
-        int h = Math.Min(22, windowHeight - 2);
+        int w = Math.Min(PaletteMaxWidth, windowWidth - 4);
+        int h = Math.Min(PaletteMaxHeight, windowHeight - 2);
         int x = (windowWidth - w) / 2;
         int y = 1;
         PortalBounds = new Rectangle(x, y, w, h);

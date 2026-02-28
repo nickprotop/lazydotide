@@ -14,13 +14,19 @@ namespace DotNetIDE;
 /// </summary>
 public static class GitCommitDialog
 {
+    private const int CommitDialogMaxWidth = 72;
+    private const int CommitDialogMinWidth = 50;
+    private const int CommitDialogMaxHeight = 18;
+    private const int CommitDialogMinHeight = 12;
+    private const int DialogPadding = 4;
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string statusSummary)
     {
         var tcs = new TaskCompletionSource<string?>();
 
         var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(72, Math.Max(50, desktop.Width - 4));
-        int dialogHeight = Math.Min(18, Math.Max(12, desktop.Height - 4));
+        int dialogWidth = Math.Min(CommitDialogMaxWidth, Math.Max(CommitDialogMinWidth, desktop.Width - DialogPadding));
+        int dialogHeight = Math.Min(CommitDialogMaxHeight, Math.Max(CommitDialogMinHeight, desktop.Height - DialogPadding));
         int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
         int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
 
@@ -114,12 +120,16 @@ public static class GitCommitDialog
 /// </summary>
 public static class GitBranchPickerDialog
 {
+    private const int StandardDialogMaxWidth = 50;
+    private const int StandardDialogMinWidth = 30;
+    private const int DialogPadding = 4;
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws, List<string> branches, string currentBranch)
     {
         var tcs = new TaskCompletionSource<string?>();
 
         var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
+        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
         int dialogHeight = Math.Min(branches.Count + 5, Math.Min(20, desktop.Height - 2));
         int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
         int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
@@ -207,12 +217,16 @@ public static class GitBranchPickerDialog
 /// </summary>
 public static class GitNewBranchDialog
 {
+    private const int StandardDialogMaxWidth = 50;
+    private const int StandardDialogMinWidth = 30;
+    private const int DialogPadding = 4;
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws)
     {
         var tcs = new TaskCompletionSource<string?>();
 
         var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
+        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
         const int dialogHeight = 7;
         int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
         int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
@@ -330,12 +344,16 @@ public class GitDiscardConfirmDialog : DialogBase<bool>
 /// </summary>
 public static class GitStashDialog
 {
+    private const int StandardDialogMaxWidth = 50;
+    private const int StandardDialogMinWidth = 30;
+    private const int DialogPadding = 4;
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws)
     {
         var tcs = new TaskCompletionSource<string?>();
 
         var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
+        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
         const int dialogHeight = 7;
         int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
         int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);

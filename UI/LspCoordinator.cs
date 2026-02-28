@@ -9,12 +9,17 @@ namespace DotNetIDE;
 
 internal class LspCoordinator : IAsyncDisposable
 {
+    private const int SymbolRefreshMs = 500;
+    private const int DotTriggerMs = 350;
+    private const int SignatureTriggerMs = 250;
+    private const int WordCompletionMs = 300;
+
     private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp-coord.log");
     private static readonly object LogLock = new();
     private static void LogError(string context, Exception ex)
     {
         try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
-        catch { }
+        catch { } // Cannot log if log file write itself fails
     }
 
     private readonly EditorManager _editorManager;
@@ -515,7 +520,7 @@ internal class LspCoordinator : IAsyncDisposable
         _symbolRefreshDebounce = new Timer(_ =>
         {
             _pendingUiActions.Enqueue(() => RefreshSymbolsForFile(filePath));
-        }, null, 500, Timeout.Infinite);
+        }, null, SymbolRefreshMs, Timeout.Infinite);
     }
 
     private async Task RefreshSymbolsAsync(string filePath)
@@ -562,7 +567,7 @@ internal class LspCoordinator : IAsyncDisposable
         foreach (var (display, sym, depth) in flat)
         {
             var indent = new string(' ', depth * 2);
-            var kindName = GetSymbolKindName(sym.Kind);
+            var kindName = LspSymbolHelper.GetSymbolKindName(sym.Kind);
             var s = sym;
             tempRegistry.Register(new IdeCommand
             {
@@ -605,7 +610,7 @@ internal class LspCoordinator : IAsyncDisposable
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
                 _ => _ = ShowCompletionAsync(silent: true),
-                null, 350, Timeout.Infinite);
+                null, DotTriggerMs, Timeout.Infinite);
         }
         else if (lastChar is '(' or ',')
         {
@@ -613,7 +618,7 @@ internal class LspCoordinator : IAsyncDisposable
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
                 _ => _ = ShowSignatureHelpAsync(silent: true),
-                null, 250, Timeout.Infinite);
+                null, SignatureTriggerMs, Timeout.Infinite);
         }
         else if (IsIdentifierChar(lastChar) && _completionPortal == null)
         {
@@ -628,7 +633,7 @@ internal class LspCoordinator : IAsyncDisposable
                 _dotTriggerDebounce?.Dispose();
                 _dotTriggerDebounce = new Timer(
                     _ => _ = ShowCompletionAsync(silent: true),
-                    null, 300, Timeout.Infinite);
+                    null, WordCompletionMs, Timeout.Infinite);
             }
         }
     }
@@ -1006,7 +1011,7 @@ internal class LspCoordinator : IAsyncDisposable
             if (lineIndex >= 0 && lineIndex < lines.Length)
                 return lines[lineIndex].Trim();
         }
-        catch { }
+        catch (Exception ex) { LogError("TryReadLineFromFile", ex); }
         return null;
     }
 
@@ -1093,17 +1098,6 @@ internal class LspCoordinator : IAsyncDisposable
             }
         }
     }
-
-    public static string GetSymbolKindName(int kind) => kind switch
-    {
-        1 => "File", 2 => "Module", 3 => "Namespace", 4 => "Package",
-        5 => "Class", 6 => "Method", 7 => "Property", 8 => "Field",
-        9 => "Constructor", 10 => "Enum", 11 => "Interface", 12 => "Function",
-        13 => "Variable", 14 => "Constant", 15 => "String", 16 => "Number",
-        17 => "Boolean", 18 => "Array", 19 => "Object", 22 => "Struct",
-        23 => "Event", 24 => "Operator", 25 => "TypeParam",
-        _ => "Symbol"
-    };
 
     public async ValueTask DisposeAsync()
     {
