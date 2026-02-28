@@ -253,6 +253,7 @@ internal class GitCoordinator
         var message = await GitCommitDialog.ShowAsync(_ws!, status);
         if (message == null) return;
 
+        await _gitService.StageAllAsync(_projectService.RootPath);
         var result = await _gitService.CommitAsync(_projectService.RootPath, message);
         EnqueueGitOutput(result.StartsWith("Error")
             ? result
