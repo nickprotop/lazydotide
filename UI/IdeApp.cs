@@ -137,10 +137,11 @@ public class IdeApp : IDisposable
             _gitService, _projectService, _buildService, _editorManager!, _outputPanel!,
             _sidePanel!, _explorer!, _buildLines, _pendingUiActions, _cts.Token);
         _gitOps.SetWindowSystem(_ws);
+        _gitOps.SetFileWatcher(_fileWatcher!);
 
         _buildOps = new BuildCoordinator(
             _buildService, _projectService, _editorManager!, _outputPanel!,
-            _config, _buildLines, _testLines, _cts.Token);
+            _config, _buildLines, _testLines, _pendingUiActions, _cts.Token);
         _buildOps.SetWindowSystem(_ws, _outputWindow!, _sidePanel!);
 
         // Open the shell tab at startup so it's ready immediately
@@ -411,13 +412,16 @@ public class IdeApp : IDisposable
 
     private void WireHandlerEvents()
     {
-        _gitOps!.GitStatusMarkupChanged += (_, _) => UpdateInlineStatus();
-        _buildOps!.DiagnosticsUpdated += (_, diags) => UpdateErrorCount(diags);
+        _gitOps!.GitStatusMarkupChanged += (_, _) => _pendingUiActions.Enqueue(() => UpdateInlineStatus());
+        _buildOps!.DiagnosticsUpdated += (_, diags) => _pendingUiActions.Enqueue(() => UpdateErrorCount(diags));
         _buildOps.OutputRequired += () => { if (!_layout!.OutputVisible) _layout.ToggleOutput(); };
         _lspCoord!.DiagnosticsUpdated += (_, diags) =>
         {
-            _outputPanel!.PopulateLspDiagnostics(diags);
-            UpdateErrorCount(diags);
+            _pendingUiActions.Enqueue(() =>
+            {
+                _outputPanel!.PopulateLspDiagnostics(diags);
+                UpdateErrorCount(diags);
+            });
         };
         _lspCoord.LspInitCompleted += () =>
         {
@@ -429,13 +433,14 @@ public class IdeApp : IDisposable
         _ws.ConsoleDriver.ScreenResized += (s, e) => _layout?.OnScreenResized(s, e);
         _fileWatcher!.FileChanged      += (_, path) => _pendingUiActions.Enqueue(() => HandleExternalFileChanged(path));
         _fileWatcher.StructureChanged  += (_, _)    => _pendingUiActions.Enqueue(() => _ = _gitOps!.RefreshExplorerAndGitAsync());
+        _fileWatcher.GitChanged        += (_, _)    => _pendingUiActions.Enqueue(() => _ = _gitOps!.RefreshGitStatusAsync());
 
         // Side panel
         _sidePanel!.SymbolActivated += (_, entry) => _lspCoord.NavigateToLocation(entry);
         _sidePanel.GitCommitRequested += (_, _) => _ = _gitOps!.GitCommitAsync();
+        _sidePanel.GitPushRequested += (_, _) => _ = _gitOps!.GitCommandAsync("push");
+        _sidePanel.GitPullRequested += (_, _) => _ = _gitOps!.GitCommandAsync("pull");
         _sidePanel.GitRefreshRequested += (_, _) => _ = _gitOps!.RefreshExplorerAndGitAsync();
-        _sidePanel.GitStageAllRequested += (_, _) => _ = _gitOps!.GitStageAllAsync();
-        _sidePanel.GitUnstageAllRequested += (_, _) => _ = _gitOps!.GitUnstageAllAsync();
         _sidePanel.GitDiffRequested += (_, path) => _ = _gitOps!.GitShowDiffAsync(path);
         _sidePanel.GitContextMenuRequested += (s, e) => _contextMenu?.HandleGitPanelContextMenu(s, e);
         _sidePanel.GitLogEntryActivated += (_, entry) => _ = _gitOps!.ShowCommitDetailAsync(entry);
@@ -466,13 +471,16 @@ public class IdeApp : IDisposable
                     : "Untitled";
                 _ = ConfirmSaveDialog.ShowAsync(_ws, fileName).ContinueWith(t =>
                 {
-                    if (t.Result == DialogResult.Cancel) return;
-                    if (t.Result == DialogResult.Save)
+                    _pendingUiActions.Enqueue(() =>
                     {
-                        _editorManager.TabControl.ActiveTabIndex = index;
-                        _editorManager.SaveCurrent();
-                    }
-                    _editorManager.CloseTabAt(index);
+                        if (t.Result == DialogResult.Cancel) return;
+                        if (t.Result == DialogResult.Save)
+                        {
+                            _editorManager.TabControl.ActiveTabIndex = index;
+                            _editorManager.SaveCurrent();
+                        }
+                        _editorManager.CloseTabAt(index);
+                    });
                 });
             }
             else
@@ -834,7 +842,7 @@ public class IdeApp : IDisposable
         if (string.IsNullOrEmpty(selected)) return;
 
         _projectService.ChangeRootPath(selected);
-        _editorManager?.CloseAll();
+        _pendingUiActions.Enqueue(() => _editorManager?.CloseAll());
         _pendingUiActions.Enqueue(() => _explorer?.Refresh());
         _ = _gitOps!.RefreshGitStatusAsync();
         _fileWatcher?.Watch(selected);
@@ -972,9 +980,12 @@ public class IdeApp : IDisposable
                 : "Untitled";
             _ = ConfirmSaveDialog.ShowAsync(_ws, fileName).ContinueWith(t =>
             {
-                if (t.Result == DialogResult.Cancel) return;
-                if (t.Result == DialogResult.Save) _editorManager.SaveCurrent();
-                _editorManager.CloseCurrentTab();
+                _pendingUiActions.Enqueue(() =>
+                {
+                    if (t.Result == DialogResult.Cancel) return;
+                    if (t.Result == DialogResult.Save) _editorManager.SaveCurrent();
+                    _editorManager.CloseCurrentTab();
+                });
             });
             return;
         }

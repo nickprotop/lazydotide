@@ -151,7 +151,7 @@ internal class LspCoordinator : IAsyncDisposable
             Severity: d.Severity == 1 ? "error" : "warning",
             Message: d.Message)).ToList();
 
-        DiagnosticsUpdated?.Invoke(this, mapped);
+        _pendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, mapped));
     }
 
     // ── Hover ──────────────────────────────────────────────────────────
@@ -168,16 +168,19 @@ internal class LspCoordinator : IAsyncDisposable
         if (path == null) return;
 
         var result = await _lsp.HoverAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (result == null || string.IsNullOrWhiteSpace(result.Contents))
+        _pendingUiActions.Enqueue(() =>
         {
-            ShowTransientTooltip("No type info at cursor.");
-            return;
-        }
+            if (result == null || string.IsNullOrWhiteSpace(result.Contents))
+            {
+                ShowTransientTooltip("No type info at cursor.");
+                return;
+            }
 
-        var lines = LspMarkdownHelper.ConvertToSpectreMarkup(result.Contents);
-        if (lines.Count == 0) return;
+            var lines = LspMarkdownHelper.ConvertToSpectreMarkup(result.Contents);
+            if (lines.Count == 0) return;
 
-        ShowTooltipPortal(lines);
+            ShowTooltipPortal(lines);
+        });
     }
 
     // ── Completion ──────────────────────────────────────────────────────
@@ -196,58 +199,61 @@ internal class LspCoordinator : IAsyncDisposable
         var items = await _lsp.CompletionAsync(path, requestLine - 1, requestCol - 1);
         if (items.Count == 0)
         {
-            if (!silent) ShowTransientTooltip("No completions at cursor.");
+            if (!silent) _pendingUiActions.Enqueue(() => ShowTransientTooltip("No completions at cursor."));
             return;
         }
 
         if (editor.CurrentLine != requestLine) return;
 
-        DismissCompletionPortal();
-
-        var lineContent = editor.Content.Split('\n');
-        int lineIdx = requestLine - 1;
-        int cursorCol0 = editor.CurrentColumn - 1;
-        int wordStart0 = cursorCol0;
-        if (lineIdx >= 0 && lineIdx < lineContent.Length)
+        _pendingUiActions.Enqueue(() =>
         {
-            var currentLine = lineContent[lineIdx];
-            while (wordStart0 > 0 && IsIdentifierChar(currentLine[wordStart0 - 1]))
-                wordStart0--;
-        }
-        string initialFilter = string.Empty;
-        if (lineIdx >= 0 && lineIdx < lineContent.Length && wordStart0 < cursorCol0)
-            initialFilter = lineContent[lineIdx].Substring(wordStart0, cursorCol0 - wordStart0);
-
-        _completionTriggerColumn = wordStart0 + 1;
-        _completionTriggerLine = editor.CurrentLine;
-
-        var screenCol = Math.Max(0, editor.ActualX + editor.GutterWidth + (wordStart0 - editor.HorizontalScrollOffset));
-        var screenRow = editor.ActualY + Math.Max(0, editor.CurrentLine - 1 - editor.VerticalScrollOffset);
-
-        var portal = new LspCompletionPortalContent(
-            items, screenCol, screenRow,
-            _mainWindow.Width, _mainWindow.Height);
-
-        if (initialFilter.Length > 0)
-            portal.SetFilter(initialFilter);
-
-        portal.Container = _mainWindow;
-        _completionPortal = portal;
-        _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
-
-        portal.ItemAccepted += (_, item) =>
-        {
-            int filterLen = _completionPortal?.FilterText.Length ?? 0;
             DismissCompletionPortal();
-            if (filterLen > 0) editor.DeleteCharsBefore(filterLen);
-            editor.InsertText(item.InsertText ?? item.Label);
-            _dotTriggerDebounce?.Dispose();
-            _dotTriggerDebounce = null;
-        };
 
-        portal.DismissRequested += (_, _) => DismissCompletionPortal();
+            var lineContent = editor.Content.Split('\n');
+            int lineIdx = requestLine - 1;
+            int cursorCol0 = editor.CurrentColumn - 1;
+            int wordStart0 = cursorCol0;
+            if (lineIdx >= 0 && lineIdx < lineContent.Length)
+            {
+                var currentLine = lineContent[lineIdx];
+                while (wordStart0 > 0 && IsIdentifierChar(currentLine[wordStart0 - 1]))
+                    wordStart0--;
+            }
+            string initialFilter = string.Empty;
+            if (lineIdx >= 0 && lineIdx < lineContent.Length && wordStart0 < cursorCol0)
+                initialFilter = lineContent[lineIdx].Substring(wordStart0, cursorCol0 - wordStart0);
 
-        editor.ContentChanged += OnEditorContentChangedForCompletion;
+            _completionTriggerColumn = wordStart0 + 1;
+            _completionTriggerLine = editor.CurrentLine;
+
+            var screenCol = Math.Max(0, editor.ActualX + editor.GutterWidth + (wordStart0 - editor.HorizontalScrollOffset));
+            var screenRow = editor.ActualY + Math.Max(0, editor.CurrentLine - 1 - editor.VerticalScrollOffset);
+
+            var portal = new LspCompletionPortalContent(
+                items, screenCol, screenRow,
+                _mainWindow!.Width, _mainWindow.Height);
+
+            if (initialFilter.Length > 0)
+                portal.SetFilter(initialFilter);
+
+            portal.Container = _mainWindow;
+            _completionPortal = portal;
+            _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
+
+            portal.ItemAccepted += (_, item) =>
+            {
+                int filterLen = _completionPortal?.FilterText.Length ?? 0;
+                DismissCompletionPortal();
+                if (filterLen > 0) editor.DeleteCharsBefore(filterLen);
+                editor.InsertText(item.InsertText ?? item.Label);
+                _dotTriggerDebounce?.Dispose();
+                _dotTriggerDebounce = null;
+            };
+
+            portal.DismissRequested += (_, _) => DismissCompletionPortal();
+
+            editor.ContentChanged += OnEditorContentChangedForCompletion;
+        });
     }
 
     public Task FlushPendingChangeAsync() =>
@@ -263,25 +269,28 @@ internal class LspCoordinator : IAsyncDisposable
         if (path == null) return;
 
         var locations = await _lsp.DefinitionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (locations.Count == 0)
+        _pendingUiActions.Enqueue(() =>
         {
-            ShowTransientTooltip("No definition found at current position.");
-            return;
-        }
+            if (locations.Count == 0)
+            {
+                ShowTransientTooltip("No definition found at current position.");
+                return;
+            }
 
-        if (locations.Count == 1)
-        {
-            var loc = locations[0];
-            NavigateToLocation(new LspLocationEntry(
-                LspClient.UriToPath(loc.Uri),
-                loc.Range.Start.Line + 1,
-                loc.Range.Start.Character + 1,
-                ""));
-        }
-        else
-        {
-            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
-        }
+            if (locations.Count == 1)
+            {
+                var loc = locations[0];
+                NavigateToLocation(new LspLocationEntry(
+                    LspClient.UriToPath(loc.Uri),
+                    loc.Range.Start.Line + 1,
+                    loc.Range.Start.Character + 1,
+                    ""));
+            }
+            else
+            {
+                ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+            }
+        });
     }
 
     public void NavigateBack()
@@ -305,13 +314,16 @@ internal class LspCoordinator : IAsyncDisposable
         if (path == null) return;
 
         var locations = await _lsp.ReferencesAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (locations.Count == 0)
+        _pendingUiActions.Enqueue(() =>
         {
-            ShowTransientTooltip("No references found at cursor.");
-            return;
-        }
+            if (locations.Count == 0)
+            {
+                ShowTransientTooltip("No references found at cursor.");
+                return;
+            }
 
-        ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+        });
     }
 
     public async Task ShowGoToImplementationAsync()
@@ -322,25 +334,28 @@ internal class LspCoordinator : IAsyncDisposable
         if (path == null) return;
 
         var locations = await _lsp.ImplementationAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (locations.Count == 0)
+        _pendingUiActions.Enqueue(() =>
         {
-            ShowTransientTooltip("No implementation found at cursor.");
-            return;
-        }
+            if (locations.Count == 0)
+            {
+                ShowTransientTooltip("No implementation found at cursor.");
+                return;
+            }
 
-        if (locations.Count == 1)
-        {
-            var loc = locations[0];
-            NavigateToLocation(new LspLocationEntry(
-                LspClient.UriToPath(loc.Uri),
-                loc.Range.Start.Line + 1,
-                loc.Range.Start.Character + 1,
-                ""));
-        }
-        else
-        {
-            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
-        }
+            if (locations.Count == 1)
+            {
+                var loc = locations[0];
+                NavigateToLocation(new LspLocationEntry(
+                    LspClient.UriToPath(loc.Uri),
+                    loc.Range.Start.Line + 1,
+                    loc.Range.Start.Character + 1,
+                    ""));
+            }
+            else
+            {
+                ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
+            }
+        });
     }
 
     // ── Signature Help ──────────────────────────────────────────────────
@@ -354,34 +369,37 @@ internal class LspCoordinator : IAsyncDisposable
         if (path == null) return;
 
         var sig = await _lsp.SignatureHelpAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        if (sig == null || sig.Signatures.Count == 0)
+        _pendingUiActions.Enqueue(() =>
         {
-            if (!silent) ShowTransientTooltip("No signature at cursor. Position inside function arguments.");
-            return;
-        }
+            if (sig == null || sig.Signatures.Count == 0)
+            {
+                if (!silent) ShowTransientTooltip("No signature at cursor. Position inside function arguments.");
+                return;
+            }
 
-        var activeSig = sig.Signatures[Math.Min(sig.ActiveSignature, sig.Signatures.Count - 1)];
-        string sigLabel = activeSig.Label;
+            var activeSig = sig.Signatures[Math.Min(sig.ActiveSignature, sig.Signatures.Count - 1)];
+            string sigLabel = activeSig.Label;
 
-        string line1;
-        if (sig.ActiveParameter >= 0 && sig.ActiveParameter < activeSig.Parameters.Count)
-        {
-            var paramLabel = activeSig.Parameters[sig.ActiveParameter].Label;
-            int idx = sigLabel.IndexOf(paramLabel, StringComparison.Ordinal);
-            line1 = idx >= 0
-                ? Markup.Escape(sigLabel[..idx]) + $"[bold yellow]{Markup.Escape(paramLabel)}[/]" + Markup.Escape(sigLabel[(idx + paramLabel.Length)..])
-                : Markup.Escape(sigLabel);
-        }
-        else
-        {
-            line1 = Markup.Escape(sigLabel);
-        }
+            string line1;
+            if (sig.ActiveParameter >= 0 && sig.ActiveParameter < activeSig.Parameters.Count)
+            {
+                var paramLabel = activeSig.Parameters[sig.ActiveParameter].Label;
+                int idx = sigLabel.IndexOf(paramLabel, StringComparison.Ordinal);
+                line1 = idx >= 0
+                    ? Markup.Escape(sigLabel[..idx]) + $"[bold yellow]{Markup.Escape(paramLabel)}[/]" + Markup.Escape(sigLabel[(idx + paramLabel.Length)..])
+                    : Markup.Escape(sigLabel);
+            }
+            else
+            {
+                line1 = Markup.Escape(sigLabel);
+            }
 
-        var lines = new List<string> { line1 };
-        if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
-            lines.AddRange(LspMarkdownHelper.ConvertToSpectreMarkup(activeSig.Documentation!));
+            var lines = new List<string> { line1 };
+            if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
+                lines.AddRange(LspMarkdownHelper.ConvertToSpectreMarkup(activeSig.Documentation!));
 
-        ShowTooltipPortal(lines);
+            ShowTooltipPortal(lines);
+        });
     }
 
     // ── Rename ──────────────────────────────────────────────────────────
@@ -410,21 +428,24 @@ internal class LspCoordinator : IAsyncDisposable
             if (newName == null) return;
 
             var workspaceEdit = await _lsp.RenameAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1, newName);
-            if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
+            _pendingUiActions.Enqueue(() =>
             {
-                ShowTransientTooltip("LSP returned no edits.");
-                return;
-            }
+                if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
+                {
+                    ShowTransientTooltip("LSP returned no edits.");
+                    return;
+                }
 
-            ApplyWorkspaceEdit(workspaceEdit);
-            ws.NotificationStateService.ShowNotification(
-                "Rename", $"Renamed '{currentName}' to '{newName}' in {workspaceEdit.Changes.Count} file(s).",
-                SharpConsoleUI.Core.NotificationSeverity.Info);
+                ApplyWorkspaceEdit(workspaceEdit);
+                ws.NotificationStateService.ShowNotification(
+                    "Rename", $"Renamed '{currentName}' to '{newName}' in {workspaceEdit.Changes.Count} file(s).",
+                    SharpConsoleUI.Core.NotificationSeverity.Info);
+            });
         }
         catch (Exception ex)
         {
-            ws.NotificationStateService.ShowNotification(
-                "Rename Error", ex.Message, SharpConsoleUI.Core.NotificationSeverity.Danger);
+            _pendingUiActions.Enqueue(() => ws.NotificationStateService.ShowNotification(
+                "Rename Error", ex.Message, SharpConsoleUI.Core.NotificationSeverity.Danger));
         }
     }
 
@@ -441,40 +462,43 @@ internal class LspCoordinator : IAsyncDisposable
         int col = editor.CurrentColumn - 1;
 
         var actions = await _lsp.CodeActionAsync(path, line, col, line, col);
-        if (actions.Count == 0)
+        _pendingUiActions.Enqueue(() =>
         {
-            ShowTransientTooltip("No code actions available at cursor.");
-            return;
-        }
-
-        var items = actions.Select(a => new CompletionItem(a.Title, a.Kind, null, 1)).ToList();
-
-        DismissCompletionPortal();
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspCompletionPortalContent(
-            items, cursor.X, cursor.Y,
-            _mainWindow.Width, _mainWindow.Height);
-
-        portal.Container = _mainWindow;
-        _completionPortal = portal;
-        _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
-        _completionTriggerColumn = editor.CurrentColumn;
-        _completionTriggerLine = editor.CurrentLine;
-
-        portal.DismissRequested += (_, _) => DismissCompletionPortal();
-
-        portal.ItemAccepted += (_, item) =>
-        {
-            DismissCompletionPortal();
-            var action = actions.FirstOrDefault(a => a.Title == item.Label);
-            if (action?.Edit != null)
+            if (actions.Count == 0)
             {
-                ApplyWorkspaceEdit(action.Edit);
-                ws.NotificationStateService.ShowNotification(
-                    "Code Action", $"Applied: {action.Title}",
-                    SharpConsoleUI.Core.NotificationSeverity.Info);
+                ShowTransientTooltip("No code actions available at cursor.");
+                return;
             }
-        };
+
+            var items = actions.Select(a => new CompletionItem(a.Title, a.Kind, null, 1)).ToList();
+
+            DismissCompletionPortal();
+            var cursor = _editorManager.GetCursorBounds();
+            var portal = new LspCompletionPortalContent(
+                items, cursor.X, cursor.Y,
+                _mainWindow!.Width, _mainWindow.Height);
+
+            portal.Container = _mainWindow;
+            _completionPortal = portal;
+            _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
+            _completionTriggerColumn = editor.CurrentColumn;
+            _completionTriggerLine = editor.CurrentLine;
+
+            portal.DismissRequested += (_, _) => DismissCompletionPortal();
+
+            portal.ItemAccepted += (_, item) =>
+            {
+                DismissCompletionPortal();
+                var action = actions.FirstOrDefault(a => a.Title == item.Label);
+                if (action?.Edit != null)
+                {
+                    ApplyWorkspaceEdit(action.Edit);
+                    ws.NotificationStateService.ShowNotification(
+                        "Code Action", $"Applied: {action.Title}",
+                        SharpConsoleUI.Core.NotificationSeverity.Info);
+                }
+            };
+        });
     }
 
     // ── Format ──────────────────────────────────────────────────────────
@@ -491,7 +515,8 @@ internal class LspCoordinator : IAsyncDisposable
 
         var lines = editor.Content.Split('\n').ToList();
         ApplyTextEditsToLines(lines, edits);
-        editor.Content = string.Join('\n', lines);
+        var formatted = string.Join('\n', lines);
+        _pendingUiActions.Enqueue(() => editor.Content = formatted);
     }
 
     // ── Symbols ──────────────────────────────────────────────────────────
@@ -529,12 +554,12 @@ internal class LspCoordinator : IAsyncDisposable
         try
         {
             var symbols = await _lsp.DocumentSymbolAsync(filePath);
-            _sidePanel.UpdateSymbols(filePath, symbols);
+            _pendingUiActions.Enqueue(() => _sidePanel.UpdateSymbols(filePath, symbols));
         }
         catch (Exception ex)
         {
             LogError("RefreshSymbolsAsync", ex);
-            _sidePanel.ClearSymbols();
+            _pendingUiActions.Enqueue(() => _sidePanel.ClearSymbols());
         }
     }
 
@@ -609,7 +634,7 @@ internal class LspCoordinator : IAsyncDisposable
             _ = _lsp.FlushPendingChangeAsync();
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _ = ShowCompletionAsync(silent: true),
+                _ => _pendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
                 null, DotTriggerMs, Timeout.Infinite);
         }
         else if (lastChar is '(' or ',')
@@ -617,7 +642,7 @@ internal class LspCoordinator : IAsyncDisposable
             _ = _lsp.FlushPendingChangeAsync();
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _ = ShowSignatureHelpAsync(silent: true),
+                _ => _pendingUiActions.Enqueue(() => _ = ShowSignatureHelpAsync(silent: true)),
                 null, SignatureTriggerMs, Timeout.Infinite);
         }
         else if (IsIdentifierChar(lastChar) && _completionPortal == null)
@@ -632,7 +657,7 @@ internal class LspCoordinator : IAsyncDisposable
             {
                 _dotTriggerDebounce?.Dispose();
                 _dotTriggerDebounce = new Timer(
-                    _ => _ = ShowCompletionAsync(silent: true),
+                    _ => _pendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
                     null, WordCompletionMs, Timeout.Infinite);
             }
         }

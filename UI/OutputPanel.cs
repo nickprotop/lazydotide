@@ -15,6 +15,7 @@ public class OutputPanel
     private readonly TabControl _tabControl;
     private readonly ScrollablePanelControl _buildPanel;
     private readonly ScrollablePanelControl _testPanel;
+    private readonly ScrollablePanelControl _gitPanel;
     private readonly ListControl _problemsList;
     private readonly LogViewerControl _logViewer;
     private TerminalControl? _shellTerminal;
@@ -44,6 +45,14 @@ public class OutputPanel
             VerticalAlignment = VerticalAlignment.Fill
         };
 
+        _gitPanel = new ScrollablePanelControl
+        {
+            AutoScroll = true,
+            ShowScrollbar = true,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Fill
+        };
+
         _problemsList = new ListControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -66,6 +75,7 @@ public class OutputPanel
         _tabControl.AddTab("Output", _logViewer);
         _tabControl.AddTab("Build", _buildPanel);
         _tabControl.AddTab("Test", _testPanel);
+        _tabControl.AddTab("Git Output", _gitPanel);
         _tabControl.AddTab("Problems", _problemsList);
     }
 
@@ -113,9 +123,30 @@ public class OutputPanel
         _testPanel.ClearContents();
     }
 
+    public void AppendGitLine(string line)
+    {
+        string markup;
+        if (line.StartsWith("error", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("fatal", StringComparison.OrdinalIgnoreCase))
+            markup = $"[red]{Markup.Escape(line)}[/]";
+        else if (line.StartsWith("warning", StringComparison.OrdinalIgnoreCase))
+            markup = $"[yellow]{Markup.Escape(line)}[/]";
+        else
+            markup = $"[grey]{Markup.Escape(line)}[/]";
+
+        _gitPanel.AddControl(new MarkupControl(new List<string> { markup }));
+        _gitPanel.ScrollToBottom();
+    }
+
+    public void ClearGitOutput()
+    {
+        _gitPanel.ClearContents();
+    }
+
     public void SwitchToBuildTab() => _tabControl.ActiveTabIndex = 1;
     public void SwitchToTestTab() => _tabControl.ActiveTabIndex = 2;
-    public void SwitchToProblemsTab() => _tabControl.ActiveTabIndex = 3;
+    public void SwitchToGitTab() => _tabControl.ActiveTabIndex = 3;
+    public void SwitchToProblemsTab() => _tabControl.ActiveTabIndex = 4;
 
     public TerminalControl? ShellTerminal => _shellTerminal;
     public bool IsShellTabActive => _shellTabIndex >= 0 && _tabControl.ActiveTabIndex == _shellTabIndex;

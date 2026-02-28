@@ -17,6 +17,7 @@ internal class GitCoordinator
     private readonly ConcurrentQueue<string> _buildLines;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
     private readonly CancellationToken _ct;
+    private FileWatcher? _fileWatcher;
 
     private string _gitMarkup = IdeConstants.GitStatusDefault;
 
@@ -46,6 +47,16 @@ internal class GitCoordinator
         _buildLines = buildLines;
         _pendingUiActions = pendingUiActions;
         _ct = ct;
+    }
+
+    private void EnqueueGitOutput(string line, bool clear = false)
+    {
+        _pendingUiActions.Enqueue(() =>
+        {
+            if (clear) _outputPanel.ClearGitOutput();
+            _outputPanel.AppendGitLine(line);
+            _outputPanel.SwitchToGitTab();
+        });
     }
 
     public async Task RefreshGitStatusAsync()
@@ -106,10 +117,27 @@ internal class GitCoordinator
 
         var branch = await _gitService.GetBranchAsync(_projectService.RootPath);
         var log = await _gitService.GetLogAsync(_projectService.RootPath, 15);
+        var (ahead, behind) = _gitService.GetAheadBehind(_projectService.RootPath);
         var sidePanelFiles = detailedFiles
             .Select(f => (f.RelativePath, f.AbsolutePath, f.Status, f.IsStaged))
             .ToList();
-        _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log));
+        _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log, ahead, behind));
+
+        // Update ahead/behind with fresh remote data in the background
+        _ = Task.Run(async () =>
+        {
+            _fileWatcher?.SuppressGitChanges();
+            try
+            {
+                var (freshAhead, freshBehind) = await _gitService.GetAheadBehindWithFetchAsync(_projectService.RootPath);
+                if (freshAhead != ahead || freshBehind != behind)
+                    _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log, freshAhead, freshBehind));
+            }
+            finally
+            {
+                _fileWatcher?.ResumeGitChanges();
+            }
+        });
     }
 
     public async Task RefreshGitDiffMarkersForFileAsync(string filePath)
@@ -121,18 +149,22 @@ internal class GitCoordinator
     public async Task RefreshExplorerAndGitAsync()
     {
         _pendingUiActions.Enqueue(() => _explorer.Refresh());
-        await RefreshGitFileStatusesAsync();
+        await RefreshGitStatusAsync();
     }
 
     public async Task GitCommandAsync(string command)
     {
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.SwitchToBuildTab();
+        _pendingUiActions.Enqueue(() =>
+        {
+            _outputPanel.ClearGitOutput();
+            _outputPanel.SwitchToGitTab();
+            _outputPanel.AppendGitLine($"$ git {command}");
+        });
 
         await _buildService.RunAsync(
-            $"git -C {_projectService.RootPath} {command}",
-            line => _buildLines.Enqueue(line),
-            _ct);
+            "git", ["-C", _projectService.RootPath, .. command.Split(' ', StringSplitOptions.RemoveEmptyEntries)],
+            line => _pendingUiActions.Enqueue(() => _outputPanel.AppendGitLine(line)),
+            _ct, workingDirectory: _projectService.RootPath);
 
         await RefreshGitStatusAsync();
     }
@@ -153,7 +185,7 @@ internal class GitCoordinator
     {
         await _gitService.AddToGitignoreAsync(_projectService.RootPath, absolutePath, isDirectory);
         var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
-        ReloadIfOpen(gitignorePath);
+        _pendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
         await RefreshExplorerAndGitAsync();
     }
 
@@ -161,7 +193,7 @@ internal class GitCoordinator
     {
         await _gitService.RemoveFromGitignoreAsync(_projectService.RootPath, absolutePath);
         var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
-        ReloadIfOpen(gitignorePath);
+        _pendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
         await RefreshExplorerAndGitAsync();
     }
 
@@ -182,7 +214,7 @@ internal class GitCoordinator
         var confirmed = await GitDiscardConfirmDialog.ShowAsync(_ws!, absolutePath);
         if (!confirmed) return;
         await _gitService.DiscardChangesAsync(_projectService.RootPath, absolutePath);
-        ReloadIfOpen(absolutePath);
+        _pendingUiActions.Enqueue(() => ReloadIfOpen(absolutePath));
         await RefreshExplorerAndGitAsync();
     }
 
@@ -191,7 +223,7 @@ internal class GitCoordinator
         var confirmed = await GitDiscardConfirmDialog.ShowAllAsync(_ws!);
         if (!confirmed) return;
         await _gitService.DiscardAllAsync(_projectService.RootPath);
-        ReloadAllOpenFiles();
+        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
@@ -205,14 +237,14 @@ internal class GitCoordinator
         if (string.IsNullOrEmpty(diff)) return;
 
         var fileName = Path.GetFileName(absolutePath);
-        OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter());
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter()));
     }
 
     public async Task GitShowDiffAllAsync()
     {
         var diff = await _gitService.GetDiffAllAsync(_projectService.RootPath);
         if (string.IsNullOrEmpty(diff)) return;
-        OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter());
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter()));
     }
 
     public async Task GitCommitAsync()
@@ -222,11 +254,9 @@ internal class GitCoordinator
         if (message == null) return;
 
         var result = await _gitService.CommitAsync(_projectService.RootPath, message);
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.AppendBuildLine(result.StartsWith("Error")
+        EnqueueGitOutput(result.StartsWith("Error")
             ? result
-            : $"Committed: {result}");
-        _outputPanel.SwitchToBuildTab();
+            : $"Committed: {result}", clear: true);
         await RefreshGitStatusAsync();
     }
 
@@ -236,19 +266,15 @@ internal class GitCoordinator
         if (message == null) return;
 
         var result = await _gitService.StashAsync(_projectService.RootPath, message);
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.AppendBuildLine(result);
-        _outputPanel.SwitchToBuildTab();
+        EnqueueGitOutput(result, clear: true);
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitStashPopAsync()
     {
         var result = await _gitService.StashPopAsync(_projectService.RootPath);
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.AppendBuildLine(result);
-        _outputPanel.SwitchToBuildTab();
-        ReloadAllOpenFiles();
+        EnqueueGitOutput(result, clear: true);
+        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
@@ -261,12 +287,10 @@ internal class GitCoordinator
         if (selected == null) return;
 
         var result = await _gitService.CheckoutAsync(_projectService.RootPath, selected);
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.AppendBuildLine(result.StartsWith("Error")
+        EnqueueGitOutput(result.StartsWith("Error")
             ? result
-            : $"Switched to branch: {result}");
-        _outputPanel.SwitchToBuildTab();
-        ReloadAllOpenFiles();
+            : $"Switched to branch: {result}", clear: true);
+        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
@@ -276,18 +300,16 @@ internal class GitCoordinator
         if (name == null) return;
 
         var result = await _gitService.CreateBranchAsync(_projectService.RootPath, name);
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.AppendBuildLine(result.StartsWith("Error")
+        EnqueueGitOutput(result.StartsWith("Error")
             ? result
-            : $"Created branch: {result}");
-        _outputPanel.SwitchToBuildTab();
+            : $"Created branch: {result}", clear: true);
         await RefreshGitStatusAsync();
     }
 
     public async Task ShowCommitDetailAsync(GitLogEntry entry)
     {
         var detail = await _gitService.GetCommitDetailAsync(_projectService.RootPath, entry.Sha);
-        OpenReadOnlyTab($"Commit: {entry.ShortSha}", detail, new CommitDetailSyntaxHighlighter());
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Commit: {entry.ShortSha}", detail, new CommitDetailSyntaxHighlighter()));
     }
 
     public async Task GitShowLogAsync()
@@ -295,7 +317,8 @@ internal class GitCoordinator
         var entries = await _gitService.GetLogAsync(_projectService.RootPath);
         if (entries.Count == 0) return;
         var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
-        OpenReadOnlyTab("Git Log", string.Join('\n', lines));
+        var content = string.Join('\n', lines);
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab("Git Log", content));
     }
 
     public async Task GitShowFileLogAsync(string absolutePath)
@@ -304,7 +327,8 @@ internal class GitCoordinator
         if (entries.Count == 0) return;
         var fileName = Path.GetFileName(absolutePath);
         var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
-        OpenReadOnlyTab($"Log: {fileName}", string.Join('\n', lines));
+        var content = string.Join('\n', lines);
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Log: {fileName}", content));
     }
 
     public async Task GitShowBlameAsync(string absolutePath)
@@ -327,7 +351,8 @@ internal class GitCoordinator
         }
 
         var fileName = Path.GetFileName(absolutePath);
-        OpenReadOnlyTab($"Blame: {fileName}", string.Join('\n', output));
+        var content = string.Join('\n', output);
+        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Blame: {fileName}", content));
     }
 
     public void OpenReadOnlyTab(string title, string content, ISyntaxHighlighter? highlighter = null)
@@ -354,5 +379,10 @@ internal class GitCoordinator
     public void SetWindowSystem(ConsoleWindowSystem ws)
     {
         _ws = ws;
+    }
+
+    public void SetFileWatcher(FileWatcher watcher)
+    {
+        _fileWatcher = watcher;
     }
 }

@@ -141,6 +141,9 @@ internal class ContextMenuBuilder
     {
         var items = new List<ContextMenuItem>
         {
+            new("Stage All", null, () => _ = _gitOps.GitStageAllAsync()),
+            new("Unstage All", null, () => _ = _gitOps.GitUnstageAllAsync()),
+            new("-"),
             new("Stash…", null, () => _ = _gitOps.GitStashAsync()),
             new("Stash Pop", null, () => _ = _gitOps.GitStashPopAsync()),
             new("-"),

@@ -32,12 +32,37 @@ public class BuildService
     public async Task<BuildResult> TestAsync(string target, Action<string> onLine, CancellationToken ct)
         => await RunDotnetAsync("test", target, ["--nologo", "--logger", "console;verbosity=normal"], onLine, ct);
 
-    public async Task RunAsync(string arguments, Action<string> onLine, CancellationToken ct)
+    public async Task RunAsync(string executable, string[] args, Action<string> onLine, CancellationToken ct, string? workingDirectory = null)
     {
-        var parts = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return;
-        var args = parts.Skip(1).ToArray();
-        await RunDotnetAsync(parts[0], null, args, onLine, ct);
+        var psi = new ProcessStartInfo(executable, args)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        if (!string.IsNullOrEmpty(workingDirectory))
+            psi.WorkingDirectory = workingDirectory;
+
+        using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        lock (_lock) { _currentProcess = process; }
+
+        try
+        {
+            process.Start();
+            var stdoutTask = ReadStreamAsync(process.StandardOutput, onLine, ct);
+            var stderrTask = ReadStreamAsync(process.StandardError, onLine, ct);
+            await Task.WhenAll(stdoutTask, stderrTask);
+            await process.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { } // Best effort — process may have already exited
+        }
+        finally
+        {
+            lock (_lock) { _currentProcess = null; }
+        }
     }
 
     public void Cancel()

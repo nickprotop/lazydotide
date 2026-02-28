@@ -4,16 +4,20 @@ public class FileWatcher : IDisposable
 {
     private const int FileChangedDebounceMs = 300;
     private const int StructureChangedDebounceMs = 500;
+    private const int GitChangedDebounceMs = 500;
 
     private FileSystemWatcher? _watcher;
     private readonly object _lock = new();
     private readonly Dictionary<string, Timer> _fileDebounceTimers = new(StringComparer.OrdinalIgnoreCase);
     private Timer? _structureDebounceTimer;
+    private Timer? _gitDebounceTimer;
     private readonly HashSet<string> _suppressedPaths = new(StringComparer.OrdinalIgnoreCase);
     private bool _disposed;
+    private int _suppressGitCount;
 
     public event EventHandler<string>? FileChanged;
     public event EventHandler? StructureChanged;
+    public event EventHandler? GitChanged;
 
     public void Watch(string rootPath)
     {
@@ -39,6 +43,9 @@ public class FileWatcher : IDisposable
         }
     }
 
+    public void SuppressGitChanges() => Interlocked.Increment(ref _suppressGitCount);
+    public void ResumeGitChanges() => Interlocked.Decrement(ref _suppressGitCount);
+
     public void SuppressNext(string path)
     {
         lock (_lock)
@@ -51,19 +58,19 @@ public class FileWatcher : IDisposable
     {
         if (string.IsNullOrEmpty(e.FullPath)) return;
         if (Directory.Exists(e.FullPath)) return;
-        if (IsGitInternalPath(e.FullPath)) return;
+        if (IsGitInternalPath(e.FullPath)) { ScheduleGitRefresh(); return; }
         ScheduleFileChanged(e.FullPath);
     }
 
     private void OnFswCreatedOrDeleted(object sender, FileSystemEventArgs e)
     {
-        if (IsGitInternalPath(e.FullPath)) return;
+        if (IsGitInternalPath(e.FullPath)) { ScheduleGitRefresh(); return; }
         ScheduleStructureRefresh();
     }
 
     private void OnFswRenamed(object sender, RenamedEventArgs e)
     {
-        if (IsGitInternalPath(e.FullPath)) return;
+        if (IsGitInternalPath(e.FullPath)) { ScheduleGitRefresh(); return; }
         // Covers atomic-save pattern (write temp → rename to final path)
         ScheduleFileChanged(e.FullPath);
         ScheduleStructureRefresh();
@@ -118,6 +125,30 @@ public class FileWatcher : IDisposable
         }
     }
 
+    private void ScheduleGitRefresh()
+    {
+        if (Volatile.Read(ref _suppressGitCount) > 0) return;
+        lock (_lock)
+        {
+            if (_gitDebounceTimer == null)
+            {
+                _gitDebounceTimer = new Timer(_ =>
+                {
+                    lock (_lock)
+                    {
+                        _gitDebounceTimer?.Dispose();
+                        _gitDebounceTimer = null;
+                    }
+                    GitChanged?.Invoke(this, EventArgs.Empty);
+                }, null, GitChangedDebounceMs, Timeout.Infinite);
+            }
+            else
+            {
+                _gitDebounceTimer.Change(GitChangedDebounceMs, Timeout.Infinite);
+            }
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────
 
     private static bool IsGitInternalPath(string path)
@@ -138,6 +169,8 @@ public class FileWatcher : IDisposable
             _fileDebounceTimers.Clear();
             _structureDebounceTimer?.Dispose();
             _structureDebounceTimer = null;
+            _gitDebounceTimer?.Dispose();
+            _gitDebounceTimer = null;
         }
     }
 }

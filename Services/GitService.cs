@@ -44,6 +44,44 @@ public class GitService
         catch (Exception ex) { LogError("GetBranch", ex); return ""; }
     }
 
+    public async Task<(int Ahead, int Behind)> GetAheadBehindWithFetchAsync(string path)
+    {
+        // Try a quiet fetch first to get up-to-date remote refs; ignore failures
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", ["fetch", "--quiet"])
+            {
+                WorkingDirectory = path,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc != null)
+            {
+                await proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
+        catch { } // No network, no credentials, timeout — all fine, use local refs
+
+        return GetAheadBehind(path);
+    }
+
+    public (int Ahead, int Behind) GetAheadBehind(string path)
+    {
+        try
+        {
+            using var repo = OpenRepo(path);
+            if (repo == null) return (0, 0);
+            var head = repo.Head;
+            if (head?.TrackedBranch == null) return (0, 0);
+            var divergence = repo.ObjectDatabase.CalculateHistoryDivergence(head.Tip, head.TrackedBranch.Tip);
+            return (divergence.AheadBy ?? 0, divergence.BehindBy ?? 0);
+        }
+        catch (Exception ex) { LogError("GetAheadBehind", ex); return (0, 0); }
+    }
+
     public string GetStatusSummary(string path)
     {
         try
@@ -831,6 +869,7 @@ public class GitService
     // Async wrappers for UI call sites
     public Task<string> GetBranchAsync(string path) => Task.Run(() => GetBranch(path));
     public Task<string> GetStatusSummaryAsync(string path) => Task.Run(() => GetStatusSummary(path));
+    public Task<(int Ahead, int Behind)> GetAheadBehindAsync(string path) => Task.Run(() => GetAheadBehind(path));
 
     public Task<(List<GitDetailedFileEntry> Files, string? WorkingDir)> GetDetailedFileStatusesAsync(string repoRoot) => Task.Run(() => GetDetailedFileStatuses(repoRoot));
 

@@ -48,9 +48,9 @@ internal class SidePanel
 
     // Toolbar actions
     public event EventHandler? GitCommitRequested;
+    public event EventHandler? GitPushRequested;
+    public event EventHandler? GitPullRequested;
     public event EventHandler? GitRefreshRequested;
-    public event EventHandler? GitStageAllRequested;
-    public event EventHandler? GitUnstageAllRequested;
     public event EventHandler? GitMoreMenuRequested;
 
     // Context menu
@@ -81,12 +81,11 @@ internal class SidePanel
 
         // Git toolbar
         _gitToolbar = ToolbarControl.Create()
-            .AddButton("✓ Commit", (_, _) => GitCommitRequested?.Invoke(this, EventArgs.Empty))
-            .AddButton("↻", (_, _) => GitRefreshRequested?.Invoke(this, EventArgs.Empty))
-            .AddButton("±", (_, _) => GitStageAllRequested?.Invoke(this, EventArgs.Empty))
-            .AddButton("∓", (_, _) => GitUnstageAllRequested?.Invoke(this, EventArgs.Empty))
-            .AddSeparator(1)
-            .AddButton("⋯", (_, _) => GitMoreMenuRequested?.Invoke(this, EventArgs.Empty))
+            .AddButton("Commit", (_, _) => GitCommitRequested?.Invoke(this, EventArgs.Empty))
+            .AddButton("Push", (_, _) => GitPushRequested?.Invoke(this, EventArgs.Empty))
+            .AddButton("Pull", (_, _) => GitPullRequested?.Invoke(this, EventArgs.Empty))
+            .AddButton("↻ ", (_, _) => GitRefreshRequested?.Invoke(this, EventArgs.Empty))
+            .AddButton("More...", (_, _) => GitMoreMenuRequested?.Invoke(this, EventArgs.Empty))
             .WithSpacing(1)
             .WithWrap(true)
             .Build();
@@ -207,7 +206,9 @@ internal class SidePanel
     public void UpdateGitPanel(
         string branch,
         List<(string RelativePath, string AbsolutePath, GitFileStatus Status, bool IsStaged)> files,
-        List<GitLogEntry>? recentLog = null)
+        List<GitLogEntry>? recentLog = null,
+        int ahead = 0,
+        int behind = 0)
     {
         _stagedList.ClearItems();
         _unstagedList.ClearItems();
@@ -237,22 +238,42 @@ internal class SidePanel
             }
         }
 
-        RebuildGitPanel(branch);
+        RebuildGitPanel(branch, ahead, behind);
     }
 
-    private void RebuildGitPanel(string? branch = null)
+    private void RebuildGitPanel(string? branch = null, int ahead = 0, int behind = 0)
     {
         // Remove all children without disposing persistent controls
         while (_gitPanel.Children.Count > 0)
             _gitPanel.RemoveControl(_gitPanel.Children[^1]);
 
         var branchDisplay = string.IsNullOrEmpty(branch) ? "none" : branch;
+
         _gitPanel.AddControl(new MarkupControl(new List<string>
         {
-            $"[cyan1]\u2387 {Markup.Escape(branchDisplay)}[/]"
+            $"[cyan1]Branch: {Markup.Escape(branchDisplay)}[/]"
         }));
 
         _gitPanel.AddControl(_gitToolbar);
+
+        _gitPanel.AddControl(new RuleControl
+        {
+            Color = Color.Grey,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        });
+
+        var syncText = (ahead, behind) switch
+        {
+            (0, 0) => "[dim]Up to date[/]",
+            _ => string.Join("  |  ", new[] {
+                ahead > 0 ? $"[green]{ahead}[/] to push" : null,
+                behind > 0 ? $"[yellow]{behind}[/] to pull" : null
+            }.Where(s => s != null))
+        };
+        _gitPanel.AddControl(new MarkupControl(new List<string>
+        {
+            $"  {syncText}"
+        }));
 
         _gitPanel.AddControl(new RuleControl
         {

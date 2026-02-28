@@ -18,6 +18,7 @@ internal class BuildCoordinator
     private readonly IdeConfig _config;
     private readonly ConcurrentQueue<string> _buildLines;
     private readonly ConcurrentQueue<string> _testLines;
+    private readonly ConcurrentQueue<Action> _pendingUiActions;
     private readonly CancellationToken _ct;
 
     private int _lazyNuGetTabIndex = -1;
@@ -48,6 +49,7 @@ internal class BuildCoordinator
         IdeConfig config,
         ConcurrentQueue<string> buildLines,
         ConcurrentQueue<string> testLines,
+        ConcurrentQueue<Action> pendingUiActions,
         CancellationToken ct)
     {
         _buildService = buildService;
@@ -57,6 +59,7 @@ internal class BuildCoordinator
         _config = config;
         _buildLines = buildLines;
         _testLines = testLines;
+        _pendingUiActions = pendingUiActions;
         _ct = ct;
         _hasLazyNuGet = DetectLazyNuGet() != null;
     }
@@ -81,8 +84,11 @@ internal class BuildCoordinator
             line => _buildLines.Enqueue(line),
             _ct);
 
-        _outputPanel.PopulateProblems(result.Diagnostics);
-        DiagnosticsUpdated?.Invoke(this, result.Diagnostics);
+        _pendingUiActions.Enqueue(() =>
+        {
+            _outputPanel.PopulateProblems(result.Diagnostics);
+            DiagnosticsUpdated?.Invoke(this, result.Diagnostics);
+        });
     }
 
     public async Task TestProjectAsync()
@@ -98,7 +104,7 @@ internal class BuildCoordinator
             line => _testLines.Enqueue(line),
             _ct);
 
-        DiagnosticsUpdated?.Invoke(this, result.Diagnostics);
+        _pendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, result.Diagnostics));
     }
 
     public async Task CleanProjectAsync()
@@ -110,7 +116,7 @@ internal class BuildCoordinator
         _outputPanel.SwitchToBuildTab();
 
         await _buildService.RunAsync(
-            $"clean {target} --nologo",
+            "dotnet", ["clean", target, "--nologo"],
             line => _buildLines.Enqueue(line),
             _ct);
     }
@@ -296,17 +302,20 @@ internal class BuildCoordinator
     {
         _ = NuGetDialog.ShowAsync(_ws!).ContinueWith(t =>
         {
-            var (packageName, version) = t.Result;
-            if (string.IsNullOrEmpty(packageName)) return;
+            _pendingUiActions.Enqueue(() =>
+            {
+                var (packageName, version) = t.Result;
+                if (string.IsNullOrEmpty(packageName)) return;
 
-            var target = _projectService.FindBuildTarget();
-            if (target == null || !target.EndsWith(".csproj")) return;
+                var target = _projectService.FindBuildTarget();
+                if (target == null || !target.EndsWith(".csproj")) return;
 
-            var cmdArgs = version != null
-                ? $"add {target} package {packageName} --version {version}"
-                : $"add {target} package {packageName}";
+                var cmdArgs = version != null
+                    ? $"add {target} package {packageName} --version {version}"
+                    : $"add {target} package {packageName}";
 
-            _ = RunNuGetAsync(cmdArgs);
+                _ = RunNuGetAsync(cmdArgs);
+            });
         });
     }
 
@@ -316,7 +325,7 @@ internal class BuildCoordinator
         _outputPanel.SwitchToBuildTab();
 
         await _buildService.RunAsync(
-            "dotnet " + args,
+            "dotnet", args.Split(' ', StringSplitOptions.RemoveEmptyEntries),
             line => _buildLines.Enqueue(line),
             _ct);
     }
