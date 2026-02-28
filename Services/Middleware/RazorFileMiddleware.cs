@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class RazorFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "Razor";
     private static readonly RazorSyntaxHighlighter Highlighter = new();
 
     private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)

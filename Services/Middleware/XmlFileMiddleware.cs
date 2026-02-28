@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class XmlFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "XML";
     private static readonly XmlSyntaxHighlighter Highlighter = new();
 
     private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)

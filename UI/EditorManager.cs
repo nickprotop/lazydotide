@@ -329,7 +329,7 @@ public class EditorManager
         _tabControl.ActiveTabIndex = tabIndex;
 
         if (control is SharpConsoleUI.Controls.Terminal.TerminalControl tc &&
-            (OperatingSystem.IsLinux() || OperatingSystem.IsWindows()))
+            (IdeConstants.IsDesktopOs))
             tc.ProcessExited += (_, _) => RemoveTabWithControl(control);
 
         if (wasEmpty)
@@ -658,7 +658,7 @@ public class EditorManager
     public void ReloadTabFromDisk(int index)
     {
         if (!_tabData.TryGetValue(index, out var data)) return;
-        if (data.FilePath == null || data.FilePath.StartsWith("__readonly:")) return;
+        if (data.FilePath == null || data.FilePath.StartsWith(IdeConstants.ReadOnlyTabPrefix)) return;
         ReloadFile(data.FilePath);
     }
 
@@ -688,7 +688,7 @@ public class EditorManager
         {
             if (!_tabData.TryGetValue(tabIndex, out var data)) continue;
             if (data.DiffGutter == null || data.FilePath == null) continue;
-            if (data.FilePath.StartsWith("__readonly:")) continue;
+            if (data.FilePath.StartsWith(IdeConstants.ReadOnlyTabPrefix)) continue;
 
             var markers = await getMarkers(data.FilePath);
             data.DiffGutter.UpdateMarkers(markers);

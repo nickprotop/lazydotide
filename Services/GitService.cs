@@ -14,6 +14,21 @@ public record GitDetailedFileEntry(string RelativePath, string AbsolutePath, Git
 
 public class GitService
 {
+    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-git.log");
+    private static readonly object LogLock = new();
+
+    private static void LogError(string context, Exception ex)
+    {
+        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
+        catch { }
+    }
+
+    private static Repository? OpenRepo(string repoRoot)
+    {
+        var repoPath = Repository.Discover(repoRoot);
+        return repoPath != null ? new Repository(repoPath) : null;
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Read-only queries (existing)
     // ──────────────────────────────────────────────────────────────
@@ -22,21 +37,19 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(path);
-            if (repoPath == null) return "";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(path);
+            if (repo == null) return "";
             return repo.Head.FriendlyName;
         }
-        catch { return ""; }
+        catch (Exception ex) { LogError("GetBranch", ex); return ""; }
     }
 
     public string GetStatusSummary(string path)
     {
         try
         {
-            var repoPath = Repository.Discover(path);
-            if (repoPath == null) return "";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(path);
+            if (repo == null) return "";
             var status = repo.RetrieveStatus(new StatusOptions
             {
                 IncludeUntracked = true,
@@ -64,30 +77,7 @@ public class GitService
             if (deleted > 0)  parts.Add($"D:{deleted}");
             return string.Join("  ", parts);
         }
-        catch { return ""; }
-    }
-
-    public Dictionary<string, GitFileStatus> GetFileStatuses(string path)
-    {
-        var statuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            var repoPath = Repository.Discover(path);
-            if (repoPath == null) return statuses;
-            using var repo = new Repository(repoPath);
-            foreach (var entry in repo.RetrieveStatus(new StatusOptions
-            {
-                IncludeUntracked = true,
-                IncludeIgnored = false
-            }))
-            {
-                var gitStatus = MapStatus(entry.State);
-                if (gitStatus.HasValue)
-                    statuses[entry.FilePath] = gitStatus.Value;
-            }
-        }
-        catch { }
-        return statuses;
+        catch (Exception ex) { LogError("GetStatusSummary", ex); return ""; }
     }
 
     /// <summary>
@@ -100,9 +90,8 @@ public class GitService
         string? workDir = null;
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return (files, null);
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return (files, null);
             workDir = repo.Info.WorkingDirectory;
 
             foreach (var entry in repo.RetrieveStatus(new StatusOptions
@@ -133,7 +122,7 @@ public class GitService
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { LogError("GetDetailedFileStatuses", ex); }
         return (files, workDir);
     }
 
@@ -144,14 +133,13 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return null;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return null;
             var relativePath = MakeRelative(repo, absolutePath);
             var status = repo.RetrieveStatus(relativePath);
             return MapStatus(status);
         }
-        catch { return null; }
+        catch (Exception ex) { LogError("GetFileStatus", ex); return null; }
     }
 
     /// <summary>
@@ -161,9 +149,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return false;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return false;
             var relativePath = MakeRelative(repo, absolutePath);
             var status = repo.RetrieveStatus(relativePath);
             return status.HasFlag(FileStatus.ModifiedInIndex)
@@ -171,7 +158,7 @@ public class GitService
                 || status.HasFlag(FileStatus.DeletedFromIndex)
                 || status.HasFlag(FileStatus.RenamedInIndex);
         }
-        catch { return false; }
+        catch (Exception ex) { LogError("IsStaged", ex); return false; }
     }
 
     /// <summary>
@@ -181,16 +168,15 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return false;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return false;
             var relativePath = MakeRelative(repo, absolutePath);
             var status = repo.RetrieveStatus(relativePath);
             return status.HasFlag(FileStatus.ModifiedInWorkdir)
                 || status.HasFlag(FileStatus.NewInWorkdir)
                 || status.HasFlag(FileStatus.DeletedFromWorkdir);
         }
-        catch { return false; }
+        catch (Exception ex) { LogError("HasWorkingChanges", ex); return false; }
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -202,9 +188,8 @@ public class GitService
     /// </summary>
     public void Stage(string repoRoot, string absolutePath)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         var relativePath = MakeRelative(repo, absolutePath);
 
         if (Directory.Exists(absolutePath))
@@ -228,9 +213,8 @@ public class GitService
     /// </summary>
     public void Unstage(string repoRoot, string absolutePath)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         var relativePath = MakeRelative(repo, absolutePath);
 
         if (Directory.Exists(absolutePath))
@@ -253,9 +237,8 @@ public class GitService
     /// </summary>
     public void StageAll(string repoRoot)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         Commands.Stage(repo, "*");
     }
 
@@ -264,9 +247,8 @@ public class GitService
     /// </summary>
     public void UnstageAll(string repoRoot)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         repo.Reset(ResetMode.Mixed);
     }
 
@@ -280,9 +262,8 @@ public class GitService
     /// </summary>
     public void DiscardChanges(string repoRoot, string absolutePath)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         var relativePath = MakeRelative(repo, absolutePath);
         var status = repo.RetrieveStatus(relativePath);
 
@@ -304,9 +285,8 @@ public class GitService
     /// </summary>
     public void DiscardAll(string repoRoot)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         repo.Reset(ResetMode.Hard);
     }
 
@@ -321,14 +301,13 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "";
             var relativePath = MakeRelative(repo, absolutePath);
             var patch = repo.Diff.Compare<Patch>(new[] { relativePath });
             return patch.Content;
         }
-        catch { return ""; }
+        catch (Exception ex) { LogError("GetDiff", ex); return ""; }
     }
 
     /// <summary>
@@ -338,9 +317,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "";
             var relativePath = MakeRelative(repo, absolutePath);
             var patch = repo.Diff.Compare<Patch>(
                 repo.Head.Tip?.Tree,
@@ -348,7 +326,7 @@ public class GitService
                 new[] { relativePath });
             return patch.Content;
         }
-        catch { return ""; }
+        catch (Exception ex) { LogError("GetStagedDiff", ex); return ""; }
     }
 
     /// <summary>
@@ -358,13 +336,12 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "";
             var patch = repo.Diff.Compare<Patch>();
             return patch.Content;
         }
-        catch { return ""; }
+        catch (Exception ex) { LogError("GetDiffAll", ex); return ""; }
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -380,9 +357,8 @@ public class GitService
         var markers = new Dictionary<int, GitLineChangeType>();
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return markers;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return markers;
             var relativePath = MakeRelative(repo, absolutePath);
             var patch = repo.Diff.Compare<Patch>(new[] { relativePath });
 
@@ -441,7 +417,7 @@ public class GitService
                 FlushHunk(markers, hunkAddedLines, hunkDeletions, hunkAdditions, newLine);
             }
         }
-        catch { }
+        catch (Exception ex) { LogError("GetLineDiffMarkers", ex); }
         return markers;
     }
 
@@ -488,9 +464,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "Error: not a git repository";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "Error: not a git repository";
             var sig = repo.Config.BuildSignature(DateTimeOffset.Now);
             var commit = repo.Commit(message, sig, sig);
             return commit.Sha[..7];
@@ -510,9 +485,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "Error: not a git repository";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "Error: not a git repository";
             var sig = repo.Config.BuildSignature(DateTimeOffset.Now);
             var stash = repo.Stashes.Add(sig, message ?? "LazyDotIDE stash");
             return stash == null ? "Nothing to stash" : $"Stashed: {stash.Message}";
@@ -527,9 +501,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "Error: not a git repository";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "Error: not a git repository";
             if (repo.Stashes.Count() == 0)
                 return "No stashes to pop";
             var result = repo.Stashes.Pop(0);
@@ -550,15 +523,14 @@ public class GitService
         var result = new List<string>();
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return result;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return result;
             var current = repo.Head.FriendlyName;
             result.Add(current);
             foreach (var branch in repo.Branches.Where(b => !b.IsRemote && b.FriendlyName != current))
                 result.Add(branch.FriendlyName);
         }
-        catch { }
+        catch (Exception ex) { LogError("GetBranches", ex); }
         return result;
     }
 
@@ -570,9 +542,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "Error: not a git repository";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "Error: not a git repository";
             var branch = repo.CreateBranch(branchName);
             return branch.FriendlyName;
         }
@@ -587,9 +558,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return "Error: not a git repository";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return "Error: not a git repository";
             var branch = repo.Branches[branchName];
             if (branch == null) return $"Error: branch '{branchName}' not found";
             Commands.Checkout(repo, branch);
@@ -610,9 +580,8 @@ public class GitService
         var entries = new List<GitLogEntry>();
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return entries;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return entries;
             foreach (var commit in repo.Commits.Take(limit))
             {
                 entries.Add(new GitLogEntry(
@@ -623,7 +592,7 @@ public class GitService
                     commit.MessageShort));
             }
         }
-        catch { }
+        catch (Exception ex) { LogError("GetLog", ex); }
         return entries;
     }
 
@@ -635,9 +604,8 @@ public class GitService
         var entries = new List<GitLogEntry>();
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return entries;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return entries;
             var relativePath = MakeRelative(repo, absolutePath);
             var filter = new CommitFilter { SortBy = CommitSortStrategies.Time };
 
@@ -662,7 +630,7 @@ public class GitService
                 previous = commit;
             }
         }
-        catch { }
+        catch (Exception ex) { LogError("GetFileLog", ex); }
         return entries;
     }
 
@@ -678,9 +646,8 @@ public class GitService
         var result = new List<GitBlameLine>();
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return result;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return result;
             var relativePath = MakeRelative(repo, absolutePath);
             var blame = repo.Blame(relativePath);
 
@@ -697,7 +664,7 @@ public class GitService
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { LogError("GetBlame", ex); }
         return result;
     }
 
@@ -715,9 +682,8 @@ public class GitService
         var cache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return _ => false;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return _ => false;
             var workDir = repo.Info.WorkingDirectory;
             if (workDir == null) return _ => false;
 
@@ -745,12 +711,12 @@ public class GitService
                         // Don't recurse into ignored directories — all children are implicitly ignored
                     }
                 }
-                catch { }
+                catch (Exception ex) { LogError("CreateIgnoreChecker.CheckDirectory", ex); }
             }
 
             CheckDirectory(workDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), "");
         }
-        catch { }
+        catch (Exception ex) { LogError("CreateIgnoreChecker", ex); }
 
         return path => cache.TryGetValue(path, out var ignored) && ignored;
     }
@@ -766,13 +732,12 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return false;
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return false;
             var relativePath = MakeRelative(repo, absolutePath);
             return repo.Ignore.IsPathIgnored(relativePath);
         }
-        catch { }
+        catch (Exception ex) { LogError("IsInGitignore", ex); }
         return false;
     }
 
@@ -782,9 +747,8 @@ public class GitService
     /// </summary>
     public void AddToGitignore(string repoRoot, string absolutePath, bool isDirectory)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         var relativePath = MakeRelative(repo, absolutePath);
         if (isDirectory && !relativePath.EndsWith('/'))
             relativePath += '/';
@@ -805,9 +769,8 @@ public class GitService
     /// </summary>
     public void RemoveFromGitignore(string repoRoot, string absolutePath)
     {
-        var repoPath = Repository.Discover(repoRoot);
-        if (repoPath == null) return;
-        using var repo = new Repository(repoPath);
+        using var repo = OpenRepo(repoRoot);
+        if (repo == null) return;
         var relativePath = MakeRelative(repo, absolutePath);
         var gitignorePath = Path.Combine(repo.Info.WorkingDirectory!, ".gitignore");
         if (!File.Exists(gitignorePath)) return;
@@ -868,7 +831,7 @@ public class GitService
     // Async wrappers for UI call sites
     public Task<string> GetBranchAsync(string path) => Task.Run(() => GetBranch(path));
     public Task<string> GetStatusSummaryAsync(string path) => Task.Run(() => GetStatusSummary(path));
-    public Task<Dictionary<string, GitFileStatus>> GetFileStatusesAsync(string path) => Task.Run(() => GetFileStatuses(path));
+
     public Task<(List<GitDetailedFileEntry> Files, string? WorkingDir)> GetDetailedFileStatusesAsync(string repoRoot) => Task.Run(() => GetDetailedFileStatuses(repoRoot));
 
     public Task<GitFileStatus?> GetFileStatusAsync(string repoRoot, string absolutePath) => Task.Run(() => GetFileStatus(repoRoot, absolutePath));
@@ -914,9 +877,8 @@ public class GitService
     {
         try
         {
-            var repoPath = Repository.Discover(repoRoot);
-            if (repoPath == null) return $"Commit {sha} not found.";
-            using var repo = new Repository(repoPath);
+            using var repo = OpenRepo(repoRoot);
+            if (repo == null) return $"Commit {sha} not found.";
             var commit = repo.Lookup<Commit>(sha);
             if (commit == null) return $"Commit {sha} not found.";
 

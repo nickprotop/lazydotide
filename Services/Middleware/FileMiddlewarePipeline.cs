@@ -34,31 +34,12 @@ public class FileMiddlewarePipeline
         var seen = new HashSet<string>();
         foreach (var h in _handlers)
         {
-            var name = SyntaxName(h);
-            if (seen.Add(name))
-                result.Add((name, h.GetSyntaxHighlighter("")));
+            if (seen.Add(h.SyntaxName))
+                result.Add((h.SyntaxName, h.GetSyntaxHighlighter("")));
         }
         return result;
     }
 
-    /// <summary>Returns a display name for the syntax a highlighter provides.</summary>
-    public static string SyntaxName(IFileMiddleware middleware) => middleware switch
-    {
-        CSharpFileMiddleware     => "C#",
-        MarkdownFileMiddleware   => "Markdown",
-        JsonFileMiddleware       => "JSON",
-        XmlFileMiddleware        => "XML",
-        YamlFileMiddleware       => "YAML",
-        DockerfileMiddleware     => "Dockerfile",
-        SlnFileMiddleware        => "Solution",
-        CssFileMiddleware        => "CSS",
-        HtmlFileMiddleware       => "HTML",
-        JsFileMiddleware         => "JavaScript",
-        RazorFileMiddleware      => "Razor",
-        DefaultFileMiddleware    => "Plain Text",
-        _                        => middleware.GetType().Name
-    };
-
     /// <summary>Returns the display name for the auto-detected syntax of a file.</summary>
-    public string GetSyntaxName(string filePath) => SyntaxName(Pick(filePath));
+    public string GetSyntaxName(string filePath) => Pick(filePath).SyntaxName;
 }

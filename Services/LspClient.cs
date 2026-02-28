@@ -8,6 +8,20 @@ namespace DotNetIDE;
 
 public class LspClient : IAsyncDisposable
 {
+    private static class Timeouts
+    {
+        public const int Default = 5000;
+        public const int Initialize = 15000;
+        public const int Completion = 20000;
+        public const int Formatting = 10000;
+        public const int References = 15000;
+        public const int CodeAction = 10000;
+        public const int Rename = 10000;
+        public const int DocumentSymbol = 10000;
+        public const int Shutdown = 2000;
+        public const int DidChangeDebounce = 500;
+    }
+
     private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp.log");
     private static readonly object LogLock = new();
 
@@ -74,8 +88,9 @@ public class LspClient : IAsyncDisposable
             await SendInitializeAsync(workspacePath);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            Log($"StartAsync: {ex.Message}");
             return false;
         }
     }
@@ -108,7 +123,7 @@ public class LspClient : IAsyncDisposable
         };
 
         Log($"Sending initialize, workspace: {workspacePath}");
-        var result = await SendRequestAsync("initialize", initParams, timeout: 15000);
+        var result = await SendRequestAsync("initialize", initParams, timeout: Timeouts.Initialize);
         Log($"Initialize response: {(result.HasValue ? result.Value.ValueKind.ToString() : "null/timeout")}");
         SendNotification("initialized", new { });
     }
@@ -141,7 +156,7 @@ public class LspClient : IAsyncDisposable
             var text = _pendingChangeContent;
             if (path != null && text != null)
                 _ = SendDidChangeInternalAsync(path, text);
-        }, null, 500, Timeout.Infinite);
+        }, null, Timeouts.DidChangeDebounce, Timeout.Infinite);
         return Task.CompletedTask;
     }
 
@@ -217,7 +232,7 @@ public class LspClient : IAsyncDisposable
                 return new HoverResult(text);
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"HoverAsync: {ex.Message}"); }
         return null;
     }
 
@@ -231,7 +246,7 @@ public class LspClient : IAsyncDisposable
             {
                 textDocument = new { uri = PathToUri(filePath) },
                 position = new { line, character }
-            }, timeout: 20000);
+            }, timeout: Timeouts.Completion);
             Log($"Completion response kind: {(response.HasValue ? response.Value.ValueKind.ToString() : "null")}");
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
@@ -292,7 +307,7 @@ public class LspClient : IAsyncDisposable
                 ParseLocation(response.Value, result);
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"DefinitionAsync: {ex.Message}"); }
         return result;
     }
 
@@ -351,7 +366,7 @@ public class LspClient : IAsyncDisposable
             if (signatures.Count == 0) return null;
             return new SignatureHelp(signatures, activeSignature, activeParameter);
         }
-        catch { }
+        catch (Exception ex) { Log($"SignatureHelpAsync: {ex.Message}"); }
         return null;
     }
 
@@ -364,7 +379,7 @@ public class LspClient : IAsyncDisposable
             {
                 textDocument = new { uri = PathToUri(filePath) },
                 options = new { tabSize, insertSpaces }
-            }, timeout: 10000);
+            }, timeout: Timeouts.Formatting);
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
 
@@ -378,7 +393,7 @@ public class LspClient : IAsyncDisposable
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"FormattingAsync: {ex.Message}"); }
         return result;
     }
 
@@ -392,7 +407,7 @@ public class LspClient : IAsyncDisposable
                 textDocument = new { uri = PathToUri(filePath) },
                 position = new { line, character },
                 context = new { includeDeclaration }
-            }, timeout: 15000);
+            }, timeout: Timeouts.References);
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
 
@@ -402,7 +417,7 @@ public class LspClient : IAsyncDisposable
                     ParseLocation(loc, result);
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"ReferencesAsync: {ex.Message}"); }
         return result;
     }
 
@@ -429,7 +444,7 @@ public class LspClient : IAsyncDisposable
                 ParseLocation(response.Value, result);
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"ImplementationAsync: {ex.Message}"); }
         return result;
     }
 
@@ -465,7 +480,7 @@ public class LspClient : IAsyncDisposable
                 return new PrepareRenameResult(range, "");
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"PrepareRenameAsync: {ex.Message}"); }
         return null;
     }
 
@@ -478,13 +493,13 @@ public class LspClient : IAsyncDisposable
                 textDocument = new { uri = PathToUri(filePath) },
                 position = new { line, character },
                 newName
-            }, timeout: 10000);
+            }, timeout: Timeouts.Rename);
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return null;
 
             return ParseWorkspaceEdit(response.Value);
         }
-        catch { }
+        catch (Exception ex) { Log($"RenameAsync: {ex.Message}"); }
         return null;
     }
 
@@ -514,7 +529,7 @@ public class LspClient : IAsyncDisposable
                     end = new { line = endLine, character = endChar }
                 },
                 context = new { diagnostics = diagParams }
-            }, timeout: 10000);
+            }, timeout: Timeouts.CodeAction);
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
 
@@ -531,7 +546,7 @@ public class LspClient : IAsyncDisposable
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"CodeActionAsync: {ex.Message}"); }
         return result;
     }
 
@@ -543,7 +558,7 @@ public class LspClient : IAsyncDisposable
             var response = await SendRequestAsync("textDocument/documentSymbol", new
             {
                 textDocument = new { uri = PathToUri(filePath) }
-            }, timeout: 10000);
+            }, timeout: Timeouts.DocumentSymbol);
 
             if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
 
@@ -553,7 +568,7 @@ public class LspClient : IAsyncDisposable
                     result.Add(ParseDocumentSymbol(sym));
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"DocumentSymbolAsync: {ex.Message}"); }
         return result;
     }
 
@@ -609,13 +624,13 @@ public class LspClient : IAsyncDisposable
         try
         {
             _changeDebounce?.Dispose();
-            await SendRequestAsync("shutdown", null, timeout: 2000);
+            await SendRequestAsync("shutdown", null, timeout: Timeouts.Shutdown);
             SendNotification("exit", null);
         }
-        catch { }
+        catch (Exception ex) { Log($"ShutdownAsync: {ex.Message}"); }
     }
 
-    private async Task<JsonElement?> SendRequestAsync(string method, object? @params, int timeout = 5000)
+    private async Task<JsonElement?> SendRequestAsync(string method, object? @params, int timeout = Timeouts.Default)
     {
         if (_stdin == null || _disposed) return null;
 
@@ -651,7 +666,7 @@ public class LspClient : IAsyncDisposable
                 _stdin.Write(json);
                 _stdin.Flush();
             }
-            catch { }
+            catch (Exception ex) { Log($"SendRaw: {ex.Message}"); }
         }
     }
 
@@ -692,7 +707,7 @@ public class LspClient : IAsyncDisposable
                 ProcessMessage(json);
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"ReadLoop: {ex.Message}"); }
     }
 
     private static string? ReadLine(Stream stream)
@@ -760,7 +775,7 @@ public class LspClient : IAsyncDisposable
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { Log($"ProcessMessage: {ex.Message}"); }
     }
 
     private static object MakeConfigurationResponse(JsonElement root)
@@ -795,7 +810,7 @@ public class LspClient : IAsyncDisposable
             }
             DiagnosticsReceived?.Invoke(this, (uri, diags));
         }
-        catch { }
+        catch (Exception ex) { Log($"HandlePublishDiagnostics: {ex.Message}"); }
     }
 
     private static LspRange ParseRange(JsonElement element)
@@ -849,7 +864,7 @@ public class LspClient : IAsyncDisposable
         _changeDebounce?.Dispose();
         await ShutdownAsync();
         _cts.Cancel();
-        try { _process?.Kill(); } catch { }
+        try { _process?.Kill(); } catch { } // Expected if process already exited
         _process?.Dispose();
     }
 }

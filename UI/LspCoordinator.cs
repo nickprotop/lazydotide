@@ -9,6 +9,14 @@ namespace DotNetIDE;
 
 internal class LspCoordinator : IAsyncDisposable
 {
+    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp-coord.log");
+    private static readonly object LogLock = new();
+    private static void LogError(string context, Exception ex)
+    {
+        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
+        catch { }
+    }
+
     private readonly EditorManager _editorManager;
     private readonly SidePanel _sidePanel;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
@@ -477,38 +485,7 @@ internal class LspCoordinator : IAsyncDisposable
         if (edits.Count == 0) return;
 
         var lines = editor.Content.Split('\n').ToList();
-
-        var sortedEdits = edits
-            .OrderByDescending(e => e.Range.Start.Line)
-            .ThenByDescending(e => e.Range.Start.Character)
-            .ToList();
-
-        foreach (var edit in sortedEdits)
-        {
-            int startLine = Math.Min(edit.Range.Start.Line, lines.Count - 1);
-            int startChar = edit.Range.Start.Character;
-            int endLine = Math.Min(edit.Range.End.Line, lines.Count - 1);
-            int endChar = edit.Range.End.Character;
-
-            if (startLine == endLine)
-            {
-                var line = lines[startLine];
-                startChar = Math.Min(startChar, line.Length);
-                endChar = Math.Min(endChar, line.Length);
-                lines[startLine] = line[..startChar] + edit.NewText + line[endChar..];
-            }
-            else
-            {
-                var startLineStr = lines[startLine];
-                var endLineStr = lines[endLine];
-                startChar = Math.Min(startChar, startLineStr.Length);
-                endChar = Math.Min(endChar, endLineStr.Length);
-                var combined = startLineStr[..startChar] + edit.NewText + endLineStr[endChar..];
-                lines.RemoveRange(startLine, endLine - startLine + 1);
-                lines.InsertRange(startLine, combined.Split('\n'));
-            }
-        }
-
+        ApplyTextEditsToLines(lines, edits);
         editor.Content = string.Join('\n', lines);
     }
 
@@ -549,8 +526,9 @@ internal class LspCoordinator : IAsyncDisposable
             var symbols = await _lsp.DocumentSymbolAsync(filePath);
             _sidePanel.UpdateSymbols(filePath, symbols);
         }
-        catch
+        catch (Exception ex)
         {
+            LogError("RefreshSymbolsAsync", ex);
             _sidePanel.ClearSymbols();
         }
     }
@@ -1054,7 +1032,7 @@ internal class LspCoordinator : IAsyncDisposable
                     ApplyTextEditsToLines(lines, textEdits);
                     FileService.WriteFile(filePath, string.Join('\n', lines));
                 }
-                catch { }
+                catch (Exception ex) { LogError("ApplyWorkspaceEdit", ex); }
             }
         }
     }

@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class CSharpFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "C#";
     private static readonly CSharpSyntaxHighlighter Highlighter = new();
 
     public bool Handles(string filePath) =>

@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class SlnFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "Solution";
     private static readonly SlnSyntaxHighlighter Highlighter = new();
 
     public bool Handles(string filePath) =>

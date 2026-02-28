@@ -5,6 +5,7 @@ namespace DotNetIDE;
 /// <summary>Catch-all passthrough — registered last in the pipeline.</summary>
 public class DefaultFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "Plain Text";
     public bool Handles(string filePath) => true;
     public string OnLoad(string rawContent, string filePath) => rawContent;
     public string OnSave(string editorContent, string filePath) => editorContent;

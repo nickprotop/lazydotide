@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class YamlFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "YAML";
     private static readonly YamlSyntaxHighlighter Highlighter = new();
 
     private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)

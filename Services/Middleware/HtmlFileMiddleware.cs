@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class HtmlFileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "HTML";
     private static readonly HtmlSyntaxHighlighter Highlighter = new();
 
     private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)

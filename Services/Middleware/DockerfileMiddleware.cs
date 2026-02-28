@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public class DockerfileMiddleware : IFileMiddleware
 {
+    public string SyntaxName => "Dockerfile";
     private static readonly DockerfileSyntaxHighlighter Highlighter = new();
 
     public bool Handles(string filePath)

@@ -4,6 +4,7 @@ namespace DotNetIDE;
 
 public interface IFileMiddleware
 {
+    string SyntaxName { get; }
     bool Handles(string filePath);
     string OnLoad(string rawContent, string filePath);
     string OnSave(string editorContent, string filePath);
