@@ -168,8 +168,6 @@ internal class BuildCoordinator
         return null;
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenLazyNuGetTab()
     {
         if (!(IdeConstants.IsDesktopOs)) return;
@@ -201,14 +199,12 @@ internal class BuildCoordinator
         terminal.ProcessExited += (_, _) => _lazyNuGetTabIndex = -1;
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenShellTab()
     {
+        string shellExe = OperatingSystem.IsWindows() ? "cmd.exe" : "bash";
         if (!(IdeConstants.IsDesktopOs)) return;
 
-        string exe = OperatingSystem.IsWindows() ? "cmd.exe" : "bash";
-        var terminal = Controls.Terminal(exe)
+        var terminal = Controls.Terminal(shellExe)
             .WithWorkingDirectory(_projectService.RootPath)
             .Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -219,8 +215,6 @@ internal class BuildCoordinator
         _editorManager.OpenControlTab(tabName, terminal, isClosable: true);
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenConfigToolTab(int toolIndex)
     {
         if (!(IdeConstants.IsDesktopOs)) return;
@@ -251,8 +245,6 @@ internal class BuildCoordinator
         terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenConfigToolInOutputPanel(int toolIndex)
     {
         if (!(IdeConstants.IsDesktopOs)) return;
@@ -282,8 +274,6 @@ internal class BuildCoordinator
         }
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenConfigToolInSidePanel(int toolIndex, Action toggleSidePanel, Action invalidateSidePanel)
     {
         if (!(IdeConstants.IsDesktopOs)) return;

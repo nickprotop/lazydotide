@@ -232,8 +232,6 @@ internal class LayoutController
         _sidePanel.SwitchToSymbolsTab();
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public void OpenSidePanelShell()
     {
         if (!(IdeConstants.IsDesktopOs)) return;
