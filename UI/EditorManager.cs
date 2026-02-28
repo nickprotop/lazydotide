@@ -163,7 +163,8 @@ public class EditorManager
         if (editor != null && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             DocumentOpened?.Invoke(this, (path, editor.Content));
 
-        // Always notify syntax change (TabChanged may not fire for the first tab)
+        // Always notify changes (TabChanged may not fire for the first tab)
+        ActiveFileChanged?.Invoke(this, CurrentFilePath);
         SyntaxChanged?.Invoke(this, CurrentSyntaxName);
 
         if (wasEmpty)
