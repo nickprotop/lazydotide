@@ -14,14 +14,8 @@ public record GitDetailedFileEntry(string RelativePath, string AbsolutePath, Git
 
 public class GitService
 {
-    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-git.log");
-    private static readonly object LogLock = new();
-
-    private static void LogError(string context, Exception ex)
-    {
-        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
-        catch { } // Cannot log if log file write itself fails
-    }
+    private static void LogError(string context, Exception ex) =>
+        DiagnosticLog.Error("git", context, ex);
 
     private static Repository? OpenRepo(string repoRoot)
     {

@@ -19,8 +19,8 @@ internal class ContextMenuBuilder
     private LayoutNode? _contextMenuPortalNode;
     private IWindowControl? _contextMenuOwner;
 
-    private Window? _mainWindow;
-    private ConsoleWindowSystem? _ws;
+    private readonly Window _mainWindow;
+    private readonly ConsoleWindowSystem _ws;
 
     public FileOperationDelegates? FileOps { get; set; }
 
@@ -31,7 +31,9 @@ internal class ContextMenuBuilder
         ExplorerPanel explorer,
         SidePanel sidePanel,
         GitCoordinator gitOps,
-        LspCoordinator lspCoord)
+        LspCoordinator lspCoord,
+        Window mainWindow,
+        ConsoleWindowSystem ws)
     {
         _gitService = gitService;
         _projectService = projectService;
@@ -40,10 +42,6 @@ internal class ContextMenuBuilder
         _sidePanel = sidePanel;
         _gitOps = gitOps;
         _lspCoord = lspCoord;
-    }
-
-    public void SetMainWindow(Window mainWindow, ConsoleWindowSystem ws)
-    {
         _mainWindow = mainWindow;
         _ws = ws;
     }

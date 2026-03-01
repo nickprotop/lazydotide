@@ -25,7 +25,7 @@ internal class MenuBarBuilder
     public Action? ReloadCurrentFromDisk { get; set; }
     public Action? ShowCommandPalette { get; set; }
 
-    private Window? _mainWindow;
+    private readonly Window _mainWindow;
     private IWindowControl? _menuControl;
     private IWindowControl? _toolbarControl;
 
@@ -40,7 +40,8 @@ internal class MenuBarBuilder
         GitCoordinator gitOps,
         BuildCoordinator buildOps,
         LspCoordinator lspCoord,
-        LayoutController layout)
+        LayoutController layout,
+        Window mainWindow)
     {
         _ws = ws;
         _editorManager = editorManager;
@@ -53,10 +54,6 @@ internal class MenuBarBuilder
         _buildOps = buildOps;
         _lspCoord = lspCoord;
         _layout = layout;
-    }
-
-    public void SetMainWindow(Window mainWindow)
-    {
         _mainWindow = mainWindow;
     }
 

@@ -1,12 +1,15 @@
 using System.Collections.Concurrent;
-using System.Drawing;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
-using SharpConsoleUI.Layout;
 using Spectre.Console;
 
 namespace DotNetIDE;
 
+/// <summary>
+/// Orchestrates LSP integration: manages LspClient lifecycle, wires events between
+/// EditorManager and LSP, handles debounce timers, and coordinates didOpen/didChange/didSave.
+/// Delegates portal UI to LspPortalManager and navigation to LspNavigationManager.
+/// </summary>
 internal class LspCoordinator : IAsyncDisposable
 {
     private const int SymbolRefreshMs = 500;
@@ -14,45 +17,22 @@ internal class LspCoordinator : IAsyncDisposable
     private const int SignatureTriggerMs = 250;
     private const int WordCompletionMs = 300;
 
-    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp-coord.log");
-    private static readonly object LogLock = new();
-    private static void LogError(string context, Exception ex)
-    {
-        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {context}: {ex.Message}\n"); }
-        catch { } // Cannot log if log file write itself fails
-    }
+    private static void LogError(string context, Exception ex) =>
+        DiagnosticLog.Error("lsp-coord", context, ex);
 
     private readonly EditorManager _editorManager;
     private readonly SidePanel _sidePanel;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
 
     private LspClient? _lsp;
-    private Window? _mainWindow;
 
-    // Portal overlays
-    private LspCompletionPortalContent? _completionPortal;
-    private LayoutNode? _completionPortalNode;
-    private LspTooltipPortalContent? _tooltipPortal;
-    private LayoutNode? _tooltipPortalNode;
-    private LspLocationListPortalContent? _locationPortal;
-    private LayoutNode? _locationPortalNode;
-
-    // Command palette portal
-    private CommandPalettePortal? _commandPalettePortal;
-    private LayoutNode? _commandPalettePortalNode;
-
-    // Completion filter tracking
-    private int _completionTriggerColumn;
-    private int _completionTriggerLine;
+    // Sub-managers
+    private readonly LspPortalManager _portalManager;
+    private readonly LspNavigationManager _navManager;
 
     // Debounce timers
     private Timer? _dotTriggerDebounce;
-    private Timer? _tooltipAutoDismiss;
-    private int _tooltipAutoDismissGeneration;
     private Timer? _symbolRefreshDebounce;
-
-    // Navigation history
-    private readonly Stack<(string FilePath, int Line, int Col)> _navHistory = new();
 
     // Dashboard LSP state
     private string? _detectedLspExe;
@@ -72,17 +52,27 @@ internal class LspCoordinator : IAsyncDisposable
     public LspCoordinator(
         EditorManager editorManager,
         SidePanel sidePanel,
+        Window mainWindow,
         ConcurrentQueue<Action> pendingUiActions)
     {
         _editorManager = editorManager;
         _sidePanel = sidePanel;
         _pendingUiActions = pendingUiActions;
+
+        _portalManager = new LspPortalManager(editorManager, pendingUiActions);
+        _portalManager.SetMainWindow(mainWindow);
+        _navManager = new LspNavigationManager(editorManager, pendingUiActions, _portalManager);
+
+        // Wire cross-manager callbacks
+        _portalManager.NavigateToLocation = _navManager.NavigateToLocation;
+        _portalManager.OnCompletionAccepted = () =>
+        {
+            _dotTriggerDebounce?.Dispose();
+            _dotTriggerDebounce = null;
+        };
     }
 
-    public void SetMainWindow(Window mainWindow)
-    {
-        _mainWindow = mainWindow;
-    }
+    // ── LSP Lifecycle ──────────────────────────────────────────────────
 
     public async Task InitLspAsync(string projectPath, LspConfig? lspConfig, ConsoleWindowSystem ws)
     {
@@ -131,7 +121,8 @@ internal class LspCoordinator : IAsyncDisposable
         }
     }
 
-    // LSP document lifecycle
+    // ── LSP Document Lifecycle ──────────────────────────────────────────
+
     public Task DidOpenAsync(string filePath, string content) =>
         _lsp?.DidOpenAsync(filePath, content) ?? Task.CompletedTask;
     public Task DidChangeAsync(string filePath, string content) =>
@@ -160,7 +151,7 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (_lsp == null || _editorManager.CurrentEditor == null)
         {
-            ShowTransientTooltip("Language server not running.");
+            _portalManager.ShowTransientTooltip("Language server not running.");
             return;
         }
         var editor = _editorManager.CurrentEditor;
@@ -172,14 +163,14 @@ internal class LspCoordinator : IAsyncDisposable
         {
             if (result == null || string.IsNullOrWhiteSpace(result.Contents))
             {
-                ShowTransientTooltip("No type info at cursor.");
+                _portalManager.ShowTransientTooltip("No type info at cursor.");
                 return;
             }
 
             var lines = LspMarkdownHelper.ConvertToSpectreMarkup(result.Contents);
             if (lines.Count == 0) return;
 
-            ShowTooltipPortal(lines);
+            _portalManager.ShowTooltipPortal(lines);
         });
     }
 
@@ -187,182 +178,40 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task ShowCompletionAsync(bool silent = false)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null || _mainWindow == null) return;
-
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
-        if (path == null) return;
-
-        int requestLine = editor.CurrentLine;
-        int requestCol = editor.CurrentColumn;
-
-        var items = await _lsp.CompletionAsync(path, requestLine - 1, requestCol - 1);
-        if (items.Count == 0)
-        {
-            if (!silent) _pendingUiActions.Enqueue(() => ShowTransientTooltip("No completions at cursor."));
-            return;
-        }
-
-        if (editor.CurrentLine != requestLine) return;
-
-        _pendingUiActions.Enqueue(() =>
-        {
-            DismissCompletionPortal();
-
-            var lineContent = editor.Content.Split('\n');
-            int lineIdx = requestLine - 1;
-            int cursorCol0 = editor.CurrentColumn - 1;
-            int wordStart0 = cursorCol0;
-            if (lineIdx >= 0 && lineIdx < lineContent.Length)
-            {
-                var currentLine = lineContent[lineIdx];
-                while (wordStart0 > 0 && IsIdentifierChar(currentLine[wordStart0 - 1]))
-                    wordStart0--;
-            }
-            string initialFilter = string.Empty;
-            if (lineIdx >= 0 && lineIdx < lineContent.Length && wordStart0 < cursorCol0)
-                initialFilter = lineContent[lineIdx].Substring(wordStart0, cursorCol0 - wordStart0);
-
-            _completionTriggerColumn = wordStart0 + 1;
-            _completionTriggerLine = editor.CurrentLine;
-
-            var screenCol = Math.Max(0, editor.ActualX + editor.GutterWidth + (wordStart0 - editor.HorizontalScrollOffset));
-            var screenRow = editor.ActualY + Math.Max(0, editor.CurrentLine - 1 - editor.VerticalScrollOffset);
-
-            var portal = new LspCompletionPortalContent(
-                items, screenCol, screenRow,
-                _mainWindow!.Width, _mainWindow.Height);
-
-            if (initialFilter.Length > 0)
-                portal.SetFilter(initialFilter);
-
-            portal.Container = _mainWindow;
-            _completionPortal = portal;
-            _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
-
-            portal.ItemAccepted += (_, item) =>
-            {
-                int filterLen = _completionPortal?.FilterText.Length ?? 0;
-                DismissCompletionPortal();
-                if (filterLen > 0) editor.DeleteCharsBefore(filterLen);
-                editor.InsertText(item.InsertText ?? item.Label);
-                _dotTriggerDebounce?.Dispose();
-                _dotTriggerDebounce = null;
-            };
-
-            portal.DismissRequested += (_, _) => DismissCompletionPortal();
-
-            editor.ContentChanged += OnEditorContentChangedForCompletion;
-        });
+        if (_lsp == null) return;
+        await _portalManager.ShowCompletionAsync(_lsp, silent);
     }
 
     public Task FlushPendingChangeAsync() =>
         _lsp?.FlushPendingChangeAsync() ?? Task.CompletedTask;
 
-    // ── Navigation ──────────────────────────────────────────────────────
+    // ── Navigation (delegated) ──────────────────────────────────────────
 
     public async Task ShowGoToDefinitionAsync()
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
-        if (path == null) return;
-
-        var locations = await _lsp.DefinitionAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        _pendingUiActions.Enqueue(() =>
-        {
-            if (locations.Count == 0)
-            {
-                ShowTransientTooltip("No definition found at current position.");
-                return;
-            }
-
-            if (locations.Count == 1)
-            {
-                var loc = locations[0];
-                NavigateToLocation(new LspLocationEntry(
-                    LspClient.UriToPath(loc.Uri),
-                    loc.Range.Start.Line + 1,
-                    loc.Range.Start.Character + 1,
-                    ""));
-            }
-            else
-            {
-                ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
-            }
-        });
+        if (_lsp == null) return;
+        await _navManager.ShowGoToDefinitionAsync(_lsp);
     }
 
-    public void NavigateBack()
-    {
-        if (_navHistory.Count == 0) return;
-        var (prevPath, prevLine, prevCol) = _navHistory.Pop();
-        _editorManager.OpenFile(prevPath);
-        var editor = _editorManager.CurrentEditor;
-        if (editor != null)
-        {
-            editor.GoToLine(prevLine);
-            editor.SetLogicalCursorPosition(new Point(prevCol - 1, prevLine - 1));
-        }
-    }
+    public void NavigateBack() => _navManager.NavigateBack();
 
     public async Task ShowFindReferencesAsync()
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
-        if (path == null) return;
-
-        var locations = await _lsp.ReferencesAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        _pendingUiActions.Enqueue(() =>
-        {
-            if (locations.Count == 0)
-            {
-                ShowTransientTooltip("No references found at cursor.");
-                return;
-            }
-
-            ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
-        });
+        if (_lsp == null) return;
+        await _navManager.ShowFindReferencesAsync(_lsp);
     }
 
     public async Task ShowGoToImplementationAsync()
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
-        if (path == null) return;
-
-        var locations = await _lsp.ImplementationAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        _pendingUiActions.Enqueue(() =>
-        {
-            if (locations.Count == 0)
-            {
-                ShowTransientTooltip("No implementation found at cursor.");
-                return;
-            }
-
-            if (locations.Count == 1)
-            {
-                var loc = locations[0];
-                NavigateToLocation(new LspLocationEntry(
-                    LspClient.UriToPath(loc.Uri),
-                    loc.Range.Start.Line + 1,
-                    loc.Range.Start.Character + 1,
-                    ""));
-            }
-            else
-            {
-                ShowLocationPortal(LocationsToEntries(locations), NavigateToLocation);
-            }
-        });
+        if (_lsp == null) return;
+        await _navManager.ShowGoToImplementationAsync(_lsp);
     }
 
     // ── Signature Help ──────────────────────────────────────────────────
 
     public async Task ShowSignatureHelpAsync(bool silent = false)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null || _mainWindow == null) return;
+        if (_lsp == null || _editorManager.CurrentEditor == null) return;
 
         var editor = _editorManager.CurrentEditor;
         var path = _editorManager.CurrentFilePath;
@@ -373,7 +222,7 @@ internal class LspCoordinator : IAsyncDisposable
         {
             if (sig == null || sig.Signatures.Count == 0)
             {
-                if (!silent) ShowTransientTooltip("No signature at cursor. Position inside function arguments.");
+                if (!silent) _portalManager.ShowTransientTooltip("No signature at cursor. Position inside function arguments.");
                 return;
             }
 
@@ -398,7 +247,7 @@ internal class LspCoordinator : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
                 lines.AddRange(LspMarkdownHelper.ConvertToSpectreMarkup(activeSig.Documentation!));
 
-            ShowTooltipPortal(lines);
+            _portalManager.ShowTooltipPortal(lines);
         });
     }
 
@@ -410,7 +259,7 @@ internal class LspCoordinator : IAsyncDisposable
         {
             if (_lsp == null || _editorManager.CurrentEditor == null)
             {
-                ShowTransientTooltip("LSP not running.");
+                _portalManager.ShowTransientTooltip("LSP not running.");
                 return;
             }
             var editor = _editorManager.CurrentEditor;
@@ -420,7 +269,7 @@ internal class LspCoordinator : IAsyncDisposable
             string currentName = ExtractWordAtCursor(editor);
             if (string.IsNullOrEmpty(currentName))
             {
-                ShowTransientTooltip("No symbol at cursor.");
+                _portalManager.ShowTransientTooltip("No symbol at cursor.");
                 return;
             }
 
@@ -432,7 +281,7 @@ internal class LspCoordinator : IAsyncDisposable
             {
                 if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
                 {
-                    ShowTransientTooltip("LSP returned no edits.");
+                    _portalManager.ShowTransientTooltip("LSP returned no edits.");
                     return;
                 }
 
@@ -453,7 +302,7 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task ShowCodeActionsAsync(ConsoleWindowSystem ws)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null || _mainWindow == null) return;
+        if (_lsp == null || _editorManager.CurrentEditor == null) return;
         var editor = _editorManager.CurrentEditor;
         var path = _editorManager.CurrentFilePath;
         if (path == null) return;
@@ -466,38 +315,11 @@ internal class LspCoordinator : IAsyncDisposable
         {
             if (actions.Count == 0)
             {
-                ShowTransientTooltip("No code actions available at cursor.");
+                _portalManager.ShowTransientTooltip("No code actions available at cursor.");
                 return;
             }
 
-            var items = actions.Select(a => new CompletionItem(a.Title, a.Kind, null, 1)).ToList();
-
-            DismissCompletionPortal();
-            var cursor = _editorManager.GetCursorBounds();
-            var portal = new LspCompletionPortalContent(
-                items, cursor.X, cursor.Y,
-                _mainWindow!.Width, _mainWindow.Height);
-
-            portal.Container = _mainWindow;
-            _completionPortal = portal;
-            _completionPortalNode = _mainWindow.CreatePortal(editor, portal);
-            _completionTriggerColumn = editor.CurrentColumn;
-            _completionTriggerLine = editor.CurrentLine;
-
-            portal.DismissRequested += (_, _) => DismissCompletionPortal();
-
-            portal.ItemAccepted += (_, item) =>
-            {
-                DismissCompletionPortal();
-                var action = actions.FirstOrDefault(a => a.Title == item.Label);
-                if (action?.Edit != null)
-                {
-                    ApplyWorkspaceEdit(action.Edit);
-                    ws.NotificationStateService.ShowNotification(
-                        "Code Action", $"Applied: {action.Title}",
-                        SharpConsoleUI.Core.NotificationSeverity.Info);
-                }
-            };
+            _portalManager.ShowCodeActionsPortal(actions, ws, ApplyWorkspaceEdit);
         });
     }
 
@@ -572,7 +394,7 @@ internal class LspCoordinator : IAsyncDisposable
         var symbols = await _lsp.DocumentSymbolAsync(path);
         if (symbols.Count == 0)
         {
-            ShowTransientTooltip("No symbols found in document.");
+            _portalManager.ShowTransientTooltip("No symbols found in document.");
             return;
         }
 
@@ -600,14 +422,14 @@ internal class LspCoordinator : IAsyncDisposable
                 Category = kindName,
                 Label = $"{indent}{sym.Name}",
                 Keybinding = $"Ln {sym.SelectionRange.Start.Line + 1}",
-                Execute = () => NavigateToLocation(new LspLocationEntry(
+                Execute = () => _navManager.NavigateToLocation(new LspLocationEntry(
                     path!, s.SelectionRange.Start.Line + 1,
                     s.SelectionRange.Start.Character + 1, s.Name)),
                 Priority = 100 - sym.SelectionRange.Start.Line
             });
         }
 
-        ShowCommandPalettePortal(tempRegistry);
+        _portalManager.ShowCommandPalettePortal(tempRegistry);
     }
 
     // ── Dot trigger / auto-completion ──────────────────────────────────
@@ -645,11 +467,11 @@ internal class LspCoordinator : IAsyncDisposable
                 _ => _pendingUiActions.Enqueue(() => _ = ShowSignatureHelpAsync(silent: true)),
                 null, SignatureTriggerMs, Timeout.Infinite);
         }
-        else if (IsIdentifierChar(lastChar) && _completionPortal == null)
+        else if (LspPortalManager.IsIdentifierChar(lastChar) && !HasCompletionPortal)
         {
             int wordLen = 0;
             int i = col - 1;
-            while (i >= 0 && IsIdentifierChar(currentLine[i])) { wordLen++; i--; }
+            while (i >= 0 && LspPortalManager.IsIdentifierChar(currentLine[i])) { wordLen++; i--; }
 
             bool afterDot = i >= 0 && currentLine[i] == '.';
 
@@ -663,382 +485,27 @@ internal class LspCoordinator : IAsyncDisposable
         }
     }
 
-    // ── Portal dismiss/show helpers ──────────────────────────────────────
+    private bool HasCompletionPortal => _portalManager.HasCompletionPortal;
 
-    public void DismissCompletionPortal()
-    {
-        var editor = _editorManager.CurrentEditor;
-        if (editor != null)
-            editor.ContentChanged -= OnEditorContentChangedForCompletion;
+    // ── Portal delegation ──────────────────────────────────────────────
 
-        if (_completionPortalNode != null && _mainWindow != null)
-        {
-            _mainWindow.RemovePortal(editor ?? (IWindowControl)_mainWindow, _completionPortalNode);
-            _completionPortalNode = null;
-            _completionPortal = null;
-        }
-    }
+    public void ShowTransientTooltip(string message) =>
+        _portalManager.ShowTransientTooltip(message);
 
-    public void DismissTooltipPortal()
-    {
-        _tooltipAutoDismiss?.Dispose();
-        _tooltipAutoDismiss = null;
+    public void DismissCompletionPortal() => _portalManager.DismissCompletionPortal();
+    public void DismissTooltipPortal() => _portalManager.DismissTooltipPortal();
+    public void DismissLocationPortal() => _portalManager.DismissLocationPortal();
 
-        if (_tooltipPortalNode != null && _mainWindow != null)
-        {
-            _mainWindow.RemovePortal(_editorManager.CurrentEditor ?? (IWindowControl)_mainWindow, _tooltipPortalNode);
-            _tooltipPortalNode = null;
-            _tooltipPortal = null;
-        }
-    }
+    public void ShowCommandPalettePortal(CommandRegistry registry) =>
+        _portalManager.ShowCommandPalettePortal(registry);
 
-    public void DismissLocationPortal()
-    {
-        if (_locationPortalNode != null && _mainWindow != null)
-        {
-            var editor = _editorManager.CurrentEditor;
-            _mainWindow.RemovePortal(editor ?? (IWindowControl)_mainWindow, _locationPortalNode);
-            _locationPortalNode = null;
-            _locationPortal = null;
-        }
-    }
+    public bool ProcessPreviewKey(KeyPressedEventArgs e) =>
+        _portalManager.ProcessPreviewKey(e);
 
-    public void DismissCommandPalette()
-    {
-        if (_commandPalettePortalNode == null || _mainWindow == null) return;
+    public void NavigateToLocation(LspLocationEntry entry) =>
+        _navManager.NavigateToLocation(entry);
 
-        _mainWindow.RemovePortal(_editorManager.TabControl, _commandPalettePortalNode);
-        _commandPalettePortalNode = null;
-        _commandPalettePortal = null;
-    }
-
-    public void ShowCommandPalettePortal(CommandRegistry registry)
-    {
-        if (_mainWindow == null) return;
-
-        if (_commandPalettePortal != null)
-        {
-            DismissCommandPalette();
-            return;
-        }
-
-        var portal = new CommandPalettePortal(registry,
-            _mainWindow.Width, _mainWindow.Height);
-        portal.Container = _mainWindow;
-        _commandPalettePortal = portal;
-        _commandPalettePortalNode = _mainWindow.CreatePortal(_editorManager.TabControl, portal);
-
-        portal.CommandSelected += (_, cmd) =>
-        {
-            DismissCommandPalette();
-            if (cmd != null) cmd.Execute();
-            var editor = _editorManager.CurrentEditor;
-            if (editor != null) _mainWindow?.FocusControl(editor);
-        };
-
-        portal.DismissRequested += (_, _) => DismissCommandPalette();
-    }
-
-    private void ShowTooltipPortal(List<string> lines, bool preferAbove = true)
-    {
-        DismissTooltipPortal();
-        ++_tooltipAutoDismissGeneration;
-        var editor = _editorManager.CurrentEditor;
-        if (editor == null || _mainWindow == null) return;
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspTooltipPortalContent(lines, cursor.X, cursor.Y,
-            _mainWindow.Width, _mainWindow.Height, preferAbove);
-        portal.Container = _mainWindow;
-        portal.Clicked += (_, _) => DismissTooltipPortal();
-        portal.DismissRequested += (_, _) => DismissTooltipPortal();
-        _tooltipPortal = portal;
-        _tooltipPortalNode = _mainWindow.CreatePortal(editor, portal);
-    }
-
-    public void ShowTransientTooltip(string message, int dismissMs = 2000)
-    {
-        _tooltipAutoDismiss?.Dispose();
-        _tooltipAutoDismiss = null;
-
-        ShowTooltipPortal(new List<string> { Markup.Escape(message) });
-
-        int gen = ++_tooltipAutoDismissGeneration;
-        _tooltipAutoDismiss = new Timer(_ =>
-        {
-            _pendingUiActions.Enqueue(() =>
-            {
-                if (_tooltipAutoDismissGeneration == gen)
-                    DismissTooltipPortal();
-            });
-        }, null, dismissMs, Timeout.Infinite);
-    }
-
-    private void ShowLocationPortal(List<LspLocationEntry> entries, Action<LspLocationEntry> onAccepted)
-    {
-        DismissLocationPortal();
-        var editor = _editorManager.CurrentEditor;
-        if (editor == null || _mainWindow == null) return;
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspLocationListPortalContent(
-            entries, cursor.X, cursor.Y,
-            _mainWindow.Width, _mainWindow.Height);
-        portal.Container = _mainWindow;
-        portal.DismissRequested += (_, _) => DismissLocationPortal();
-        _locationPortal = portal;
-        _locationPortalNode = _mainWindow.CreatePortal(editor, portal);
-
-        portal.ItemAccepted += (_, entry) =>
-        {
-            DismissLocationPortal();
-            onAccepted(entry);
-        };
-    }
-
-    // ── Preview key processing (portal navigation) ──────────────────────
-
-    /// <summary>
-    /// Process a preview key for LSP portals. Returns true if the key was handled.
-    /// </summary>
-    public bool ProcessPreviewKey(KeyPressedEventArgs e)
-    {
-        var key = e.KeyInfo.Key;
-        var mods = e.KeyInfo.Modifiers;
-
-        // Dismiss tooltip on typing keys
-        if (_tooltipPortal != null)
-        {
-            bool isModifierOnly = key is ConsoleKey.LeftWindows or ConsoleKey.RightWindows;
-            bool isArrowKey = key is ConsoleKey.UpArrow or ConsoleKey.DownArrow
-                                  or ConsoleKey.LeftArrow or ConsoleKey.RightArrow;
-            bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
-            if (!isModifierOnly && !isArrowKey && !isCtrlCombo)
-                DismissTooltipPortal();
-        }
-
-        // Command palette portal
-        if (_commandPalettePortal != null)
-        {
-            if (_commandPalettePortal.ProcessKey(e.KeyInfo))
-            {
-                e.Handled = true;
-                return true;
-            }
-        }
-
-        // Escape: dismiss portals
-        if (key == ConsoleKey.Escape && mods == 0)
-        {
-            if (_locationPortal != null)
-            {
-                DismissLocationPortal();
-                e.Handled = true;
-                return true;
-            }
-            if (_completionPortal != null)
-                DismissCompletionPortal();
-            e.Handled = true;
-            return true;
-        }
-
-        // Location list portal navigation
-        if (_locationPortal != null)
-        {
-            if (mods == 0)
-            {
-                if (key == ConsoleKey.UpArrow)
-                {
-                    _locationPortal.SelectPrev();
-                    _mainWindow?.Invalidate(false);
-                    e.Handled = true;
-                    return true;
-                }
-                if (key == ConsoleKey.DownArrow)
-                {
-                    _locationPortal.SelectNext();
-                    _mainWindow?.Invalidate(false);
-                    e.Handled = true;
-                    return true;
-                }
-                if (key == ConsoleKey.Enter)
-                {
-                    var selected = _locationPortal.GetSelected();
-                    DismissLocationPortal();
-                    if (selected != null)
-                        NavigateToLocation(selected);
-                    e.Handled = true;
-                    return true;
-                }
-            }
-            char lch = e.KeyInfo.KeyChar;
-            if (lch != '\0' && !char.IsControl(lch))
-            {
-                DismissLocationPortal();
-            }
-        }
-
-        // Completion portal navigation
-        if (_completionPortal == null) return false;
-
-        if (mods == 0)
-        {
-            if (key == ConsoleKey.UpArrow)
-            {
-                _completionPortal.SelectPrev();
-                _mainWindow?.Invalidate(false);
-                e.Handled = true;
-                return true;
-            }
-            if (key == ConsoleKey.DownArrow)
-            {
-                _completionPortal.SelectNext();
-                _mainWindow?.Invalidate(false);
-                e.Handled = true;
-                return true;
-            }
-            if (key == ConsoleKey.Enter || key == ConsoleKey.Tab)
-            {
-                var accepted = _completionPortal.GetSelected();
-                int filterLen = _completionPortal.FilterText.Length;
-                DismissCompletionPortal();
-                if (accepted != null)
-                {
-                    var editor = _editorManager.CurrentEditor;
-                    if (editor != null)
-                    {
-                        if (filterLen > 0)
-                            editor.DeleteCharsBefore(filterLen);
-                        editor.InsertText(accepted.InsertText ?? accepted.Label);
-                        _dotTriggerDebounce?.Dispose();
-                        _dotTriggerDebounce = null;
-                    }
-                }
-                e.Handled = true;
-                return true;
-            }
-            if (key == ConsoleKey.Escape)
-            {
-                DismissCompletionPortal();
-                e.Handled = true;
-                return true;
-            }
-
-            char ch = e.KeyInfo.KeyChar;
-            bool isTypingKey = (ch != '\0' && !char.IsControl(ch)) || key == ConsoleKey.Backspace;
-            if (isTypingKey)
-                return false; // let editor handle, filter updates via ContentChanged
-        }
-
-        bool isCompletionShortcut =
-            (key == ConsoleKey.Spacebar && mods == ConsoleModifiers.Control) ||
-            key == ConsoleKey.F12;
-        if (!isCompletionShortcut)
-            DismissCompletionPortal();
-
-        return false;
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────────
-
-    public void NavigateToLocation(LspLocationEntry entry)
-    {
-        var editor = _editorManager.CurrentEditor;
-        var currentPath = _editorManager.CurrentFilePath;
-        if (currentPath != null && editor != null)
-            _navHistory.Push((currentPath, editor.CurrentLine, editor.CurrentColumn));
-
-        _editorManager.OpenFile(entry.FilePath);
-        var targetEditor = _editorManager.CurrentEditor;
-        if (targetEditor != null)
-        {
-            targetEditor.GoToLine(entry.Line);
-            targetEditor.SetLogicalCursorPosition(
-                new Point(entry.Column - 1, entry.Line - 1));
-        }
-    }
-
-    private List<LspLocationEntry> LocationsToEntries(List<LspLocation> locations)
-    {
-        return locations.Select(loc =>
-        {
-            var filePath = LspClient.UriToPath(loc.Uri);
-            var contextLine = TryReadLineFromFile(filePath, loc.Range.Start.Line);
-            return new LspLocationEntry(
-                filePath,
-                loc.Range.Start.Line + 1,
-                loc.Range.Start.Character + 1,
-                contextLine ?? "(location)");
-        }).ToList();
-    }
-
-    private void OnEditorContentChangedForCompletion(object? sender, string content)
-    {
-        var editor = _editorManager.CurrentEditor;
-        if (editor == null || _completionPortal == null) return;
-
-        if (editor.CurrentLine != _completionTriggerLine)
-        {
-            DismissCompletionPortal();
-            return;
-        }
-
-        int filterLen = editor.CurrentColumn - _completionTriggerColumn;
-        if (filterLen < 0)
-        {
-            DismissCompletionPortal();
-            return;
-        }
-
-        string filterText = string.Empty;
-        if (filterLen > 0)
-        {
-            var lines = content.Split('\n');
-            int lineIdx = editor.CurrentLine - 1;
-            if (lineIdx >= 0 && lineIdx < lines.Length)
-            {
-                var line = lines[lineIdx];
-                int start = _completionTriggerColumn - 1;
-                int len = Math.Min(filterLen, line.Length - start);
-                if (len > 0 && start >= 0 && start + len <= line.Length)
-                    filterText = line.Substring(start, len);
-            }
-        }
-
-        _completionPortal.SetFilter(filterText);
-
-        if (!_completionPortal.HasVisibleItems)
-            DismissCompletionPortal();
-        else
-            _mainWindow?.Invalidate(false);
-    }
-
-    private static string ExtractWordAtCursor(MultilineEditControl editor)
-    {
-        var lines = editor.Content.Split('\n');
-        int lineIdx = editor.CurrentLine - 1;
-        if (lineIdx < 0 || lineIdx >= lines.Length) return "";
-        var line = lines[lineIdx];
-        int col = Math.Min(editor.CurrentColumn - 1, line.Length);
-        int start = col, end = col;
-        while (start > 0 && IsIdentifierChar(line[start - 1])) start--;
-        while (end < line.Length && IsIdentifierChar(line[end])) end++;
-        return start < end ? line[start..end] : "";
-    }
-
-    private static bool IsIdentifierChar(char c) =>
-        char.IsLetterOrDigit(c) || c == '_';
-
-    private static string? TryReadLineFromFile(string filePath, int lineIndex)
-    {
-        try
-        {
-            var content = FileService.ReadFile(filePath);
-            var lines = content.Split('\n');
-            if (lineIndex >= 0 && lineIndex < lines.Length)
-                return lines[lineIndex].Trim();
-        }
-        catch (Exception ex) { LogError("TryReadLineFromFile", ex); }
-        return null;
-    }
+    // ── Workspace edit helpers ──────────────────────────────────────────
 
     private void ApplyWorkspaceEdit(WorkspaceEdit edit)
     {
@@ -1124,15 +591,27 @@ internal class LspCoordinator : IAsyncDisposable
         }
     }
 
+    private static string ExtractWordAtCursor(MultilineEditControl editor)
+    {
+        var lines = editor.Content.Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.Length) return "";
+        var line = lines[lineIdx];
+        int col = Math.Min(editor.CurrentColumn - 1, line.Length);
+        int start = col, end = col;
+        while (start > 0 && LspPortalManager.IsIdentifierChar(line[start - 1])) start--;
+        while (end < line.Length && LspPortalManager.IsIdentifierChar(line[end])) end++;
+        return start < end ? line[start..end] : "";
+    }
+
+    // ── Dispose ──────────────────────────────────────────────────────────
+
     public async ValueTask DisposeAsync()
     {
         _dotTriggerDebounce?.Dispose();
         _symbolRefreshDebounce?.Dispose();
-        _tooltipAutoDismiss?.Dispose();
-        DismissCommandPalette();
-        DismissCompletionPortal();
-        DismissTooltipPortal();
-        DismissLocationPortal();
+        _portalManager.DisposeTimers();
+        _portalManager.DismissAll();
         if (_lsp != null)
             await _lsp.DisposeAsync();
     }

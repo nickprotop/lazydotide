@@ -22,14 +22,7 @@ public class LspClient : IAsyncDisposable
         public const int DidChangeDebounce = 500;
     }
 
-    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "lazydotide-lsp.log");
-    private static readonly object LogLock = new();
-
-    private static void Log(string msg)
-    {
-        try { lock (LogLock) File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
-        catch { } // Cannot log if log file write itself fails
-    }
+    private static void Log(string msg) => DiagnosticLog.Write("lsp", msg);
 
     private Process? _process;
     private StreamWriter? _stdin;

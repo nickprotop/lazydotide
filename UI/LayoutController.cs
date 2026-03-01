@@ -18,15 +18,15 @@ internal class LayoutController
     private readonly LspCoordinator _lspCoord;
     private readonly IdeConfig _config;
 
-    // Layout controls (set via SetControls)
-    private Window? _mainWindow;
-    private Window? _outputWindow;
-    private ColumnContainer? _explorerCol;
-    private SplitterControl? _explorerSplitter;
-    private ColumnContainer? _sidePanelCol;
-    private SplitterControl? _sidePanelSplitter;
-    private HorizontalGridControl? _mainContent;
-    private MarkupControl? _dashboard;
+    // Layout controls
+    private readonly Window _mainWindow;
+    private readonly Window _outputWindow;
+    private readonly ColumnContainer? _explorerCol;
+    private readonly SplitterControl? _explorerSplitter;
+    private readonly ColumnContainer? _sidePanelCol;
+    private readonly SplitterControl? _sidePanelSplitter;
+    private readonly HorizontalGridControl? _mainContent;
+    private readonly MarkupControl? _dashboard;
 
     // Panel visibility state
     public bool ExplorerVisible { get; set; } = true;
@@ -56,17 +56,7 @@ internal class LayoutController
         EditorManager editorManager,
         SidePanel sidePanel,
         LspCoordinator lspCoord,
-        IdeConfig config)
-    {
-        _ws = ws;
-        _projectService = projectService;
-        _editorManager = editorManager;
-        _sidePanel = sidePanel;
-        _lspCoord = lspCoord;
-        _config = config;
-    }
-
-    public void SetControls(
+        IdeConfig config,
         Window mainWindow,
         Window outputWindow,
         ColumnContainer? explorerCol,
@@ -76,6 +66,12 @@ internal class LayoutController
         HorizontalGridControl? mainContent,
         MarkupControl? dashboard)
     {
+        _ws = ws;
+        _projectService = projectService;
+        _editorManager = editorManager;
+        _sidePanel = sidePanel;
+        _lspCoord = lspCoord;
+        _config = config;
         _mainWindow = mainWindow;
         _outputWindow = outputWindow;
         _explorerCol = explorerCol;

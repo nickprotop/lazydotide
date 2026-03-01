@@ -33,9 +33,9 @@ internal class BuildCoordinator
     /// <summary>Called when the output panel needs to become visible.</summary>
     public Action? OutputRequired;
 
-    private ConsoleWindowSystem? _ws;
-    private Window? _outputWindow;
-    private SidePanel? _sidePanel;
+    private readonly ConsoleWindowSystem _ws;
+    private readonly Window _outputWindow;
+    private readonly SidePanel _sidePanel;
 
     // Public accessors needed by other components
     public bool HasLazyNuGet => _hasLazyNuGet;
@@ -47,6 +47,9 @@ internal class BuildCoordinator
         EditorManager editorManager,
         OutputPanel outputPanel,
         IdeConfig config,
+        ConsoleWindowSystem ws,
+        Window outputWindow,
+        SidePanel sidePanel,
         ConcurrentQueue<string> buildLines,
         ConcurrentQueue<string> testLines,
         ConcurrentQueue<Action> pendingUiActions,
@@ -57,18 +60,14 @@ internal class BuildCoordinator
         _editorManager = editorManager;
         _outputPanel = outputPanel;
         _config = config;
+        _ws = ws;
+        _outputWindow = outputWindow;
+        _sidePanel = sidePanel;
         _buildLines = buildLines;
         _testLines = testLines;
         _pendingUiActions = pendingUiActions;
         _ct = ct;
         _hasLazyNuGet = DetectLazyNuGet() != null;
-    }
-
-    public void SetWindowSystem(ConsoleWindowSystem ws, Window outputWindow, SidePanel sidePanel)
-    {
-        _ws = ws;
-        _outputWindow = outputWindow;
-        _sidePanel = sidePanel;
     }
 
     public async Task BuildProjectAsync()
@@ -131,7 +130,7 @@ internal class BuildCoordinator
         }
 
         if (IdeConstants.IsDesktopOs)
-            Controls.Terminal("dotnet").WithArgs("run", "--project", target).Open(_ws!);
+            Controls.Terminal("dotnet").WithArgs("run", "--project", target).Open(_ws);
     }
 
     public void OpenShell()
@@ -151,7 +150,7 @@ internal class BuildCoordinator
         _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
 
         OutputRequired?.Invoke();
-        _ws!.SetActiveWindow(_outputWindow);
+        _ws.SetActiveWindow(_outputWindow);
         _outputWindow.FocusControl(terminal);
     }
 
@@ -273,7 +272,7 @@ internal class BuildCoordinator
         if (_outputWindow != null)
         {
             OutputRequired?.Invoke();
-            _ws!.SetActiveWindow(_outputWindow);
+            _ws.SetActiveWindow(_outputWindow);
             _outputWindow.FocusControl(terminal);
         }
     }
@@ -300,7 +299,7 @@ internal class BuildCoordinator
 
     public void ShowNuGetDialog()
     {
-        _ = NuGetDialog.ShowAsync(_ws!).ContinueWith(t =>
+        _ = NuGetDialog.ShowAsync(_ws).ContinueWith(t =>
         {
             _pendingUiActions.Enqueue(() =>
             {

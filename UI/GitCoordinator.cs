@@ -17,7 +17,8 @@ internal class GitCoordinator
     private readonly ConcurrentQueue<string> _buildLines;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
     private readonly CancellationToken _ct;
-    private FileWatcher? _fileWatcher;
+    private readonly ConsoleWindowSystem _ws;
+    private readonly FileWatcher _fileWatcher;
 
     private string _gitMarkup = IdeConstants.GitStatusDefault;
 
@@ -33,6 +34,8 @@ internal class GitCoordinator
         OutputPanel outputPanel,
         SidePanel sidePanel,
         ExplorerPanel explorer,
+        ConsoleWindowSystem ws,
+        FileWatcher fileWatcher,
         ConcurrentQueue<string> buildLines,
         ConcurrentQueue<Action> pendingUiActions,
         CancellationToken ct)
@@ -44,6 +47,8 @@ internal class GitCoordinator
         _outputPanel = outputPanel;
         _sidePanel = sidePanel;
         _explorer = explorer;
+        _ws = ws;
+        _fileWatcher = fileWatcher;
         _buildLines = buildLines;
         _pendingUiActions = pendingUiActions;
         _ct = ct;
@@ -374,16 +379,4 @@ internal class GitCoordinator
             _editorManager.ReloadTabFromDisk(i);
     }
 
-    // Post-init: set the window system for dialog support
-    private ConsoleWindowSystem? _ws;
-
-    public void SetWindowSystem(ConsoleWindowSystem ws)
-    {
-        _ws = ws;
-    }
-
-    public void SetFileWatcher(FileWatcher watcher)
-    {
-        _fileWatcher = watcher;
-    }
 }
