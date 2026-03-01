@@ -253,6 +253,7 @@ public class IdeApp : IDisposable
 
         _ws.AddWindow(_mainWindow!);
         _ws.AddWindow(_outputWindow!);
+        _ws.SetActiveWindow(_mainWindow!);
 
         _fileWatcher = new FileWatcher();
         _fileWatcher.Watch(_projectService.RootPath);
@@ -405,6 +406,7 @@ public class IdeApp : IDisposable
     private void OnDocumentSaved(string savedPath)
     {
         _ = _lspCoord?.DidSaveAsync(savedPath);
+        _lspCoord?.ScheduleSemanticTokenRefresh(savedPath, immediate: true);
         _fileWatcher?.SuppressNext(savedPath);
         _ = _gitOps!.RefreshGitFileStatusesAsync();
         _ = _gitOps!.RefreshGitDiffMarkersForFileAsync(savedPath);
@@ -439,6 +441,7 @@ public class IdeApp : IDisposable
         {
             _layout?.AboutRefresh?.Invoke();
             _layout?.UpdateDashboard();
+            _lspCoord.SetupSemanticHighlightersForOpenFiles();
         };
 
         // Driver / file watcher
@@ -541,6 +544,7 @@ public class IdeApp : IDisposable
         _editorManager.DocumentOpened  += (_, a) =>
         {
             _ = _lspCoord?.DidOpenAsync(a.FilePath, a.Content);
+            _lspCoord?.SetupSemanticHighlighter(a.FilePath);
             _ = _gitOps!.RefreshGitDiffMarkersForFileAsync(a.FilePath);
         };
         _editorManager.DocumentChanged += (_, a) =>
@@ -548,6 +552,7 @@ public class IdeApp : IDisposable
             _ = _lspCoord?.DidChangeAsync(a.FilePath, a.Content);
             _lspCoord?.TryScheduleDotCompletion(a.FilePath, a.Content);
             _lspCoord?.ScheduleSymbolRefresh(a.FilePath, _layout!.SidePanelVisible);
+            _lspCoord?.ScheduleSemanticTokenRefresh(a.FilePath);
         };
         _editorManager.DocumentSaved   += (_, p) => OnDocumentSaved(p);
         _editorManager.DocumentClosed  += (_, p) =>
@@ -555,6 +560,7 @@ public class IdeApp : IDisposable
             _lspCoord?.DismissCompletionPortal();
             _lspCoord?.DismissTooltipPortal();
             _lspCoord?.DismissLocationPortal();
+            _lspCoord?.RemoveSemanticHighlighter(p);
             _ = _lspCoord?.DidCloseAsync(p);
             _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
             UpdateErrorCount(new List<BuildDiagnostic>());
@@ -1038,6 +1044,7 @@ public class IdeApp : IDisposable
             _editorManager.WrapMode = wm;
 
         _layout.ForceRebuildLayout();
+        _ws.SetActiveWindow(_mainWindow!);
     }
 
 

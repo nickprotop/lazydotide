@@ -603,6 +603,15 @@ public class EditorManager
     public int TabCount => _tabControl.TabCount;
 
     /// <summary>
+    /// Returns the editor for a file path without switching tabs.
+    /// </summary>
+    public MultilineEditControl? GetEditorByPath(string filePath)
+    {
+        if (!_openFiles.TryGetValue(filePath, out var tabIndex)) return null;
+        return _tabData.TryGetValue(tabIndex, out var data) ? data.Editor : null;
+    }
+
+    /// <summary>
     /// Opens a read-only tab with the given title and text content.
     /// If a tab with the same title already exists, it is replaced.
     /// </summary>

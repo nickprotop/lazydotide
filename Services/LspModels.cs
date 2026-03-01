@@ -51,6 +51,10 @@ public record DocumentSymbol(
 
 public record PrepareRenameResult(LspRange Range, string Placeholder);
 
+// Semantic tokens types
+public record SemanticTokensLegend(string[] TokenTypes, string[] TokenModifiers);
+public record SemanticToken(int Line, int StartChar, int Length, int TokenType, int TokenModifiers);
+
 // JSON-RPC types
 public record JsonRpcRequest(string jsonrpc, int id, string method, object? @params);
 public record JsonRpcNotification(string jsonrpc, string method, object? @params);

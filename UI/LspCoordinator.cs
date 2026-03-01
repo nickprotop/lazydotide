@@ -16,6 +16,7 @@ internal class LspCoordinator : IAsyncDisposable
     private const int DotTriggerMs = 350;
     private const int SignatureTriggerMs = 250;
     private const int WordCompletionMs = 300;
+    private const int SemanticTokenRefreshMs = 800;
 
     private static void LogError(string context, Exception ex) =>
         DiagnosticLog.Error("lsp-coord", context, ex);
@@ -33,6 +34,10 @@ internal class LspCoordinator : IAsyncDisposable
     // Debounce timers
     private Timer? _dotTriggerDebounce;
     private Timer? _symbolRefreshDebounce;
+    private Timer? _semanticTokenDebounce;
+
+    // Semantic token highlighters cache
+    private readonly ConcurrentDictionary<string, SemanticHighlighter> _semanticHighlighters = new();
 
     // Dashboard LSP state
     private string? _detectedLspExe;
@@ -107,6 +112,11 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task ReinitLspAsync(string projectPath, LspConfig? lspConfig)
     {
+        // Clear stale semantic highlighters from previous LSP session
+        _semanticHighlighters.Clear();
+        _semanticTokenDebounce?.Dispose();
+        _semanticTokenDebounce = null;
+
         if (_lsp != null)
         {
             await _lsp.ShutdownAsync();
@@ -432,6 +442,81 @@ internal class LspCoordinator : IAsyncDisposable
         _portalManager.ShowCommandPalettePortal(tempRegistry);
     }
 
+    // ── Semantic Tokens ──────────────────────────────────────────────────
+
+    public void SetupSemanticHighlighter(string filePath)
+    {
+        if (_lsp == null || _lsp.TokenLegend == null) return;
+        if (!filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
+        if (_semanticHighlighters.ContainsKey(filePath)) return;
+
+        var editor = _editorManager.GetEditorByPath(filePath);
+        if (editor == null) return;
+
+        var currentHighlighter = editor.SyntaxHighlighter;
+        if (currentHighlighter is SemanticHighlighter) return; // already wrapped
+
+        var semantic = new SemanticHighlighter(currentHighlighter ?? new CSharpSyntaxHighlighter());
+        editor.SyntaxHighlighter = semantic;
+        _semanticHighlighters[filePath] = semantic;
+
+        // Schedule immediate token fetch
+        ScheduleSemanticTokenRefresh(filePath, immediate: true);
+    }
+
+    public void ScheduleSemanticTokenRefresh(string filePath, bool immediate = false)
+    {
+        if (_lsp == null || !filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
+
+        _semanticTokenDebounce?.Dispose();
+        _semanticTokenDebounce = new Timer(_ =>
+            _pendingUiActions.Enqueue(() => _ = RefreshSemanticTokensAsync(filePath)),
+            null, immediate ? 0 : SemanticTokenRefreshMs, Timeout.Infinite);
+    }
+
+    private async Task RefreshSemanticTokensAsync(string filePath)
+    {
+        if (_lsp == null || _lsp.TokenLegend == null) return;
+
+        try
+        {
+            await _lsp.FlushPendingChangeAsync();
+            var tokens = await _lsp.SemanticTokensFullAsync(filePath);
+
+            if (tokens.Count > 0 && _semanticHighlighters.TryGetValue(filePath, out var highlighter))
+            {
+                var legend = _lsp.TokenLegend;
+                _pendingUiActions.Enqueue(() =>
+                {
+                    highlighter.UpdateTokens(tokens, legend);
+                    var editor = _editorManager.GetEditorByPath(filePath);
+                    if (editor != null)
+                    {
+                        // Re-assign to flush the editor's internal syntax token cache
+                        editor.SyntaxHighlighter = editor.SyntaxHighlighter;
+                    }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("RefreshSemanticTokensAsync", ex);
+        }
+    }
+
+    public void RemoveSemanticHighlighter(string filePath)
+    {
+        _semanticHighlighters.TryRemove(filePath, out _);
+    }
+
+    public void SetupSemanticHighlightersForOpenFiles()
+    {
+        if (_lsp == null || _lsp.TokenLegend == null) return;
+
+        foreach (var (filePath, _) in _editorManager.GetOpenDocuments())
+            SetupSemanticHighlighter(filePath);
+    }
+
     // ── Dot trigger / auto-completion ──────────────────────────────────
 
     public void TryScheduleDotCompletion(string filePath, string content)
@@ -610,6 +695,7 @@ internal class LspCoordinator : IAsyncDisposable
     {
         _dotTriggerDebounce?.Dispose();
         _symbolRefreshDebounce?.Dispose();
+        _semanticTokenDebounce?.Dispose();
         _portalManager.DisposeTimers();
         _portalManager.DismissAll();
         if (_lsp != null)

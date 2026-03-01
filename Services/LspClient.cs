@@ -18,6 +18,7 @@ public class LspClient : IAsyncDisposable
         public const int CodeAction = 10000;
         public const int Rename = 10000;
         public const int DocumentSymbol = 10000;
+        public const int SemanticTokens = 10000;
         public const int Shutdown = 2000;
         public const int DidChangeDebounce = 500;
     }
@@ -37,6 +38,8 @@ public class LspClient : IAsyncDisposable
     private Timer? _changeDebounce;
     private string? _pendingChangePath;
     private string? _pendingChangeContent;
+
+    public SemanticTokensLegend? TokenLegend { get; private set; }
 
     public event EventHandler<(string Uri, List<LspDiagnostic> Diags)>? DiagnosticsReceived;
 
@@ -109,7 +112,18 @@ public class LspClient : IAsyncDisposable
                     codeAction = new { },
                     documentSymbol = new { },
                     signatureHelp = new { triggerCharacters = new[] { "(", "," } },
-                    formatting = new { }
+                    formatting = new { },
+                    semanticTokens = new
+                    {
+                        full = true,
+                        tokenTypes = new[] { "namespace", "type", "class", "enum", "interface", "struct",
+                            "typeParameter", "parameter", "variable", "property", "enumMember",
+                            "event", "function", "method", "keyword", "comment", "string",
+                            "number", "regexp", "operator" },
+                        tokenModifiers = new[] { "declaration", "definition", "readonly", "static",
+                            "deprecated", "abstract", "async" },
+                        formats = new[] { "relative" }
+                    }
                 },
                 workspace = new { didChangeConfiguration = new { dynamicRegistration = false } }
             }
@@ -118,6 +132,29 @@ public class LspClient : IAsyncDisposable
         Log($"Sending initialize, workspace: {workspacePath}");
         var result = await SendRequestAsync("initialize", initParams, timeout: Timeouts.Initialize);
         Log($"Initialize response: {(result.HasValue ? result.Value.ValueKind.ToString() : "null/timeout")}");
+
+        // Parse semantic tokens legend from server capabilities
+        if (result.HasValue)
+        {
+            try
+            {
+                if (result.Value.TryGetProperty("capabilities", out var caps) &&
+                    caps.TryGetProperty("semanticTokensProvider", out var stp) &&
+                    stp.TryGetProperty("legend", out var legend))
+                {
+                    var tokenTypes = legend.TryGetProperty("tokenTypes", out var tt) && tt.ValueKind == JsonValueKind.Array
+                        ? tt.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
+                        : Array.Empty<string>();
+                    var tokenModifiers = legend.TryGetProperty("tokenModifiers", out var tm) && tm.ValueKind == JsonValueKind.Array
+                        ? tm.EnumerateArray().Select(e => e.GetString() ?? "").ToArray()
+                        : Array.Empty<string>();
+                    TokenLegend = new SemanticTokensLegend(tokenTypes, tokenModifiers);
+                    Log($"Semantic tokens legend: {tokenTypes.Length} types, {tokenModifiers.Length} modifiers");
+                }
+            }
+            catch (Exception ex) { Log($"Parse semantic legend: {ex.Message}"); }
+        }
+
         SendNotification("initialized", new { });
     }
 
@@ -562,6 +599,52 @@ public class LspClient : IAsyncDisposable
             }
         }
         catch (Exception ex) { Log($"DocumentSymbolAsync: {ex.Message}"); }
+        return result;
+    }
+
+    public async Task<List<SemanticToken>> SemanticTokensFullAsync(string filePath)
+    {
+        var result = new List<SemanticToken>();
+        try
+        {
+            var response = await SendRequestAsync("textDocument/semanticTokens/full", new
+            {
+                textDocument = new { uri = PathToUri(filePath) }
+            }, timeout: Timeouts.SemanticTokens);
+
+            if (response == null || response.Value.ValueKind == JsonValueKind.Null) return result;
+
+            if (!response.Value.TryGetProperty("data", out var dataEl) || dataEl.ValueKind != JsonValueKind.Array)
+                return result;
+
+            var data = dataEl.EnumerateArray().Select(e => e.GetInt32()).ToArray();
+
+            // Decode relative-encoded 5-int groups into absolute positions
+            int line = 0, startChar = 0;
+            for (int i = 0; i + 4 < data.Length; i += 5)
+            {
+                int deltaLine = data[i];
+                int deltaStartChar = data[i + 1];
+                int length = data[i + 2];
+                int tokenType = data[i + 3];
+                int tokenModifiers = data[i + 4];
+
+                if (deltaLine > 0)
+                {
+                    line += deltaLine;
+                    startChar = deltaStartChar;
+                }
+                else
+                {
+                    startChar += deltaStartChar;
+                }
+
+                result.Add(new SemanticToken(line, startChar, length, tokenType, tokenModifiers));
+            }
+
+            Log($"SemanticTokensFull: {result.Count} tokens for {filePath}");
+        }
+        catch (Exception ex) { Log($"SemanticTokensFullAsync: {ex.Message}"); }
         return result;
     }
 
