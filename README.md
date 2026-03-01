@@ -25,13 +25,26 @@ It helps others discover the project and motivates continued development.
 
 **A console-based .NET IDE built on [SharpConsoleUI](https://github.com/nickprotop/ConsoleEx).**
 
-Browse, edit, build, test, and manage .NET projects without leaving the terminal. Full LSP IntelliSense, integrated git, multiple terminal modes, and a command palette — all in a TUI.
-
 **Edit. Build. Ship.**
 
 ![Main Editor](docs/screenshots/main-editor.png)
 
 **[View more screenshots](docs/SCREENSHOTS.md)**
+
+## Why LazyDotIDE?
+
+Sometimes you just want to stay in the terminal. Install it as a dotnet tool, and you get C# IntelliSense, git, build, test, and a shell — zero config, works anywhere you have a console.
+
+## Highlights
+
+- **LSP IntelliSense** — completions, go to definition, rename, code actions, diagnostics
+- **Multi-tab editor** — syntax highlighting for C#, JSON, XML, YAML, JS/TS, Razor, and more
+- **Built-in terminal** — full PTY shell in tabs, bottom panel, or side panel
+- **Git integration** — stage, commit, push, pull, diff, blame, branch management
+- **Build & test** — one-key build/run/test with click-to-navigate errors
+- **Zero config** — just `dotnet tool install` and go
+
+For the full feature list, see [Features](#features) below.
 
 ## Quick Start
 
@@ -302,9 +315,9 @@ dotnet tool install --global csharp-ls
 
 ---
 
-## Early Development
+## Status
 
-LazyDotIDE is in early development and not production-ready. Expect rough edges. It is a personal project — contributions and feedback are welcome, but set expectations accordingly.
+LazyDotIDE is in active early development. It works and is used daily, but expect rough edges. Contributions, feedback, and bug reports are welcome.
 
 ---
 
