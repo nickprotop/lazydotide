@@ -13,6 +13,16 @@
 
 </div>
 
+<div align="center">
+
+### ⭐ If you find LazyDotIDE useful, please consider giving it a star! ⭐
+
+It helps others discover the project and motivates continued development.
+
+[![GitHub stars](https://img.shields.io/github/stars/nickprotop/lazydotide?style=for-the-badge&logo=github&color=yellow)](https://github.com/nickprotop/lazydotide/stargazers)
+
+</div>
+
 **A console-based .NET IDE built on [SharpConsoleUI](https://github.com/nickprotop/ConsoleEx).**
 
 Browse, edit, build, test, and manage .NET projects without leaving the terminal. Full LSP IntelliSense, integrated git, multiple terminal modes, and a command palette — all in a TUI.
