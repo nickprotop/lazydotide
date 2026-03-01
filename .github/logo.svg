@@ -1,0 +1,25 @@
+<svg width="600" height="120" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="600" height="120" fill="#1e1e1e"/>
+
+  <!-- Terminal window border -->
+  <rect x="20" y="15" width="560" height="90" fill="#0d1117" stroke="#30363d" stroke-width="2" rx="6"/>
+
+  <!-- Terminal header dots -->
+  <circle cx="40" cy="35" r="5" fill="#ff5f56"/>
+  <circle cx="60" cy="35" r="5" fill="#ffbd2e"/>
+  <circle cx="80" cy="35" r="5" fill="#27c93f"/>
+
+  <!-- Terminal prompt -->
+  <text x="40" y="75" font-family="'Courier New', monospace" font-size="32" font-weight="bold" fill="#00d9ff">
+    $ LazyDotIDE
+  </text>
+
+  <!-- Cursor blink -->
+  <rect x="345" y="52" width="16" height="28" fill="#00d9ff" opacity="0.8"/>
+
+  <!-- Tagline in terminal style -->
+  <text x="375" y="75" font-family="'Courier New', monospace" font-size="18" fill="#6e7681">
+    # .NET IDE
+  </text>
+</svg>
