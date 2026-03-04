@@ -17,7 +17,8 @@ public record AboutInfo(
     bool DapDetectionDone,
     string? DetectedDapExe,
     IReadOnlyList<ToolEntry> Tools,
-    string ProjectPath);
+    string ProjectPath,
+    Action? OnInstallDebugger = null);
 
 public static class AboutDialog
 {
@@ -39,12 +40,13 @@ public static class AboutDialog
             .WithSize(width, height)
             .Centered()
             .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
+            .WithBorderStyle(BorderStyle.DoubleLine)
             .Resizable(true)
             .Movable(true)
             .Minimizable(false)
             .Maximizable(true)
-            .WithColors(Color.Grey93, Color.Grey11)
+            .WithColors(Color.Grey93, ColorScheme.WindowBackground)
+            .WithBorderColor(ColorScheme.BorderColor)
             .Build();
 
         // FigleControl header
@@ -57,7 +59,7 @@ public static class AboutDialog
 
         // Tagline
         modal.AddControl(Controls.Markup()
-            .AddLine("[dim]A modern .NET IDE for the terminal[/]")
+            .AddLine($"[{ColorScheme.MutedMarkup}]A modern .NET IDE for the terminal[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .Build());
 
@@ -65,12 +67,12 @@ public static class AboutDialog
         string version = System.Reflection.Assembly
             .GetExecutingAssembly().GetName().Version?.ToString(2) ?? "1.0";
         modal.AddControl(Controls.Markup()
-            .AddLine($"[grey50]v{version}  ·  MIT License  ·  github.com/nickprotop/lazydotide[/]")
+            .AddLine($"[{ColorScheme.MutedMarkup}]v{version}  \u00b7  MIT License  \u00b7  github.com/nickprotop/lazydotide[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .WithMargin(0, 0, 0, 1)
             .Build());
 
-        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).WithMargin(1,0,1,0).Build());
+        modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).WithMargin(1,0,1,0).Build());
 
         // Build environment tab with live-updatable markup
         var envMarkup = BuildEnvironmentTab(info);
@@ -84,7 +86,7 @@ public static class AboutDialog
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithMargin(1,0,1,0)
             .Fill()
-            .WithBackgroundColor(Color.Grey11)
+            .WithBackgroundColor(ColorScheme.WindowBackground)
             .WithForegroundColor(Color.Grey93)
             .Build();
 
@@ -98,7 +100,7 @@ public static class AboutDialog
         modal.AddControl(tabControl);
 
         // Footer rule + bar (sticky bottom)
-        modal.AddControl(Controls.RuleBuilder().WithColor(Color.Grey35).WithMargin(1,0,1,0).StickyBottom().Build());
+        modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).WithMargin(1,0,1,0).StickyBottom().Build());
 
         var footerGrid = new HorizontalGridControl
         {
@@ -108,12 +110,17 @@ public static class AboutDialog
 
         var copyrightCol = new ColumnContainer(footerGrid);
         copyrightCol.AddContent(Controls.Markup()
-            .AddLine("[grey50]  © Nikolaos Protopapas · MIT License[/]")
+            .AddLine($"[{ColorScheme.MutedMarkup}]  \u00a9 Nikolaos Protopapas \u00b7 MIT License[/]")
             .Build());
         footerGrid.AddColumn(copyrightCol);
 
-        var closeColContainer = new ColumnContainer(footerGrid) { Width = 10 };
-        var closeBtn = new ButtonControl { Text = "Close", Width = 8 };
+        var closeColContainer = new ColumnContainer(footerGrid) { Width = 12 };
+        var closeBtn = Controls.Button("[grey93]Close[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
         closeBtn.Click += (_, _) => modal.Close();
         closeColContainer.AddContent(closeBtn);
         footerGrid.AddColumn(closeColContainer);
@@ -142,7 +149,7 @@ public static class AboutDialog
             .AddControl(content)
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
-            .WithBackgroundColor(Color.Grey11)
+            .WithBackgroundColor(ColorScheme.WindowBackground)
             .WithForegroundColor(Color.Grey93)
             .Build();
 
@@ -151,18 +158,18 @@ public static class AboutDialog
         var lines = new List<string>
         {
             "",
-            "  [grey50]Project[/]",
-            "  [cyan1]lazydotide[/]  —  A modern .NET IDE for the terminal",
+            $"  [{ColorScheme.MutedMarkup}]Project[/]",
+            $"  [{ColorScheme.InfoMarkup}]lazydotide[/]  \u2014  A modern .NET IDE for the terminal",
             "  [dim]https://github.com/nickprotop/lazydotide[/]",
             "",
-            "  [grey50]Built on[/]",
-            "  [cyan1]SharpConsoleUI[/] (ConsoleEx)  —  A .NET 9 console windowing framework",
+            $"  [{ColorScheme.MutedMarkup}]Built on[/]",
+            $"  [{ColorScheme.InfoMarkup}]SharpConsoleUI[/] (ConsoleEx)  \u2014  A .NET 9 console windowing framework",
             "  [dim]https://github.com/nickprotop/ConsoleEx[/]",
             "",
-            "  [grey50]Useful resources[/]",
-            "  [dim].NET docs       ·  https://learn.microsoft.com/dotnet[/]",
-            "  [dim]NuGet           ·  https://www.nuget.org[/]",
-            "  [dim]Spectre.Console ·  https://spectreconsole.net[/]",
+            $"  [{ColorScheme.MutedMarkup}]Useful resources[/]",
+            "  [dim].NET docs       \u00b7  https://learn.microsoft.com/dotnet[/]",
+            "  [dim]NuGet           \u00b7  https://www.nuget.org[/]",
+            "  [dim]Spectre.Console \u00b7  https://spectreconsole.net[/]",
         };
 
         return new MarkupControl(lines)
@@ -179,17 +186,17 @@ public static class AboutDialog
         switch (info)
         {
             case { LspDetectionDone: false }:
-                lspLines.Add("  [grey50]LSP          [/][dim]○ detecting…[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb detecting\u2026[/]");
                 break;
             case { LspStarted: true, DetectedLspExe: var exe }:
-                lspLines.Add($"  [grey50]LSP          [/][green]● {Markup.Escape(exe!)} (running)[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][{ColorScheme.SuccessMarkup}]\u25cf {Markup.Escape(exe!)} (running)[/]");
                 break;
             case { DetectedLspExe: var exe } when exe != null:
-                lspLines.Add($"  [grey50]LSP          [/][dim]○ {Markup.Escape(exe)} (failed to start)[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb {Markup.Escape(exe)} (failed to start)[/]");
                 break;
             default:
-                lspLines.Add("  [grey50]LSP          [/][dim]○ not detected[/]");
-                lspLines.Add("[yellow]               Install:  [/][italic]dotnet tool install -g csharp-ls[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb not detected[/]");
+                lspLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]dotnet tool install -g csharp-ls[/]");
                 lspLines.Add($"[dim]               Config:   {Markup.Escape(ConfigService.GetConfigPath())}[/]");
                 break;
         }
@@ -198,20 +205,25 @@ public static class AboutDialog
         switch (info)
         {
             case { DapDetectionDone: false }:
-                dapLines.Add("  [grey50]Debugger      [/][dim]○ detecting…[/]");
+                dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][dim]\u25cb detecting\u2026[/]");
                 break;
             case { DapDetected: true, DetectedDapExe: var dapExe }:
-                dapLines.Add($"  [grey50]Debugger      [/][green]● {Markup.Escape(dapExe!)}[/]");
+                dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][{ColorScheme.SuccessMarkup}]\u25cf {Markup.Escape(dapExe!)}[/]");
                 break;
             default:
-                dapLines.Add("  [grey50]Debugger      [/][dim]○ not detected[/]");
-                if (OperatingSystem.IsLinux())
-                    dapLines.Add("[yellow]               Install:  [/][italic]scoop install netcoredbg  (or AUR/Nix)[/]");
-                else if (OperatingSystem.IsMacOS())
-                    dapLines.Add("[yellow]               Install:  [/][italic]brew install netcoredbg  (or from GitHub releases)[/]");
+                dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][dim]\u25cb not detected[/]");
+                if (info.OnInstallDebugger != null)
+                    dapLines.Add($"[{ColorScheme.WarningMarkup}]               Use the Install button below or install manually[/]");
                 else
-                    dapLines.Add("[yellow]               Install:  [/][italic]scoop install netcoredbg[/]");
-                dapLines.Add($"[dim]               Releases: [/][dim italic]github.com/Samsung/netcoredbg[/]");
+                {
+                    if (OperatingSystem.IsLinux())
+                        dapLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]scoop install netcoredbg  (or AUR/Nix)[/]");
+                    else if (OperatingSystem.IsMacOS())
+                        dapLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]brew install netcoredbg  (or from GitHub releases)[/]");
+                    else
+                        dapLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]scoop install netcoredbg[/]");
+                    dapLines.Add($"[dim]               Releases: [/][dim italic]github.com/Samsung/netcoredbg[/]");
+                }
                 break;
         }
 
@@ -233,10 +245,10 @@ public static class AboutDialog
         result.AddRange(dapLines);
         result.AddRange(new[]
         {
-            $"  [grey50].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",
-            $"  [grey50]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
-            $"  [grey50]Architecture [/]{Markup.Escape(arch)}",
-            $"  [grey50]Clipboard    [/]{Markup.Escape(clipBackend)}",
+            $"  [{ColorScheme.MutedMarkup}].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",
+            $"  [{ColorScheme.MutedMarkup}]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
+            $"  [{ColorScheme.MutedMarkup}]Architecture [/]{Markup.Escape(arch)}",
+            $"  [{ColorScheme.MutedMarkup}]Clipboard    [/]{Markup.Escape(clipBackend)}",
         });
         if (ClipboardHelper.Backend == ClipboardBackend.InternalFallback)
         {
@@ -245,12 +257,12 @@ public static class AboutDialog
                     ? "wl-clipboard"
                     : "xclip  or  xsel"
                 : "a system clipboard tool";
-            result.Add($"[yellow]               Install:  [/][italic]{installHint}[/]");
+            result.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]{installHint}[/]");
         }
         result.AddRange(new[]
         {
-            $"  [grey50]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
-            $"  [grey50]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
+            $"  [{ColorScheme.MutedMarkup}]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
+            $"  [{ColorScheme.MutedMarkup}]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
         });
         return result;
     }
@@ -273,7 +285,7 @@ public static class AboutDialog
         {
             lines.Add("  [dim]No custom tools configured.[/]");
             lines.Add("");
-            lines.Add("  [grey50]Add tools to your [dim].lazydotide.json[/][grey50] config file:[/]");
+            lines.Add($"  [{ColorScheme.MutedMarkup}]Add tools to your [dim].lazydotide.json[/][{ColorScheme.MutedMarkup}] config file:[/]");
             lines.Add("");
             lines.Add("  [grey35]{[/]");
             lines.Add("  [grey35]  \"Tools\": [[/]");
@@ -283,17 +295,17 @@ public static class AboutDialog
         }
         else
         {
-            lines.Add($"  [grey50]{info.Tools.Count} tool{(info.Tools.Count == 1 ? "" : "s")} configured:[/]");
+            lines.Add($"  [{ColorScheme.MutedMarkup}]{info.Tools.Count} tool{(info.Tools.Count == 1 ? "" : "s")} configured:[/]");
             lines.Add("");
             foreach (var tool in info.Tools)
             {
-                lines.Add($"  [cyan1]·[/] [bold]{Markup.Escape(tool.Name)}[/]");
-                lines.Add($"    [grey50]cmd [/]{Markup.Escape(tool.Command)}" +
+                lines.Add($"  [{ColorScheme.InfoMarkup}]\u00b7[/] [bold]{Markup.Escape(tool.Name)}[/]");
+                lines.Add($"    [{ColorScheme.MutedMarkup}]cmd [/]{Markup.Escape(tool.Command)}" +
                           (tool.Args is { Length: > 0 }
-                              ? $" [grey50]{Markup.Escape(string.Join(" ", tool.Args))}[/]"
+                              ? $" [{ColorScheme.MutedMarkup}]{Markup.Escape(string.Join(" ", tool.Args))}[/]"
                               : ""));
                 if (tool.WorkingDir != null)
-                    lines.Add($"    [grey50]dir [/][dim]{Markup.Escape(tool.WorkingDir)}[/]");
+                    lines.Add($"    [{ColorScheme.MutedMarkup}]dir [/][dim]{Markup.Escape(tool.WorkingDir)}[/]");
                 lines.Add("");
             }
         }

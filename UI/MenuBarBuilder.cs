@@ -25,6 +25,7 @@ internal class MenuBarBuilder
     public Action? ReloadCurrentFromDisk { get; set; }
     public Action? ShowCommandPalette { get; set; }
     public Action? HandleF5 { get; set; }
+    public Action? HandleF5WithProfile { get; set; }
 
     private readonly Window _mainWindow;
     private IWindowControl? _menuControl;
@@ -107,6 +108,7 @@ internal class MenuBarBuilder
                 .AddItem("Stop", "F4", () => _buildService.Cancel()))
             .AddItem("Run", m => m
                 .AddItem("Start Debugging", "F5", () => HandleF5?.Invoke())
+                .AddItem("Start with Profile…", "", () => HandleF5WithProfile?.Invoke())
                 .AddItem("Run Without Debugging", "Ctrl+F5", () => _buildOps.RunProject())
                 .AddSeparator()
                 .AddItem("Toggle Breakpoint", "F9", () => { })
@@ -226,6 +228,8 @@ internal class MenuBarBuilder
                 m.AddItem("Edit Config", "", () => _buildOps.OpenConfigFile());
             })
             .AddItem("Help", m => m
+                .AddItem("Install netcoredbg\u2026", () => _layout.InstallDebugger())
+                .AddSeparator()
                 .AddItem("About lazydotide\u2026", () => _layout.ShowAbout()))
             .Build();
 

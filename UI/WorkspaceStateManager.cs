@@ -99,6 +99,9 @@ internal class WorkspaceStateManager
         snapshot.SplitRatio = state.SplitRatio;
         snapshot.WrapMode = state.WrapMode;
 
+        // Load breakpoints BEFORE opening files so RegisterGutter can apply them
+        DebugCoordinator?.LoadBreakpoints(state, _workspaceService);
+
         // Open files
         int activeTabIndex = -1;
         for (int i = 0; i < state.OpenFiles.Count; i++)
@@ -145,9 +148,6 @@ internal class WorkspaceStateManager
         {
             _outputPanel.TabControl.ActiveTabIndex = state.ActiveOutputTab;
         }
-
-        // Breakpoints
-        DebugCoordinator?.LoadBreakpoints(state, _workspaceService);
 
         return snapshot;
     }

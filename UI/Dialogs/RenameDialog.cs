@@ -3,82 +3,70 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 
-public static class RenameDialog
+public class RenameDialog : DialogBase<string?>
 {
+    private readonly string _currentName;
+    private PromptControl _input = null!;
+
+    private RenameDialog(string currentName) { _currentName = currentName; }
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string currentName)
+        => new RenameDialog(currentName).ShowAsync(ws);
+
+    protected override string GetTitle() => "Rename Symbol";
+    protected override (int width, int height) GetSize()
     {
-        var tcs = new TaskCompletionSource<string?>();
+        var desktop = WindowSystem.DesktopDimensions;
+        return (Math.Min(50, Math.Max(30, desktop.Width - 4)), 9);
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
-        const int dialogHeight = 7;
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
+    protected override void BuildContent()
+    {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Rename Symbol[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
 
-        var modal = new WindowBuilder(ws)
-            .WithTitle("Rename Symbol")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
-
-        // Use builder's WithInput to set initial text before the control is attached.
-        // This avoids size-dependent rendering issues that SetInput can trigger.
-        var input = Controls.Prompt()
+        _input = Controls.Prompt()
             .WithPrompt("New name: ")
-            .WithInput(currentName)
+            .WithInput(_currentName)
             .WithAlignment(HorizontalAlignment.Stretch)
             .Build();
+        Modal.AddControl(_input);
 
-        modal.AddControl(input);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Rename  •  Escape: Cancel[/]")
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Rename  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        string? result = null;
+    protected override void SetInitialFocus()
+    {
+        _input.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        void Accept()
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
         {
-            var newName = input.Input?.Trim();
-            if (!string.IsNullOrEmpty(newName) && newName != currentName)
-                result = newName;
-            modal.Close();
+            var newName = _input.Input?.Trim();
+            if (!string.IsNullOrEmpty(newName) && newName != _currentName)
+                CloseWithResult(newName);
+            else
+                CloseWithResult(null);
+            e.Handled = true;
         }
-
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+        else
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                Accept();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            base.OnKeyPressed(sender, e);
+        }
     }
 }

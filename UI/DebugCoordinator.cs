@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using SharpConsoleUI;
+using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
@@ -82,6 +83,15 @@ internal class DebugCoordinator : IAsyncDisposable
     }
 
     public bool HasDebugger => _detectedServer != null;
+
+    public void ReDetectDap()
+    {
+        _detectedServer = DapDetector.Find();
+        _detectionDone = true;
+        _notifiedMissingDebugger = false;
+        Log($"DAP re-detection: {(_detectedServer != null ? _detectedServer.Exe : "not found")}");
+        StateChanged?.Invoke();
+    }
 
     // ── Breakpoint Management ──
 
@@ -195,7 +205,7 @@ internal class DebugCoordinator : IAsyncDisposable
     private string? _stoppedFilePath;
     private int _stoppedLine = -1;
 
-    public async Task StartDebuggingAsync(BuildService buildService, ConcurrentQueue<string> buildLines, CancellationToken ct)
+    public async Task StartDebuggingAsync(BuildService buildService, ConcurrentQueue<string> buildLines, CancellationToken ct, LaunchProfileEntry? launchProfile = null)
     {
         if (_state != DebugSessionState.Idle) return;
         if (_detectedServer == null) return;
@@ -231,14 +241,18 @@ internal class DebugCoordinator : IAsyncDisposable
             return;
         }
 
-        var profile = new LaunchProfile(
-            Name: "Debug",
-            Program: program,
-            Cwd: Path.GetDirectoryName(runTarget),
-            Args: null,
-            Env: null);
+        var cwd = launchProfile?.WorkingDirectory ?? Path.GetDirectoryName(runTarget);
 
-        // Start DAP client
+        // Build launch profile for DAP
+        var profile = new LaunchProfile(
+            Name: Path.GetFileNameWithoutExtension(runTarget),
+            Program: program,
+            Cwd: cwd,
+            Args: launchProfile?.Args,
+            Env: launchProfile?.Env?.ToDictionary(kv => kv.Key, kv => kv.Value)
+        );
+
+        // Start DAP client (launch mode — attach mode doesn't support breakpoints in netcoredbg)
         _client = new DapClient();
         _client.Stopped += OnStopped;
         _client.Continued += OnContinued;
@@ -262,10 +276,6 @@ internal class DebugCoordinator : IAsyncDisposable
             return;
         }
 
-        // Send all breakpoints
-        await SendAllBreakpointsAsync();
-
-        // Launch
         if (!await _client.LaunchAsync(profile))
         {
             Log("DAP launch failed");
@@ -274,6 +284,8 @@ internal class DebugCoordinator : IAsyncDisposable
             return;
         }
 
+        // Send breakpoints after launch but before configurationDone
+        await SendAllBreakpointsAsync();
         await _client.SendConfigurationDone();
 
         SetState(DebugSessionState.Running);
@@ -325,10 +337,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
     // ── DAP Event Handlers ──
 
-    private void OnInitialized(object? sender, EventArgs e)
-    {
-        Log("DAP initialized event");
-    }
+    private void OnInitialized(object? sender, EventArgs e) { }
 
     private void OnStopped(object? sender, DapStoppedEventArgs e)
     {
@@ -430,6 +439,7 @@ internal class DebugCoordinator : IAsyncDisposable
         var formatted = e.Category switch
         {
             "stderr" => $"[red]{escaped}[/]",
+            "stdout" or "console" => escaped,
             _ => $"[dim]{escaped}[/]"
         };
 
@@ -508,24 +518,40 @@ internal class DebugCoordinator : IAsyncDisposable
         var name = Path.GetFileNameWithoutExtension(csprojPath);
         if (dir == null || name == null) return null;
 
+        string? bestPath = null;
+        DateTime bestTime = default;
+
         // Try Debug then Release
         foreach (var config in new[] { "Debug", "Release" })
         {
             var binDir = Path.Combine(dir, "bin", config);
             if (!Directory.Exists(binDir)) continue;
 
-            // Look in TFM subdirectories
             try
             {
+                // Look in TFM subdirectories and RID subdirectories (e.g. net10.0/linux-x64/)
                 foreach (var tfmDir in Directory.GetDirectories(binDir))
                 {
-                    var dll = Path.Combine(tfmDir, name + ".dll");
-                    if (File.Exists(dll)) return dll;
+                    CheckDll(Path.Combine(tfmDir, name + ".dll"), ref bestPath, ref bestTime);
+
+                    foreach (var ridDir in Directory.GetDirectories(tfmDir))
+                        CheckDll(Path.Combine(ridDir, name + ".dll"), ref bestPath, ref bestTime);
                 }
             }
             catch { }
         }
-        return null;
+        return bestPath;
+
+        static void CheckDll(string path, ref string? best, ref DateTime bestTime)
+        {
+            if (!File.Exists(path)) return;
+            var time = File.GetLastWriteTimeUtc(path);
+            if (best == null || time > bestTime)
+            {
+                best = path;
+                bestTime = time;
+            }
+        }
     }
 
     // ── Debug UI Tabs ──

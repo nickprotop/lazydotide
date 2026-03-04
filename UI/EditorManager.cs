@@ -335,7 +335,8 @@ public class EditorManager
     }
 
     /// <summary>Opens any IWindowControl as a closable editor-area tab.</summary>
-    public int OpenControlTab(string title, IWindowControl control, bool isClosable = true)
+    /// <param name="autoCloseOnExit">If true (default), terminal tabs auto-close when the process exits.</param>
+    public int OpenControlTab(string title, IWindowControl control, bool isClosable = true, bool autoCloseOnExit = true)
     {
         bool wasEmpty = _tabControl.TabCount == 0;
         _tabControl.AddTab(title, control, isClosable);
@@ -343,7 +344,7 @@ public class EditorManager
         _tabData[tabIndex] = new EditorTabData(FilePath: null, Editor: null, IsDirty: false);
         _tabControl.ActiveTabIndex = tabIndex;
 
-        if (control is SharpConsoleUI.Controls.Terminal.TerminalControl tc &&
+        if (autoCloseOnExit && control is SharpConsoleUI.Controls.Terminal.TerminalControl tc &&
             (IdeConstants.IsDesktopOs))
             tc.ProcessExited += (_, _) => RemoveTabWithControl(control);
 

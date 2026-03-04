@@ -1,6 +1,7 @@
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
@@ -8,11 +9,7 @@ using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 
-/// <summary>
-/// Modal dialog for entering a git commit message.
-/// Returns the message string, or null if cancelled.
-/// </summary>
-public static class GitCommitDialog
+public class GitCommitDialog : DialogBase<string?>
 {
     private const int CommitDialogMaxWidth = 72;
     private const int CommitDialogMinWidth = 50;
@@ -20,277 +17,253 @@ public static class GitCommitDialog
     private const int CommitDialogMinHeight = 12;
     private const int DialogPadding = 4;
 
+    private readonly string _statusSummary;
+    private MultilineEditControl _editor = null!;
+
+    private GitCommitDialog(string statusSummary) { _statusSummary = statusSummary; }
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string statusSummary)
+        => new GitCommitDialog(statusSummary).ShowAsync(ws);
+
+    protected override string GetTitle() => "Git Commit";
+    protected override bool GetResizable() => true;
+    protected override (int width, int height) GetSize()
     {
-        var tcs = new TaskCompletionSource<string?>();
+        var desktop = WindowSystem.DesktopDimensions;
+        return (
+            Math.Min(CommitDialogMaxWidth, Math.Max(CommitDialogMinWidth, desktop.Width - DialogPadding)),
+            Math.Min(CommitDialogMaxHeight, Math.Max(CommitDialogMinHeight, desktop.Height - DialogPadding)));
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(CommitDialogMaxWidth, Math.Max(CommitDialogMinWidth, desktop.Width - DialogPadding));
-        int dialogHeight = Math.Min(CommitDialogMaxHeight, Math.Max(CommitDialogMinHeight, desktop.Height - DialogPadding));
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
-
-        var modal = new WindowBuilder(ws)
-            .WithTitle("Git Commit")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
-
-        if (!string.IsNullOrEmpty(statusSummary))
+    protected override void BuildContent()
+    {
+        if (!string.IsNullOrEmpty(_statusSummary))
         {
-            modal.AddControl(Controls.Markup()
-                .AddLine($"[grey50]{Markup.Escape(statusSummary)}[/]")
+            Modal.AddControl(Controls.Markup()
+                .AddLine($"[{ColorScheme.MutedMarkup}]{Markup.Escape(_statusSummary)}[/]")
                 .WithAlignment(HorizontalAlignment.Left)
                 .Build());
         }
 
-        var editor = Controls.MultilineEdit()
+        _editor = Controls.MultilineEdit()
             .WithPlaceholder("Enter commit message...")
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
             .WithWrapMode(WrapMode.Wrap)
             .Build();
-        editor.IsEditing = true;
+        _editor.IsEditing = true;
+        Modal.AddControl(_editor);
 
-        modal.AddControl(editor);
+        var commitBtn = Controls.Button("[grey93]Commit[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkGreen)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
 
-        string? result = null;
+        var cancelBtn = Controls.Button("[grey93]Cancel[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
 
-        void DoCommit()
-        {
-            var msg = editor.Content?.Trim();
-            if (!string.IsNullOrEmpty(msg))
-            {
-                result = msg;
-                modal.Close();
-            }
-        }
-
-        var commitBtn = new ButtonControl { Text = "Commit", Width = 10 };
-        var cancelBtn = new ButtonControl { Text = "Cancel", Width = 10 };
         commitBtn.Click += (_, _) => DoCommit();
-        cancelBtn.Click += (_, _) => modal.Close();
+        cancelBtn.Click += (_, _) => CloseWithResult(null);
 
-        var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left, StickyPosition = StickyPosition.Bottom };
-        var commitCol = new ColumnContainer(buttonRow); commitCol.AddContent(commitBtn); buttonRow.AddColumn(commitCol);
-        var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
-        modal.AddControl(buttonRow);
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Ctrl+Enter: Commit  \u2022  Escape: Cancel[/]")
+        var buttonRow = Controls.HorizontalGrid()
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Column(col => col.Add(commitBtn))
+            .Column(col => col.Width(2))
+            .Column(col => col.Add(cancelBtn))
+            .Build();
+        Modal.AddControl(buttonRow);
+
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Ctrl+Enter:Commit  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
+    protected override void SetInitialFocus()
+    {
+        _editor.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        modal.KeyPressed += (_, e) =>
+    private void DoCommit()
+    {
+        var msg = _editor.Content?.Trim();
+        if (!string.IsNullOrEmpty(msg))
+            CloseWithResult(msg);
+    }
+
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter &&
+            e.KeyInfo.Modifiers.HasFlag(ConsoleModifiers.Control))
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter &&
-                e.KeyInfo.Modifiers.HasFlag(ConsoleModifiers.Control))
-            {
-                DoCommit();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        editor.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            DoCommit();
+            e.Handled = true;
+        }
+        else
+        {
+            base.OnKeyPressed(sender, e);
+        }
     }
 }
 
-/// <summary>
-/// Modal dialog for selecting a branch from a list.
-/// Returns the selected branch name, or null if cancelled.
-/// </summary>
-public static class GitBranchPickerDialog
+public class GitBranchPickerDialog : DialogBase<string?>
 {
     private const int StandardDialogMaxWidth = 50;
     private const int StandardDialogMinWidth = 30;
     private const int DialogPadding = 4;
 
-    public static Task<string?> ShowAsync(ConsoleWindowSystem ws, List<string> branches, string currentBranch)
+    private readonly List<string> _branches;
+    private readonly string _currentBranch;
+    private ListControl _list = null!;
+
+    private GitBranchPickerDialog(List<string> branches, string currentBranch)
     {
-        var tcs = new TaskCompletionSource<string?>();
+        _branches = branches;
+        _currentBranch = currentBranch;
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
-        int dialogHeight = Math.Min(branches.Count + 5, Math.Min(20, desktop.Height - 2));
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
+    public static Task<string?> ShowAsync(ConsoleWindowSystem ws, List<string> branches, string currentBranch)
+        => new GitBranchPickerDialog(branches, currentBranch).ShowAsync(ws);
 
-        var modal = new WindowBuilder(ws)
-            .WithTitle("Switch Branch")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
+    protected override string GetTitle() => "Switch Branch";
+    protected override (int width, int height) GetSize()
+    {
+        var desktop = WindowSystem.DesktopDimensions;
+        return (
+            Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding)),
+            Math.Min(_branches.Count + 5, Math.Min(20, desktop.Height - 2)));
+    }
 
-        var list = new ListControl
+    protected override void BuildContent()
+    {
+        _list = new ListControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
 
-        foreach (var branch in branches)
+        foreach (var branch in _branches)
         {
-            var label = branch == currentBranch
+            var label = branch == _currentBranch
                 ? $"[cyan1]\u2713 {Markup.Escape(branch)}[/]"
                 : $"  {Markup.Escape(branch)}";
             var item = new ListItem(label) { Tag = branch };
-            list.AddItem(item);
+            _list.AddItem(item);
         }
 
-        list.DoubleClickActivates = true;
+        _list.DoubleClickActivates = true;
+        _list.ItemActivated += (_, item) =>
+        {
+            if (item?.Tag is string branchName && branchName != _currentBranch)
+                CloseWithResult(branchName);
+        };
 
-        modal.AddControl(list);
+        Modal.AddControl(_list);
 
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Switch  \u2022  Escape: Cancel[/]")
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Switch  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        string? result = null;
+    protected override void SetInitialFocus()
+    {
+        _list.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        list.ItemActivated += (_, item) =>
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
         {
-            if (item?.Tag is string branchName && branchName != currentBranch)
-            {
-                result = branchName;
-                modal.Close();
-            }
-        };
-
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+            var selected = _list.SelectedIndex >= 0 ? _list.Items[_list.SelectedIndex] : null;
+            if (selected?.Tag is string branchName && branchName != _currentBranch)
+                CloseWithResult(branchName);
+            e.Handled = true;
+        }
+        else
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                var selected = list.SelectedIndex >= 0 ? list.Items[list.SelectedIndex] : null;
-                if (selected?.Tag is string branchName && branchName != currentBranch)
-                {
-                    result = branchName;
-                    modal.Close();
-                }
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        list.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            base.OnKeyPressed(sender, e);
+        }
     }
 }
 
-/// <summary>
-/// Modal dialog for entering a new branch name.
-/// Returns the branch name, or null if cancelled.
-/// </summary>
-public static class GitNewBranchDialog
+public class GitNewBranchDialog : DialogBase<string?>
 {
-    private const int StandardDialogMaxWidth = 50;
-    private const int StandardDialogMinWidth = 30;
-    private const int DialogPadding = 4;
+    private PromptControl _input = null!;
+
+    private GitNewBranchDialog() { }
 
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws)
+        => ((DialogBase<string?>)new GitNewBranchDialog()).ShowAsync(ws);
+
+    protected override string GetTitle() => "New Branch";
+    protected override (int width, int height) GetSize()
     {
-        var tcs = new TaskCompletionSource<string?>();
+        var desktop = WindowSystem.DesktopDimensions;
+        return (Math.Min(50, Math.Max(30, desktop.Width - 4)), 9);
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
-        const int dialogHeight = 7;
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
+    protected override void BuildContent()
+    {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]New Branch[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
 
-        var modal = new WindowBuilder(ws)
-            .WithTitle("New Branch")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
-
-        var input = Controls.Prompt()
+        _input = Controls.Prompt()
             .WithPrompt("Branch name: ")
             .WithAlignment(HorizontalAlignment.Stretch)
             .Build();
+        Modal.AddControl(_input);
 
-        modal.AddControl(input);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Create  \u2022  Escape: Cancel[/]")
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Create  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        string? result = null;
+    protected override void SetInitialFocus()
+    {
+        _input.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                var name = input.Input?.Trim();
-                if (!string.IsNullOrEmpty(name))
-                {
-                    result = name;
-                    modal.Close();
-                }
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            var name = _input.Input?.Trim();
+            if (!string.IsNullOrEmpty(name))
+                CloseWithResult(name);
+            e.Handled = true;
+        }
+        else
+        {
+            base.OnKeyPressed(sender, e);
+        }
     }
 }
 
-/// <summary>
-/// Confirmation dialog for destructive git operations (discard changes).
-/// Returns true to proceed, false to cancel.
-/// </summary>
 public class GitDiscardConfirmDialog : DialogBase<bool>
 {
     private readonly string _path;
@@ -305,109 +278,142 @@ public class GitDiscardConfirmDialog : DialogBase<bool>
         => new GitDiscardConfirmDialog("", true).ShowAsync(ws);
 
     protected override string GetTitle() => "Discard Changes";
-    protected override (int width, int height) GetSize() => (55, 8);
+    protected override (int width, int height) GetSize() => (55, 10);
     protected override bool GetDefaultResult() => false;
+    protected override Color GetBorderColor() => Color.Red;
 
     protected override void BuildContent()
     {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Discard Changes[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
+
         string message;
         if (_isAll)
-        {
-            message = "  Discard [yellow]ALL[/] working directory changes?";
-        }
+            message = $"Discard [{ColorScheme.WarningMarkup}]ALL[/] working directory changes?";
         else
         {
             var name = Path.GetFileName(_path);
-            message = $"  Discard changes in [yellow]{Markup.Escape(name)}[/]?";
+            message = $"Discard changes in [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/]?";
         }
 
-        var discardBtn = new ButtonControl { Text = "Discard", Width = 10 };
-        var cancelBtn = new ButtonControl { Text = "Cancel", Width = 10 };
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.SecondaryMarkup}]{message}[/]")
+            .AddLine($"[{ColorScheme.ErrorMarkup}]This cannot be undone.[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 1, 0)
+            .Build());
+
+        var discardBtn = Controls.Button("[grey93]Discard (Y)[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Red)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
+
+        var cancelBtn = Controls.Button("[grey93]Cancel (Esc)[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
 
         discardBtn.Click += (_, _) => CloseWithResult(true);
         cancelBtn.Click += (_, _) => CloseWithResult(false);
 
-        var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
-        var discardCol = new ColumnContainer(buttonRow); discardCol.AddContent(discardBtn); buttonRow.AddColumn(discardCol);
-        var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
-        buttonRow.StickyPosition = StickyPosition.Bottom;
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        Dialog.AddControl(new MarkupControl(new List<string> { "", message, "", "  [red]This cannot be undone.[/]" }));
-        Dialog.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
-        Dialog.AddControl(buttonRow);
-    }
-}
-
-/// <summary>
-/// Modal dialog for entering a stash message.
-/// Returns the message string, or null if cancelled.
-/// </summary>
-public static class GitStashDialog
-{
-    private const int StandardDialogMaxWidth = 50;
-    private const int StandardDialogMinWidth = 30;
-    private const int DialogPadding = 4;
-
-    public static Task<string?> ShowAsync(ConsoleWindowSystem ws)
-    {
-        var tcs = new TaskCompletionSource<string?>();
-
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(StandardDialogMaxWidth, Math.Max(StandardDialogMinWidth, desktop.Width - DialogPadding));
-        const int dialogHeight = 7;
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
-
-        var modal = new WindowBuilder(ws)
-            .WithTitle("Git Stash")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
+        var buttonRow = Controls.HorizontalGrid()
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Column(col => col.Add(discardBtn))
+            .Column(col => col.Width(2))
+            .Column(col => col.Add(cancelBtn))
             .Build();
+        Modal.AddControl(buttonRow);
 
-        var input = Controls.Prompt()
-            .WithPrompt("Message: ")
-            .WithAlignment(HorizontalAlignment.Stretch)
-            .Build();
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(input);
-
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Stash  \u2022  Escape: Cancel[/]")
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Y:Discard  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        // Default to a non-null result so Enter with empty message still stashes
-        string? result = null;
-
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Y)
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                var msg = input.Input?.Trim();
-                result = string.IsNullOrEmpty(msg) ? "LazyDotIDE stash" : msg;
-                modal.Close();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
+            CloseWithResult(true);
+            e.Handled = true;
+        }
+        else
+        {
+            base.OnKeyPressed(sender, e);
+        }
+    }
+}
 
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
+public class GitStashDialog : DialogBase<string?>
+{
+    private PromptControl _input = null!;
 
-        return tcs.Task;
+    private GitStashDialog() { }
+
+    public static Task<string?> ShowAsync(ConsoleWindowSystem ws)
+        => ((DialogBase<string?>)new GitStashDialog()).ShowAsync(ws);
+
+    protected override string GetTitle() => "Git Stash";
+    protected override (int width, int height) GetSize()
+    {
+        var desktop = WindowSystem.DesktopDimensions;
+        return (Math.Min(50, Math.Max(30, desktop.Width - 4)), 9);
+    }
+
+    protected override void BuildContent()
+    {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Stash Changes[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
+
+        _input = Controls.Prompt()
+            .WithPrompt("Message: ")
+            .WithAlignment(HorizontalAlignment.Stretch)
+            .Build();
+        Modal.AddControl(_input);
+
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Stash  Esc:Cancel[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Build());
+    }
+
+    protected override void SetInitialFocus()
+    {
+        _input.SetFocus(true, FocusReason.Programmatic);
+    }
+
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
+        {
+            var msg = _input.Input?.Trim();
+            CloseWithResult(string.IsNullOrEmpty(msg) ? "LazyDotIDE stash" : msg);
+            e.Handled = true;
+        }
+        else
+        {
+            base.OnKeyPressed(sender, e);
+        }
     }
 }

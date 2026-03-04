@@ -8,169 +8,149 @@ using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
 
-public static class NewFileDialog
+public class NewFileDialog : DialogBase<string?>
 {
+    private readonly string _parentDir;
+    private readonly bool _isFolder;
+    private PromptControl _input = null!;
+
+    private NewFileDialog(string parentDir, bool isFolder) { _parentDir = parentDir; _isFolder = isFolder; }
+
     public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string parentDir, bool isFolder = false)
+        => new NewFileDialog(parentDir, isFolder).ShowAsync(ws);
+
+    protected override string GetTitle() => _isFolder ? "New Folder" : "New File";
+    protected override (int width, int height) GetSize()
     {
-        var tcs = new TaskCompletionSource<string?>();
+        var desktop = WindowSystem.DesktopDimensions;
+        return (Math.Min(50, Math.Max(30, desktop.Width - 4)), 9);
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
-        const int dialogHeight = 7;
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
+    protected override void BuildContent()
+    {
+        var promptText = _isFolder ? "Folder name: " : "File name: ";
 
-        var title = isFolder ? "New Folder" : "New File";
-        var promptText = isFolder ? "Folder name: " : "File name: ";
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]{(_isFolder ? "New Folder" : "New File")}[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
 
-        var modal = new WindowBuilder(ws)
-            .WithTitle(title)
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
-
-        var input = Controls.Prompt()
+        _input = Controls.Prompt()
             .WithPrompt(promptText)
             .WithAlignment(HorizontalAlignment.Stretch)
             .Build();
+        Modal.AddControl(_input);
 
-        modal.AddControl(input);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Create  \u2022  Escape: Cancel[/]")
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Create  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        string? result = null;
+    protected override void SetInitialFocus()
+    {
+        _input.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        void Accept()
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
         {
-            var name = input.Input?.Trim();
-            if (string.IsNullOrEmpty(name)) return;
-
-            // Validate no invalid path characters
-            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return;
-
-            var fullPath = Path.Combine(parentDir, name);
-
-            // Don't overwrite existing
-            if (File.Exists(fullPath) || Directory.Exists(fullPath)) return;
-
-            result = fullPath;
-            modal.Close();
+            var name = _input.Input?.Trim();
+            if (!string.IsNullOrEmpty(name) && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0)
+            {
+                var fullPath = Path.Combine(_parentDir, name);
+                if (!File.Exists(fullPath) && !Directory.Exists(fullPath))
+                {
+                    CloseWithResult(fullPath);
+                }
+            }
+            e.Handled = true;
         }
-
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+        else
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                Accept();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            base.OnKeyPressed(sender, e);
+        }
     }
 }
 
-public static class FileRenameDialog
+public class FileRenameDialog : DialogBase<string?>
 {
-    public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string currentPath)
+    private readonly string _currentPath;
+    private readonly string _currentName;
+    private readonly string _parentDir;
+    private PromptControl _input = null!;
+
+    private FileRenameDialog(string currentPath)
     {
-        var tcs = new TaskCompletionSource<string?>();
-        var currentName = Path.GetFileName(currentPath);
-        var parentDir = Path.GetDirectoryName(currentPath) ?? "";
+        _currentPath = currentPath;
+        _currentName = Path.GetFileName(currentPath);
+        _parentDir = Path.GetDirectoryName(currentPath) ?? "";
+    }
 
-        var desktop = ws.DesktopDimensions;
-        int dialogWidth = Math.Min(50, Math.Max(30, desktop.Width - 4));
-        const int dialogHeight = 7;
-        int px = Math.Max(0, (desktop.Width - dialogWidth) / 2);
-        int py = Math.Max(0, (desktop.Height - dialogHeight) / 2);
+    public static Task<string?> ShowAsync(ConsoleWindowSystem ws, string currentPath)
+        => new FileRenameDialog(currentPath).ShowAsync(ws);
 
-        var modal = new WindowBuilder(ws)
-            .WithTitle("Rename")
-            .WithSize(dialogWidth, dialogHeight)
-            .AtPosition(px, py)
-            .AsModal()
-            .WithBorderStyle(BorderStyle.Single)
-            .Resizable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .WithColors(Color.Grey93, Color.Grey15)
-            .Build();
+    protected override string GetTitle() => "Rename";
+    protected override (int width, int height) GetSize()
+    {
+        var desktop = WindowSystem.DesktopDimensions;
+        return (Math.Min(50, Math.Max(30, desktop.Width - 4)), 9);
+    }
 
-        var input = Controls.Prompt()
+    protected override void BuildContent()
+    {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Rename[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
+
+        _input = Controls.Prompt()
             .WithPrompt("New name: ")
-            .WithInput(currentName)
+            .WithInput(_currentName)
             .WithAlignment(HorizontalAlignment.Stretch)
             .Build();
+        Modal.AddControl(_input);
 
-        modal.AddControl(input);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        modal.AddControl(Controls.Markup()
-            .AddLine("[grey50]Enter: Rename  \u2022  Escape: Cancel[/]")
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Rename  Esc:Cancel[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .StickyBottom()
             .Build());
+    }
 
-        string? result = null;
+    protected override void SetInitialFocus()
+    {
+        _input.SetFocus(true, FocusReason.Programmatic);
+    }
 
-        void Accept()
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
         {
-            var newName = input.Input?.Trim();
-            if (string.IsNullOrEmpty(newName) || newName == currentName) return;
-
-            // Validate no invalid path characters
-            if (newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return;
-
-            var newPath = Path.Combine(parentDir, newName);
-
-            // Don't overwrite existing
-            if (File.Exists(newPath) || Directory.Exists(newPath)) return;
-
-            result = newPath;
-            modal.Close();
+            var newName = _input.Input?.Trim();
+            if (!string.IsNullOrEmpty(newName) && newName != _currentName &&
+                newName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0)
+            {
+                var newPath = Path.Combine(_parentDir, newName);
+                if (!File.Exists(newPath) && !Directory.Exists(newPath))
+                {
+                    CloseWithResult(newPath);
+                }
+            }
+            e.Handled = true;
         }
-
-        modal.OnClosed += (_, _) => tcs.TrySetResult(result);
-
-        modal.KeyPressed += (_, e) =>
+        else
         {
-            if (e.KeyInfo.Key == ConsoleKey.Enter)
-            {
-                Accept();
-                e.Handled = true;
-            }
-            else if (e.KeyInfo.Key == ConsoleKey.Escape)
-            {
-                modal.Close();
-                e.Handled = true;
-            }
-        };
-
-        ws.AddWindow(modal);
-        ws.SetActiveWindow(modal);
-        input.SetFocus(true, FocusReason.Programmatic);
-
-        return tcs.Task;
+            base.OnKeyPressed(sender, e);
+        }
     }
 }
 
@@ -184,30 +164,80 @@ public class DeleteConfirmDialog : DialogBase<bool>
         => new DeleteConfirmDialog(path).ShowAsync(ws);
 
     protected override string GetTitle() => "Confirm Delete";
-    protected override (int width, int height) GetSize() => (50, 8);
+    protected override (int width, int height) GetSize() => (50, 10);
     protected override bool GetDefaultResult() => false;
+    protected override Color GetBorderColor() => Color.Red;
 
     protected override void BuildContent()
     {
         var name = Path.GetFileName(_path);
         var isDir = Directory.Exists(_path);
-        var message = isDir
-            ? $"  Delete folder [yellow]{Markup.Escape(name)}[/] and all contents?"
-            : $"  Delete [yellow]{Markup.Escape(name)}[/]?";
 
-        var deleteBtn = new ButtonControl { Text = "Delete", Width = 10 };
-        var cancelBtn = new ButtonControl { Text = "Cancel", Width = 10 };
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Delete {(isDir ? "Folder" : "File")}[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
+
+        var message = isDir
+            ? $"Delete folder [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/] and all contents?"
+            : $"Delete [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/]?";
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.SecondaryMarkup}]{message}[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 1, 1)
+            .Build());
+
+        var deleteBtn = Controls.Button("[grey93]Delete (Y)[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Red)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
+
+        var cancelBtn = Controls.Button("[grey93]Cancel (Esc)[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
 
         deleteBtn.Click += (_, _) => CloseWithResult(true);
         cancelBtn.Click += (_, _) => CloseWithResult(false);
 
-        var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
-        var deleteCol = new ColumnContainer(buttonRow); deleteCol.AddContent(deleteBtn); buttonRow.AddColumn(deleteCol);
-        var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
-        buttonRow.StickyPosition = StickyPosition.Bottom;
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
 
-        Dialog.AddControl(new MarkupControl(new List<string> { "", message }));
-        Dialog.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
-        Dialog.AddControl(buttonRow);
+        var buttonRow = Controls.HorizontalGrid()
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Column(col => col.Add(deleteBtn))
+            .Column(col => col.Width(2))
+            .Column(col => col.Add(cancelBtn))
+            .Build();
+        Modal.AddControl(buttonRow);
+
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Y:Delete  Esc:Cancel[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Build());
+    }
+
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Y)
+        {
+            CloseWithResult(true);
+            e.Handled = true;
+        }
+        else
+        {
+            base.OnKeyPressed(sender, e);
+        }
     }
 }

@@ -1,6 +1,8 @@
 using SharpConsoleUI;
+using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
+using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
@@ -36,26 +38,59 @@ public class FindReplaceDialog : DialogBase<bool>
         _replacePrompt = new PromptControl { Prompt = "Replace: ", InputWidth = 36 };
         _caseBox       = new CheckboxControl { Label = "Case-sensitive", Checked = false };
 
-        var findNextBtn    = new ButtonControl { Text = "Find Next",   Width = 12 };
-        var findPrevBtn    = new ButtonControl { Text = "Find Prev",   Width = 12 };
-        var replaceBtn     = new ButtonControl { Text = "Replace",     Width = 10 };
-        var replaceAllBtn  = new ButtonControl { Text = "Replace All", Width = 13 };
+        var findNextBtn = Controls.Button("[grey93]Find Next[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkGreen)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
+
+        var findPrevBtn = Controls.Button("[grey93]Find Prev[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkGreen)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
+
+        var replaceBtn = Controls.Button("[grey93]Replace[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkOrange)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
+
+        var replaceAllBtn = Controls.Button("[grey93]Replace All[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkOrange)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
 
         findNextBtn.Click   += (_, _) => DoFindNext();
         findPrevBtn.Click   += (_, _) => DoFindPrev();
         replaceBtn.Click    += (_, _) => DoReplace();
         replaceAllBtn.Click += (_, _) => DoReplaceAll();
 
-        var actionRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
-        var c1 = new ColumnContainer(actionRow); c1.AddContent(findNextBtn);   actionRow.AddColumn(c1);
-        var c2 = new ColumnContainer(actionRow); c2.AddContent(findPrevBtn);   actionRow.AddColumn(c2);
-        var c3 = new ColumnContainer(actionRow); c3.AddContent(replaceBtn);    actionRow.AddColumn(c3);
-        var c4 = new ColumnContainer(actionRow); c4.AddContent(replaceAllBtn); actionRow.AddColumn(c4);
-        actionRow.StickyPosition = StickyPosition.Bottom;
+        var actionRow = Controls.HorizontalGrid()
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Column(col => col.Add(findNextBtn))
+            .Column(col => col.Width(1))
+            .Column(col => col.Add(findPrevBtn))
+            .Column(col => col.Width(1))
+            .Column(col => col.Add(replaceBtn))
+            .Column(col => col.Width(1))
+            .Column(col => col.Add(replaceAllBtn))
+            .Build();
 
         _statusLabel = new MarkupControl(new List<string> { "" });
 
-        var closeBtn = new ButtonControl { Text = "Close", Width = 8 };
+        var closeBtn = Controls.Button("[grey93]Close[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .Build();
         closeBtn.Click += (_, _) => CloseWithResult(false);
 
         var bottomRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
@@ -67,14 +102,14 @@ public class FindReplaceDialog : DialogBase<bool>
         bottomRow.AddColumn(closeCol);
         bottomRow.StickyPosition = StickyPosition.Bottom;
 
-        Dialog.AddControl(new MarkupControl(new List<string> { "" }));
-        Dialog.AddControl(_findPrompt);
-        Dialog.AddControl(_replacePrompt);
-        Dialog.AddControl(_caseBox);
-        Dialog.AddControl(new MarkupControl(new List<string> { "" }));
-        Dialog.AddControl(actionRow);
-        Dialog.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
-        Dialog.AddControl(bottomRow);
+        Modal.AddControl(new MarkupControl(new List<string> { "" }));
+        Modal.AddControl(_findPrompt);
+        Modal.AddControl(_replacePrompt);
+        Modal.AddControl(_caseBox);
+        Modal.AddControl(new MarkupControl(new List<string> { "" }));
+        Modal.AddControl(actionRow);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+        Modal.AddControl(bottomRow);
     }
 
     private void SetStatus(string message)

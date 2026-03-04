@@ -1,6 +1,9 @@
 using SharpConsoleUI;
+using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
+using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
@@ -12,23 +15,42 @@ public class NuGetDialog : DialogBase<(string? PackageName, string? Version)>
 
     private NuGetDialog() { }
 
-    public static new Task<(string? PackageName, string? Version)> ShowAsync(ConsoleWindowSystem ws)
+    public static Task<(string? PackageName, string? Version)> ShowAsync(ConsoleWindowSystem ws)
     {
         DialogBase<(string? PackageName, string? Version)> dlg = new NuGetDialog();
         return dlg.ShowAsync(ws);
     }
 
     protected override string GetTitle() => "Add NuGet Package";
-    protected override (int width, int height) GetSize() => (52, 10);
+    protected override (int width, int height) GetSize() => (52, 12);
     protected override (string? PackageName, string? Version) GetDefaultResult() => (null, null);
 
     protected override void BuildContent()
     {
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.PrimaryMarkup}]Add NuGet Package[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .WithMargin(1, 1, 0, 0)
+            .Build());
+
         _namePrompt    = new PromptControl { Prompt = "Package name: ",       InputWidth = 30 };
         _versionPrompt = new PromptControl { Prompt = "Version (optional): ", InputWidth = 20 };
 
-        var addBtn    = new ButtonControl { Text = "Add",    Width = 8 };
-        var cancelBtn = new ButtonControl { Text = "Cancel", Width = 8 };
+        var addBtn = Controls.Button("[grey93]Add[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.DarkGreen)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
+
+        var cancelBtn = Controls.Button("[grey93]Cancel[/]")
+            .WithBackgroundColor(Color.Grey30)
+            .WithForegroundColor(Color.Grey93)
+            .WithFocusedBackgroundColor(Color.Grey50)
+            .WithFocusedForegroundColor(Color.White)
+            .WithMargin(0, 1, 0, 0)
+            .Build();
 
         addBtn.Click += (_, _) =>
         {
@@ -40,15 +62,32 @@ public class NuGetDialog : DialogBase<(string? PackageName, string? Version)>
         };
         cancelBtn.Click += (_, _) => CloseWithResult((null, null));
 
-        var buttonRow = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Left };
-        var addCol    = new ColumnContainer(buttonRow); addCol.AddContent(addBtn);    buttonRow.AddColumn(addCol);
-        var cancelCol = new ColumnContainer(buttonRow); cancelCol.AddContent(cancelBtn); buttonRow.AddColumn(cancelCol);
-        buttonRow.StickyPosition = StickyPosition.Bottom;
+        Modal.AddControl(new MarkupControl(new List<string> { "" }));
+        Modal.AddControl(_namePrompt);
+        Modal.AddControl(_versionPrompt);
 
-        Dialog.AddControl(new MarkupControl(new List<string> { "" }));
-        Dialog.AddControl(_namePrompt);
-        Dialog.AddControl(_versionPrompt);
-        Dialog.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
-        Dialog.AddControl(buttonRow);
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        var buttonRow = Controls.HorizontalGrid()
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Column(col => col.Add(addBtn))
+            .Column(col => col.Width(2))
+            .Column(col => col.Add(cancelBtn))
+            .Build();
+        Modal.AddControl(buttonRow);
+
+        Modal.AddControl(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).StickyBottom().Build());
+
+        Modal.AddControl(Controls.Markup()
+            .AddLine($"[{ColorScheme.MutedMarkup}]Enter:Add  Esc:Cancel[/]")
+            .WithAlignment(HorizontalAlignment.Center)
+            .StickyBottom()
+            .Build());
+    }
+
+    protected override void SetInitialFocus()
+    {
+        _namePrompt.SetFocus(true, FocusReason.Programmatic);
     }
 }

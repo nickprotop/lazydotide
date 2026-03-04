@@ -283,8 +283,22 @@ internal class LayoutController
             DapDetectionDone: _debugCoord.DapDetectionDone,
             DetectedDapExe: _debugCoord.DetectedDapExe,
             Tools: _config.Tools,
-            ProjectPath: _projectService.RootPath),
+            ProjectPath: _projectService.RootPath,
+            OnInstallDebugger: _debugCoord.HasDebugger ? null : () => InstallDebugger()),
             () => { _aboutOpen = false; _aboutRefresh = null; });
+    }
+
+    public void InstallDebugger()
+    {
+        _ = InstallDebuggerModal.ShowAsync(_ws).ContinueWith(t =>
+        {
+            if (t.Result)
+            {
+                _debugCoord.ReDetectDap();
+                UpdateDashboard();
+                _aboutRefresh?.Invoke();
+            }
+        }, TaskScheduler.Default);
     }
 
     public void UpdateDashboard()
@@ -326,7 +340,7 @@ internal class LayoutController
             {
                 "[dim]  Debugger ○ not detected[/]",
                 "[dim]           Enables: F5 debugging, breakpoints, stepping[/]",
-                "[yellow]           Install: [/][italic]see github.com/Samsung/netcoredbg[/]",
+                "[yellow]           Install: [/][italic]Help › Install netcoredbg  (auto-download)[/]",
             };
 
         string toolsLine = _config.Tools.Count == 0

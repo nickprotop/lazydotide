@@ -173,6 +173,7 @@ public class IdeApp : IDisposable
         _menuBar.ReloadCurrentFromDisk = ReloadCurrentFromDisk;
         _menuBar.ShowCommandPalette = ShowCommandPalette;
         _menuBar.HandleF5 = HandleF5;
+        _menuBar.HandleF5WithProfile = HandleF5WithProfile;
 
         // Menu/toolbar were no-ops during BuildMainWindow (_menuBar was null).
         // Now that _menuBar is ready, insert them into their sticky-top slots.
@@ -739,9 +740,32 @@ public class IdeApp : IDisposable
         {
             _ws.NotificationStateService.ShowNotification(
                 "Debugger Not Found",
-                "Install netcoredbg for debugging support (breakpoints, stepping, variables). See About → Environment.",
+                "Install netcoredbg for debugging support (breakpoints, stepping, variables). Use Help → Install netcoredbg.",
                 SharpConsoleUI.Core.NotificationSeverity.Info);
         }
+    }
+
+    private void HandleF5WithProfile()
+    {
+        if (_debugCoord == null) return;
+        if (_debugCoord.State != DebugSessionState.Idle) return;
+
+        var projectDir = Path.GetDirectoryName(_projectService.FindBuildTarget() ?? _projectService.RootPath)
+                         ?? _projectService.RootPath;
+
+        _ = LaunchProfileDialog.ShowAsync(_ws, projectDir).ContinueWith(t =>
+        {
+            _pendingUiActions.Enqueue(() =>
+            {
+                var profile = t.Result;
+                if (profile == null) return;
+
+                if (_debugCoord.HasDebugger)
+                    _ = _debugCoord.StartDebuggingAsync(_buildService, _buildLines, _cts.Token, profile);
+                else
+                    _buildOps!.RunProject(profile);
+            });
+        });
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -967,6 +991,7 @@ public class IdeApp : IDisposable
         // Run / Debug
         _commandRegistry.Register(new IdeCommand { Id = "debug.start",          Category = "Debug", Label = "Start Debugging",   Keybinding = "F5",          KeyCombo = new(ConsoleKey.F5),                              Execute = HandleF5,                                                                              Priority = CommandPriority.Critical });
         _commandRegistry.Register(new IdeCommand { Id = "debug.run-no-debug",   Category = "Debug", Label = "Run Without Debugging", Keybinding = "Ctrl+F5", KeyCombo = new(ConsoleKey.F5, ConsoleModifiers.Control),    Execute = () => _buildOps!.RunProject(),                                                          Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.selectProfile",   Category = "Debug", Label = "Start with Profile…",                                                                              Execute = HandleF5WithProfile,                                                                   Priority = CommandPriority.High });
         _commandRegistry.Register(new IdeCommand { Id = "debug.stop",           Category = "Debug", Label = "Stop Debugging",    Keybinding = "Shift+F5",    KeyCombo = new(ConsoleKey.F5, ConsoleModifiers.Shift),      Execute = () => _ = _debugCoord!.StopDebuggingAsync(),                                            Priority = CommandPriority.High });
         _commandRegistry.Register(new IdeCommand { Id = "debug.breakpoint",     Category = "Debug", Label = "Toggle Breakpoint", Keybinding = "F9",          KeyCombo = new(ConsoleKey.F9),                              Execute = () => _debugCoord!.ToggleBreakpointAtCursor(),                                          Priority = CommandPriority.Default });
         _commandRegistry.Register(new IdeCommand { Id = "debug.step-over",      Category = "Debug", Label = "Step Over",         Keybinding = "F10",         KeyCombo = new(ConsoleKey.F10),                             Execute = () => _ = _debugCoord!.StepOverAsync(),                                                Priority = CommandPriority.Medium });
@@ -1030,6 +1055,7 @@ public class IdeApp : IDisposable
 
         // Help
         _commandRegistry.Register(new IdeCommand { Id = "help.about",           Category = "Help",  Label = "About lazydotide\u2026",                       Execute = () => _layout?.ShowAbout(),                                                          Priority = CommandPriority.Least });
+        _commandRegistry.Register(new IdeCommand { Id = "help.installDebugger", Category = "Help",  Label = "Install netcoredbg\u2026",                     Execute = () => _layout?.InstallDebugger(),                                                    Priority = CommandPriority.Least });
 
         // Dynamic tool commands from config
         for (int i = 0; i < _config.Tools.Count; i++)

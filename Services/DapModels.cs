@@ -42,4 +42,5 @@ public class LaunchProfileEntry
     public string Project { get; set; } = "";  // relative .csproj path
     public string[]? Args { get; set; }
     public Dictionary<string, string>? Env { get; set; }
+    public string? WorkingDirectory { get; set; }
 }

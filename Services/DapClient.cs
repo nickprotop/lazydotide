@@ -118,6 +118,19 @@ public class DapClient : IAsyncDisposable
         return result.HasValue;
     }
 
+    public async Task<bool> AttachAsync(int processId)
+    {
+        var args = new Dictionary<string, object?>
+        {
+            ["name"] = "Attach",
+            ["type"] = "coreclr",
+            ["request"] = "attach",
+            ["processId"] = processId
+        };
+        var result = await SendRequestAsync("attach", args, Timeouts.Launch);
+        return result.HasValue;
+    }
+
     public async Task<List<DapBreakpoint>> SetBreakpointsAsync(string filePath, List<SourceBreakpoint> breakpoints)
     {
         var result = new List<DapBreakpoint>();

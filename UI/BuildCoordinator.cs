@@ -120,7 +120,7 @@ internal class BuildCoordinator
             _ct);
     }
 
-    public void RunProject()
+    public void RunProject(LaunchProfileEntry? profile = null)
     {
         var target = _projectService.FindRunTarget();
         if (target == null)
@@ -129,8 +129,25 @@ internal class BuildCoordinator
             return;
         }
 
-        if (IdeConstants.IsDesktopOs)
-            Controls.Terminal("dotnet").WithArgs("run", "--project", target).Open(_ws);
+        if (!IdeConstants.IsDesktopOs) return;
+
+        var runArgs = new List<string> { "run", "--project", target };
+        if (profile?.Args is { Length: > 0 })
+        {
+            runArgs.Add("--");
+            runArgs.AddRange(profile.Args);
+        }
+
+        var builder = Controls.Terminal("dotnet")
+            .WithArgs(runArgs.ToArray())
+            .WithWorkingDirectory(profile?.WorkingDirectory ?? _projectService.RootPath);
+
+        var terminal = builder.Build();
+        terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
+        terminal.VerticalAlignment = VerticalAlignment.Fill;
+
+        var tabName = "Run: " + Path.GetFileNameWithoutExtension(target);
+        _editorManager.OpenControlTab(tabName, terminal, isClosable: true, autoCloseOnExit: false);
     }
 
     public void OpenShell()

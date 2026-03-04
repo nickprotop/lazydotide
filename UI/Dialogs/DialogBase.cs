@@ -1,5 +1,6 @@
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
+using Spectre.Console;
 
 namespace DotNetIDE;
 
@@ -7,49 +8,69 @@ public abstract class DialogBase<TResult>
 {
     private readonly TaskCompletionSource<TResult> _tcs = new();
     protected TResult? Result { get; set; }
-    protected Window Dialog { get; private set; } = null!;
+    protected Window Modal { get; private set; } = null!;
     protected ConsoleWindowSystem WindowSystem { get; private set; } = null!;
+    protected Window? ParentWindow { get; private set; }
 
-    public Task<TResult> ShowAsync(ConsoleWindowSystem windowSystem)
+    public Task<TResult> ShowAsync(ConsoleWindowSystem windowSystem, Window? parentWindow = null)
     {
         WindowSystem = windowSystem;
-        Dialog = CreateDialog();
+        ParentWindow = parentWindow;
+        Modal = CreateDialog();
         BuildContent();
         AttachEventHandlers();
-        WindowSystem.AddWindow(Dialog);
+        WindowSystem.AddWindow(Modal);
+        WindowSystem.SetActiveWindow(Modal);
         SetInitialFocus();
         return _tcs.Task;
     }
 
     protected virtual Window CreateDialog()
     {
-        var (w, h) = GetSize();
         var builder = new WindowBuilder(WindowSystem)
-            .WithTitle(GetTitle())
-            .WithSize(w, h)
-            .Centered()
-            .Resizable(false)
+            .AsModal()
+            .Resizable(GetResizable())
+            .Movable(GetMovable())
             .Minimizable(false)
-            .Maximizable(false);
-        if (IsModal) builder.AsModal();
+            .Maximizable(false)
+            .WithColors(Color.Grey93, ColorScheme.WindowBackground)
+            .WithBorderStyle(GetBorderStyle())
+            .WithBorderColor(GetBorderColor());
+
         if (AlwaysOnTop) builder.WithAlwaysOnTop();
+
+        var title = GetTitle();
+        if (!string.IsNullOrEmpty(title))
+            builder.WithTitle(title);
+
+        var (w, h) = GetSize();
+        builder.WithSize(w, h).Centered();
         return builder.Build();
     }
 
     protected abstract void BuildContent();
     protected abstract string GetTitle();
     protected virtual (int width, int height) GetSize() => (52, 10);
+    protected virtual bool GetResizable() => false;
+    protected virtual bool GetMovable() => true;
+    protected virtual BorderStyle GetBorderStyle() => BorderStyle.DoubleLine;
+    protected virtual Color GetBorderColor() => ColorScheme.BorderColor;
     protected virtual bool IsModal => true;
     protected virtual bool AlwaysOnTop => false;
     protected virtual void SetInitialFocus() { }
     protected virtual void OnCleanup() { }
     protected virtual TResult GetDefaultResult() => default(TResult)!;
 
+    protected virtual void OnEscapePressed()
+    {
+        CloseWithResult(GetDefaultResult());
+    }
+
     protected virtual void OnKeyPressed(object? sender, KeyPressedEventArgs e)
     {
         if (e.KeyInfo.Key == ConsoleKey.Escape)
         {
-            CloseWithResult(GetDefaultResult());
+            OnEscapePressed();
             e.Handled = true;
         }
     }
@@ -57,16 +78,16 @@ public abstract class DialogBase<TResult>
     protected void CloseWithResult(TResult result)
     {
         Result = result;
-        Dialog.Close();
+        Modal.Close();
     }
 
     private void AttachEventHandlers()
     {
-        Dialog.KeyPressed += OnKeyPressed;
-        Dialog.OnClosed += OnDialogClosed;
+        Modal.KeyPressed += OnKeyPressed;
+        Modal.OnClosed += OnModalClosed;
     }
 
-    private void OnDialogClosed(object? sender, EventArgs e)
+    private void OnModalClosed(object? sender, EventArgs e)
     {
         OnCleanup();
         _tcs.TrySetResult(Result ?? GetDefaultResult());
