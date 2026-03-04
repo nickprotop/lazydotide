@@ -16,6 +16,7 @@ internal class LayoutController
     private readonly EditorManager _editorManager;
     private readonly SidePanel _sidePanel;
     private readonly LspCoordinator _lspCoord;
+    private readonly DebugCoordinator _debugCoord;
     private readonly IdeConfig _config;
 
     // Layout controls
@@ -56,6 +57,7 @@ internal class LayoutController
         EditorManager editorManager,
         SidePanel sidePanel,
         LspCoordinator lspCoord,
+        DebugCoordinator debugCoord,
         IdeConfig config,
         Window mainWindow,
         Window outputWindow,
@@ -71,6 +73,7 @@ internal class LayoutController
         _editorManager = editorManager;
         _sidePanel = sidePanel;
         _lspCoord = lspCoord;
+        _debugCoord = debugCoord;
         _config = config;
         _mainWindow = mainWindow;
         _outputWindow = outputWindow;
@@ -276,6 +279,9 @@ internal class LayoutController
             LspStarted: _lspCoord.LspStarted,
             LspDetectionDone: _lspCoord.LspDetectionDone,
             DetectedLspExe: _lspCoord.DetectedLspExe,
+            DapDetected: _debugCoord.HasDebugger,
+            DapDetectionDone: _debugCoord.DapDetectionDone,
+            DetectedDapExe: _debugCoord.DetectedDapExe,
             Tools: _config.Tools,
             ProjectPath: _projectService.RootPath),
             () => { _aboutOpen = false; _aboutRefresh = null; });
@@ -309,6 +315,20 @@ internal class LayoutController
                 $"[dim]           Config:  [/][dim italic]{Markup.Escape(ConfigService.GetConfigPath())}[/]",
             };
 
+        // Debugger status
+        List<string> dapLines;
+        if (!_debugCoord.DapDetectionDone)
+            dapLines = new List<string> { "[dim]  Debugger ○ detecting…[/]" };
+        else if (_debugCoord.HasDebugger)
+            dapLines = new List<string> { $"[dim]  Debugger [/][green]● {Markup.Escape(_debugCoord.DetectedDapExe!)}[/]" };
+        else
+            dapLines = new List<string>
+            {
+                "[dim]  Debugger ○ not detected[/]",
+                "[dim]           Enables: F5 debugging, breakpoints, stepping[/]",
+                "[yellow]           Install: [/][italic]see github.com/Samsung/netcoredbg[/]",
+            };
+
         string toolsLine = _config.Tools.Count == 0
             ? "[dim]  Tools    0 loaded  →  Tools › Edit Config[/]"
             : $"[dim]  Tools    [/][green]{_config.Tools.Count} loaded[/][dim]  ({string.Join(", ", _config.Tools.Select(t => t.Name))})[/]";
@@ -322,13 +342,15 @@ internal class LayoutController
             "[dim]  ────────────────────────────[/]",
         };
         lines.AddRange(lspLines);
+        lines.AddRange(dapLines);
         lines.Add(toolsLine);
         lines.AddRange(new[]
         {
             "",
             "[dim]  ────────────────────────────[/]",
-            "[dim]  F5  Run       F6  Build[/]",
-            "[dim]  F7  Test      F8  Shell / Shell Tab[/]",
+            "[dim]  F5  Debug     F6  Build    Ctrl+F5  Run[/]",
+            "[dim]  F7  Test      F8  Shell    F9  Breakpoint[/]",
+            "[dim]  F10  Step Over   F11  Step Into[/]",
             "[dim]  F12  Definition  Shift+F12  References[/]",
             "[dim]  Ctrl+F2  Rename  Ctrl+.  Actions[/]",
             "[dim]  Ctrl+S  Save  Ctrl+W  Close[/]",

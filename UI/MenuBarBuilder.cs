@@ -24,6 +24,7 @@ internal class MenuBarBuilder
     public Action? CloseCurrentTab { get; set; }
     public Action? ReloadCurrentFromDisk { get; set; }
     public Action? ShowCommandPalette { get; set; }
+    public Action? HandleF5 { get; set; }
 
     private readonly Window _mainWindow;
     private IWindowControl? _menuControl;
@@ -105,7 +106,12 @@ internal class MenuBarBuilder
                 .AddItem("Clean", () => _ = _buildOps.CleanProjectAsync())
                 .AddItem("Stop", "F4", () => _buildService.Cancel()))
             .AddItem("Run", m => m
-                .AddItem("Run", "F5", () => _buildOps.RunProject())
+                .AddItem("Start Debugging", "F5", () => HandleF5?.Invoke())
+                .AddItem("Run Without Debugging", "Ctrl+F5", () => _buildOps.RunProject())
+                .AddSeparator()
+                .AddItem("Toggle Breakpoint", "F9", () => { })
+                .AddSeparator()
+                .AddItem("Stop Debugging", "Shift+F5", () => { })
                 .AddItem("Stop", "F4", () => _buildService.Cancel()))
             .AddItem("View", m =>
             {
@@ -234,7 +240,7 @@ internal class MenuBarBuilder
             _mainWindow!.RemoveContent(_toolbarControl);
 
         var toolbar = Controls.Toolbar()
-            .AddButton("Run F5", (_, _) => _buildOps.RunProject())
+            .AddButton("Debug F5", (_, _) => HandleF5?.Invoke())
             .AddButton("Build F6", (_, _) => _ = _buildOps.BuildProjectAsync())
             .AddButton("Test F7", (_, _) => _ = _buildOps.TestProjectAsync())
             .AddButton("Stop F4", (_, _) => _buildService.Cancel())

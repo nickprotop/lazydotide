@@ -13,6 +13,9 @@ public record AboutInfo(
     bool LspStarted,
     bool LspDetectionDone,
     string? DetectedLspExe,
+    bool DapDetected,
+    bool DapDetectionDone,
+    string? DetectedDapExe,
     IReadOnlyList<ToolEntry> Tools,
     string ProjectPath);
 
@@ -191,6 +194,27 @@ public static class AboutDialog
                 break;
         }
 
+        var dapLines = new List<string>();
+        switch (info)
+        {
+            case { DapDetectionDone: false }:
+                dapLines.Add("  [grey50]Debugger      [/][dim]○ detecting…[/]");
+                break;
+            case { DapDetected: true, DetectedDapExe: var dapExe }:
+                dapLines.Add($"  [grey50]Debugger      [/][green]● {Markup.Escape(dapExe!)}[/]");
+                break;
+            default:
+                dapLines.Add("  [grey50]Debugger      [/][dim]○ not detected[/]");
+                if (OperatingSystem.IsLinux())
+                    dapLines.Add("[yellow]               Install:  [/][italic]scoop install netcoredbg  (or AUR/Nix)[/]");
+                else if (OperatingSystem.IsMacOS())
+                    dapLines.Add("[yellow]               Install:  [/][italic]brew install netcoredbg  (or from GitHub releases)[/]");
+                else
+                    dapLines.Add("[yellow]               Install:  [/][italic]scoop install netcoredbg[/]");
+                dapLines.Add($"[dim]               Releases: [/][dim italic]github.com/Samsung/netcoredbg[/]");
+                break;
+        }
+
         string arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString();
 
         string clipBackend = ClipboardHelper.Backend switch
@@ -206,6 +230,7 @@ public static class AboutDialog
 
         var result = new List<string> { "" };
         result.AddRange(lspLines);
+        result.AddRange(dapLines);
         result.AddRange(new[]
         {
             $"  [grey50].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",

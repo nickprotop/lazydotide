@@ -1,5 +1,6 @@
 using System.Drawing;
 using SharpConsoleUI;
+using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
@@ -13,7 +14,7 @@ public class EditorManager
 {
     private readonly ConsoleWindowSystem _ws;
     private readonly TabControl _tabControl;
-    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty, string? SyntaxOverride = null, GitDiffGutterRenderer? DiffGutter = null);
+    private record EditorTabData(string? FilePath, MultilineEditControl? Editor, bool IsDirty, string? SyntaxOverride = null, GitDiffGutterRenderer? DiffGutter = null, BreakpointGutterRenderer? BpGutter = null);
 
     private readonly Dictionary<string, int> _openFiles = new();
     private readonly Dictionary<int, EditorTabData> _tabData = new();
@@ -140,11 +141,11 @@ public class EditorManager
             return;
         }
 
-        var (editor, diffGutter) = CreateEditor(path, fileContent);
-        AddTab(path, editor, editor: editor, isDirty: false, diffGutter: diffGutter);
+        var (editor, diffGutter, bpGutter) = CreateEditor(path, fileContent);
+        AddTab(path, editor, editor: editor, isDirty: false, diffGutter: diffGutter, bpGutter: bpGutter);
     }
 
-    private void AddTab(string path, IWindowControl content, MultilineEditControl? editor, bool isDirty, GitDiffGutterRenderer? diffGutter = null)
+    private void AddTab(string path, IWindowControl content, MultilineEditControl? editor, bool isDirty, GitDiffGutterRenderer? diffGutter = null, BreakpointGutterRenderer? bpGutter = null)
     {
         bool wasEmpty = _tabControl.TabCount == 0;
         var tabTitle = Path.GetFileName(path);
@@ -156,7 +157,7 @@ public class EditorManager
         if (editor != null)
             editor.FocusedBackgroundColor = editor.BackgroundColor;
 
-        _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty, DiffGutter: diffGutter);
+        _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty, DiffGutter: diffGutter, BpGutter: bpGutter);
 
         _tabControl.ActiveTabIndex = tabIndex;
 
@@ -171,25 +172,39 @@ public class EditorManager
             OpenFilesStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private (MultilineEditControl Editor, GitDiffGutterRenderer DiffGutter) CreateEditor(string path, string content)
+    public event EventHandler<(string FilePath, int SourceLineIndex)>? GutterClicked;
+
+    private (MultilineEditControl Editor, GitDiffGutterRenderer DiffGutter, BreakpointGutterRenderer BpGutter) CreateEditor(string path, string content)
     {
-        var editor = new MultilineEditControl
-        {
-            ShowLineNumbers = true,
-            HighlightCurrentLine = true,
-            AutoIndent = true,
-            WrapMode = _wrapMode,
-            IsEditing = true,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
+        var editorBuilder = new MultilineEditControlBuilder()
+            .WithLineNumbers()
+            .WithHighlightCurrentLine()
+            .WithAutoIndent()
+            .WithWrapMode(_wrapMode)
+            .IsEditing()
+            .WithEscapeExitsEditMode(false)
+            .WithAlignment(HorizontalAlignment.Stretch)
+            .WithVerticalAlignment(VerticalAlignment.Fill)
+            .WithContent(content);
+        var highlighter = _pipeline.GetHighlighter(path);
+        if (highlighter != null)
+            editorBuilder.WithSyntaxHighlighter(highlighter);
+        var editor = editorBuilder.Build();
 
-        editor.Content = content;
-        editor.SyntaxHighlighter = _pipeline.GetHighlighter(path);
+        // Add breakpoint gutter renderer (position 0 — leftmost)
+        var bpGutter = new BreakpointGutterRenderer();
+        editor.InsertGutterRenderer(0, bpGutter);
 
-        // Add git diff gutter renderer (inserted at position 0 so it appears left of line numbers)
+        // Add git diff gutter renderer (position 1 — after breakpoints, before line numbers)
         var diffGutter = new GitDiffGutterRenderer();
-        editor.InsertGutterRenderer(0, diffGutter);
+        editor.InsertGutterRenderer(1, diffGutter);
+
+        // Wire gutter click to delegate to DebugCoordinator
+        editor.GutterClick += (_, args) =>
+        {
+            if (args.SourceLineIndex >= 0)
+                GutterClicked?.Invoke(this, (path, args.SourceLineIndex));
+        };
 
         // Always re-enter editing mode on focus (code editor is always "typing mode")
         editor.GotFocus += (_, _) => editor.IsEditing = true;
@@ -222,7 +237,7 @@ public class EditorManager
             }
         };
 
-        return (editor, diffGutter);
+        return (editor, diffGutter, bpGutter);
     }
 
     public void SaveCurrent()
@@ -611,6 +626,12 @@ public class EditorManager
         return _tabData.TryGetValue(tabIndex, out var data) ? data.Editor : null;
     }
 
+    public BreakpointGutterRenderer? GetBpGutterByPath(string filePath)
+    {
+        if (!_openFiles.TryGetValue(filePath, out var tabIndex)) return null;
+        return _tabData.TryGetValue(tabIndex, out var data) ? data.BpGutter : null;
+    }
+
     /// <summary>
     /// Opens a read-only tab with the given title and text content.
     /// If a tab with the same title already exists, it is replaced.
@@ -631,20 +652,16 @@ public class EditorManager
             return;
         }
 
-        var editor = new MultilineEditControl
-        {
-            ShowLineNumbers = true,
-            HighlightCurrentLine = false,
-            IsEditing = false,
-            ReadOnly = true,
-            WrapMode = WrapMode.NoWrap,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
-
-        editor.Content = content;
+        var builder = new MultilineEditControlBuilder()
+            .WithLineNumbers()
+            .AsReadOnly()
+            .NoWrap()
+            .WithAlignment(HorizontalAlignment.Stretch)
+            .WithVerticalAlignment(VerticalAlignment.Fill)
+            .WithContent(content);
         if (syntaxHighlighter != null)
-            editor.SyntaxHighlighter = syntaxHighlighter;
+            builder.WithSyntaxHighlighter(syntaxHighlighter);
+        var editor = builder.Build();
 
         bool wasEmpty = _tabControl.TabCount == 0;
         _tabControl.AddTab(title, editor, isClosable: true);

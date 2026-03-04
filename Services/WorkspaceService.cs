@@ -24,6 +24,8 @@ public class WorkspaceState
     public List<WorkspaceFile> OpenFiles { get; set; } = new();
     public List<string> ExpandedPaths { get; set; } = new();
     public string? SelectedExplorerPath { get; set; }
+    public List<WorkspaceBreakpoint> Breakpoints { get; set; } = new();
+    public List<LaunchProfileEntry> LaunchProfiles { get; set; } = new();
 }
 
 public class WorkspaceService

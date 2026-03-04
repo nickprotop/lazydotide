@@ -9,6 +9,8 @@ internal class WorkspaceStateManager
     private readonly ExplorerPanel _explorer;
     private readonly OutputPanel _outputPanel;
 
+    public DebugCoordinator? DebugCoordinator { get; set; }
+
     public WorkspaceStateManager(
         WorkspaceService workspaceService,
         EditorManager editorManager,
@@ -70,6 +72,9 @@ internal class WorkspaceStateManager
 
         // Output tab
         state.ActiveOutputTab = _outputPanel.TabControl.ActiveTabIndex;
+
+        // Breakpoints
+        DebugCoordinator?.SaveBreakpoints(state, _workspaceService);
     }
 
     /// <summary>
@@ -140,6 +145,9 @@ internal class WorkspaceStateManager
         {
             _outputPanel.TabControl.ActiveTabIndex = state.ActiveOutputTab;
         }
+
+        // Breakpoints
+        DebugCoordinator?.LoadBreakpoints(state, _workspaceService);
 
         return snapshot;
     }

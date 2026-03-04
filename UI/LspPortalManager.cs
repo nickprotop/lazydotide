@@ -176,8 +176,8 @@ internal class LspPortalManager
         {
             _mainWindow.RemovePortal(editor ?? (IWindowControl)_mainWindow, _completionPortalNode);
             _completionPortalNode = null;
-            _completionPortal = null;
         }
+        _completionPortal = null;
     }
 
     public void DismissTooltipPortal()
@@ -333,7 +333,7 @@ internal class LspPortalManager
             }
         }
 
-        // Escape: dismiss portals
+        // Escape: dismiss portals (only consume ESC if a portal was actually open)
         if (key == ConsoleKey.Escape && mods == 0)
         {
             if (_locationPortal != null)
@@ -343,9 +343,11 @@ internal class LspPortalManager
                 return true;
             }
             if (_completionPortal != null)
+            {
                 DismissCompletionPortal();
-            e.Handled = true;
-            return true;
+                e.Handled = true;
+                return true;
+            }
         }
 
         // Location list portal navigation

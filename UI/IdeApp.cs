@@ -34,6 +34,7 @@ public class IdeApp : IDisposable
     private BuildCoordinator? _buildOps;
     private WorkspaceStateManager? _workspaceState;
     private LspCoordinator? _lspCoord;
+    private DebugCoordinator? _debugCoord;
 
     // Status bar
     private MarkupControl? _statusLeft;   // git + error combined
@@ -152,7 +153,9 @@ public class IdeApp : IDisposable
 
         _lspCoord = new LspCoordinator(_editorManager!, _sidePanel!, _mainWindow!, _pendingUiActions);
 
-        _layout = new LayoutController(_ws, _projectService, _editorManager!, _sidePanel!, _lspCoord, _config,
+        _debugCoord = new DebugCoordinator(_editorManager!, _sidePanel!, _outputPanel!, _projectService, _mainWindow!, _pendingUiActions);
+
+        _layout = new LayoutController(_ws, _projectService, _editorManager!, _sidePanel!, _lspCoord, _debugCoord, _config,
             _mainWindow!, _outputWindow!, _explorerCol, _explorerSplitter,
             _sidePanelCol, _sidePanelSplitter, _mainContent, _dashboard);
         _layout.UpdateDashboard();
@@ -169,6 +172,7 @@ public class IdeApp : IDisposable
         _menuBar.CloseCurrentTab = CloseCurrentTab;
         _menuBar.ReloadCurrentFromDisk = ReloadCurrentFromDisk;
         _menuBar.ShowCommandPalette = ShowCommandPalette;
+        _menuBar.HandleF5 = HandleF5;
 
         // Menu/toolbar were no-ops during BuildMainWindow (_menuBar was null).
         // Now that _menuBar is ready, insert them into their sticky-top slots.
@@ -182,6 +186,7 @@ public class IdeApp : IDisposable
 
         _workspaceState = new WorkspaceStateManager(
             new WorkspaceService(projectPath), _editorManager!, _explorer!, _outputPanel!);
+        _workspaceState.DebugCoordinator = _debugCoord;
         _workspaceState.Load();
         RestoreWorkspaceState();
         InitializeCommands();
@@ -210,6 +215,14 @@ public class IdeApp : IDisposable
             try
             {
                 _lspCoord.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3));
+            }
+            catch { } // Best effort — don't prevent app exit
+        }
+        if (_debugCoord != null)
+        {
+            try
+            {
+                _debugCoord.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3));
             }
             catch { } // Best effort — don't prevent app exit
         }
@@ -443,6 +456,11 @@ public class IdeApp : IDisposable
             _layout?.UpdateDashboard();
             _lspCoord.SetupSemanticHighlightersForOpenFiles();
         };
+        _debugCoord!.StateChanged += () =>
+        {
+            _layout?.AboutRefresh?.Invoke();
+            _layout?.UpdateDashboard();
+        };
 
         // Driver / file watcher
         _ws.ConsoleDriver.ScreenResized += (s, e) => _layout?.OnScreenResized(s, e);
@@ -476,6 +494,7 @@ public class IdeApp : IDisposable
 
         _editorManager!.TabContextMenuRequested += (s, e) => _contextMenu?.HandleTabContextMenu(s, e);
         _editorManager!.EditorContextMenuRequested += (s, e) => _contextMenu?.HandleEditorContextMenu(s, e);
+        _editorManager!.GutterClicked += (_, e) => _debugCoord?.ToggleBreakpoint(e.FilePath, e.SourceLineIndex);
 
         _editorManager!.TabCloseRequested += (_, index) =>
         {
@@ -546,6 +565,7 @@ public class IdeApp : IDisposable
             _ = _lspCoord?.DidOpenAsync(a.FilePath, a.Content);
             _lspCoord?.SetupSemanticHighlighter(a.FilePath);
             _ = _gitOps!.RefreshGitDiffMarkersForFileAsync(a.FilePath);
+            _debugCoord?.RegisterGutter(a.FilePath);
         };
         _editorManager.DocumentChanged += (_, a) =>
         {
@@ -562,6 +582,7 @@ public class IdeApp : IDisposable
             _lspCoord?.DismissLocationPortal();
             _lspCoord?.RemoveSemanticHighlighter(p);
             _ = _lspCoord?.DidCloseAsync(p);
+            _debugCoord?.UnregisterGutter(p);
             _outputPanel?.PopulateLspDiagnostics(new List<BuildDiagnostic>());
             UpdateErrorCount(new List<BuildDiagnostic>());
         };
@@ -605,7 +626,7 @@ public class IdeApp : IDisposable
     private void InitBottomStatus()
     {
         _bottomBar
-            .AddHint("F5",     "Run",   () => _buildOps!.RunProject())
+            .AddHint("F5",     "Debug", HandleF5)
             .AddHint("F6",     "Build", () => _ = _buildOps!.BuildProjectAsync())
             .AddHint("F7",     "Test",  () => _ = _buildOps!.TestProjectAsync())
             .AddHint("F8",     "Shell", () => _buildOps!.OpenShell())
@@ -690,7 +711,37 @@ public class IdeApp : IDisposable
     private async Task PostInitAsync(string projectPath)
     {
         await _gitOps!.RefreshGitStatusAsync();
+        _debugCoord!.DetectDap();
         await _lspCoord!.InitLspAsync(projectPath, _config.Lsp, _ws);
+    }
+
+    private void HandleF5()
+    {
+        if (_debugCoord == null) return;
+
+        // If debugger detected and paused → continue
+        if (_debugCoord.HasDebugger && _debugCoord.State == DebugSessionState.Paused)
+        {
+            _ = _debugCoord.ContinueAsync();
+            return;
+        }
+
+        // If debugger detected and idle → build + debug
+        if (_debugCoord.HasDebugger && _debugCoord.State == DebugSessionState.Idle)
+        {
+            _ = _debugCoord.StartDebuggingAsync(_buildService, _buildLines, _cts.Token);
+            return;
+        }
+
+        // No debugger → run without debugging + one-time notification
+        _buildOps!.RunProject();
+        if (_debugCoord.ShowMissingDebuggerNotification())
+        {
+            _ws.NotificationStateService.ShowNotification(
+                "Debugger Not Found",
+                "Install netcoredbg for debugging support (breakpoints, stepping, variables). See About → Environment.",
+                SharpConsoleUI.Core.NotificationSeverity.Info);
+        }
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -892,7 +943,7 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "file.save",            Category = "File",  Label = "Save",             Keybinding = "Ctrl+S",       KeyCombo = new(ConsoleKey.S, ConsoleModifiers.Control),     Execute = () => _editorManager?.SaveCurrent(),                                Priority = CommandPriority.Critical });
         _commandRegistry.Register(new IdeCommand { Id = "file.close-tab",       Category = "File",  Label = "Close Tab",         Keybinding = "Ctrl+W",      KeyCombo = new(ConsoleKey.W, ConsoleModifiers.Control),     Execute = CloseCurrentTab,                                                    Priority = CommandPriority.High });
         _commandRegistry.Register(new IdeCommand { Id = "file.open-folder",     Category = "File",  Label = "Open Folder\u2026",                                                                                        Execute = () => _ = OpenFolderAsync(),                                        Priority = CommandPriority.Medium });
-        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",  Keybinding = "F5",                                                                      Execute = () => _ = _gitOps!.RefreshExplorerAndGitAsync(),                             Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "file.refresh-explorer",Category = "File",  Label = "Refresh Explorer",                                                                                             Execute = () => _ = _gitOps!.RefreshExplorerAndGitAsync(),                             Priority = CommandPriority.Default });
         _commandRegistry.Register(new IdeCommand { Id = "file.new-file",       Category = "File",  Label = "New File",          Keybinding = "Ctrl+N",                                                                  Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFileAsync(d); } }, Priority = CommandPriority.Normal });
         _commandRegistry.Register(new IdeCommand { Id = "file.new-folder",     Category = "File",  Label = "New Folder",        Keybinding = "Ctrl+Shift+N",                                                            Execute = () => { var d = _explorer?.GetSelectedPath(); if (d != null) { if (!Directory.Exists(d)) d = Path.GetDirectoryName(d); if (d != null) _ = HandleNewFolderAsync(d); } }, Priority = CommandPriority.NormalMinus });
         _commandRegistry.Register(new IdeCommand { Id = "file.rename",         Category = "File",  Label = "Rename",            Keybinding = "F2",                                                                      Execute = () => { var p = _explorer?.GetSelectedPath(); if (p != null) _ = HandleRenameAsync(p); }, Priority = CommandPriority.NormalLow });
@@ -913,8 +964,14 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "build.clean",          Category = "Build", Label = "Clean",                                                                                                    Execute = () => _ = _buildOps!.CleanProjectAsync(),                                      Priority = CommandPriority.Default });
         _commandRegistry.Register(new IdeCommand { Id = "build.stop",           Category = "Build", Label = "Stop",              Keybinding = "F4",          KeyCombo = new(ConsoleKey.F4),                              Execute = () => _buildService.Cancel(),                                       Priority = CommandPriority.Medium });
 
-        // Run
-        _commandRegistry.Register(new IdeCommand { Id = "run.run",              Category = "Run",   Label = "Run",               Keybinding = "F5",          KeyCombo = new(ConsoleKey.F5),                              Execute = () => _buildOps!.RunProject(),                                                         Priority = CommandPriority.Critical });
+        // Run / Debug
+        _commandRegistry.Register(new IdeCommand { Id = "debug.start",          Category = "Debug", Label = "Start Debugging",   Keybinding = "F5",          KeyCombo = new(ConsoleKey.F5),                              Execute = HandleF5,                                                                              Priority = CommandPriority.Critical });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.run-no-debug",   Category = "Debug", Label = "Run Without Debugging", Keybinding = "Ctrl+F5", KeyCombo = new(ConsoleKey.F5, ConsoleModifiers.Control),    Execute = () => _buildOps!.RunProject(),                                                          Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.stop",           Category = "Debug", Label = "Stop Debugging",    Keybinding = "Shift+F5",    KeyCombo = new(ConsoleKey.F5, ConsoleModifiers.Shift),      Execute = () => _ = _debugCoord!.StopDebuggingAsync(),                                            Priority = CommandPriority.High });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.breakpoint",     Category = "Debug", Label = "Toggle Breakpoint", Keybinding = "F9",          KeyCombo = new(ConsoleKey.F9),                              Execute = () => _debugCoord!.ToggleBreakpointAtCursor(),                                          Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.step-over",      Category = "Debug", Label = "Step Over",         Keybinding = "F10",         KeyCombo = new(ConsoleKey.F10),                             Execute = () => _ = _debugCoord!.StepOverAsync(),                                                Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.step-into",      Category = "Debug", Label = "Step Into",         Keybinding = "F11",         KeyCombo = new(ConsoleKey.F11),                             Execute = () => _ = _debugCoord!.StepIntoAsync(),                                                Priority = CommandPriority.Medium });
+        _commandRegistry.Register(new IdeCommand { Id = "debug.step-out",       Category = "Debug", Label = "Step Out",          Keybinding = "Shift+F11",   KeyCombo = new(ConsoleKey.F11, ConsoleModifiers.Shift),     Execute = () => _ = _debugCoord!.StepOutAsync(),                                                 Priority = CommandPriority.Medium });
 
         // View
         _commandRegistry.Register(new IdeCommand { Id = "view.toggle-explorer", Category = "View",  Label = "Toggle Explorer",   Keybinding = "Ctrl+B",      KeyCombo = new(ConsoleKey.B, ConsoleModifiers.Control),     Execute = () => _layout?.ToggleExplorer(),                                                     Priority = CommandPriority.Medium });
@@ -964,7 +1021,7 @@ public class IdeApp : IDisposable
         _commandRegistry.Register(new IdeCommand { Id = "tools.side-shell",    Category = "Terminal", Label = "Side Panel Shell",   Keybinding = "Shift+F8",   KeyCombo = new(ConsoleKey.F8, ConsoleModifiers.Shift),      Execute = () => { if (IdeConstants.IsDesktopOs) _layout?.OpenSidePanelShell(); },                                                 Priority = CommandPriority.NormalLow });
 
         // NuGet
-        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "NuGet",  Label = "LazyNuGet",         Keybinding = "F9",          KeyCombo = new(ConsoleKey.F9),                              Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenLazyNuGetTab(); }, Priority = CommandPriority.Default });
+        _commandRegistry.Register(new IdeCommand { Id = "tools.lazynuget",      Category = "NuGet",  Label = "LazyNuGet",                                                                                                Execute = () => { if (IdeConstants.IsDesktopOs) _buildOps!.OpenLazyNuGetTab(); }, Priority = CommandPriority.Default });
         if (!_buildOps!.HasLazyNuGet)
             _commandRegistry.Register(new IdeCommand { Id = "tools.nuget",      Category = "NuGet",  Label = "Add NuGet Package\u2026",                                                                                Execute = () => _buildOps!.ShowNuGetDialog(),                                                    Priority = CommandPriority.Low });
 
