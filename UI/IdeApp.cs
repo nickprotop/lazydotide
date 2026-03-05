@@ -58,6 +58,10 @@ public class IdeApp : IDisposable
     private readonly ConcurrentQueue<string> _testLines = new();
     private readonly ConcurrentQueue<Action> _pendingUiActions = new();
 
+    // File search
+    private readonly FileSearchService _fileSearchService = new();
+    private CancellationTokenSource? _searchCts;
+
     // File system watcher
     private FileWatcher? _fileWatcher;
     private readonly CancellationTokenSource _cts = new();
@@ -201,6 +205,64 @@ public class IdeApp : IDisposable
 
     public void Run() => _ws.Run();
 
+    // ── File Search ─────────────────────────────────────────────
+
+    private void ShowSearch()
+    {
+        if (_layout != null && !_layout.OutputVisible)
+            _layout.ToggleOutput();
+        _outputPanel?.SwitchToSearchTab();
+    }
+
+    private async Task RunFileSearchAsync(string term, bool caseSensitive)
+    {
+        // Cancel any previous search
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
+        _searchCts = new CancellationTokenSource();
+        var ct = _searchCts.Token;
+
+        _pendingUiActions.Enqueue(() =>
+        {
+            _outputPanel?.ClearSearchResults();
+            _outputPanel?.SetSearchStatus("[dim]Searching…[/]");
+        });
+
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            _pendingUiActions.Enqueue(() => _outputPanel?.SetSearchStatus("[dim]Ready[/]"));
+            return;
+        }
+
+        var rootPath = _projectService.RootPath;
+        Func<string, bool>? isIgnored = null;
+        try { isIgnored = _gitService.CreateIgnoreChecker(rootPath); }
+        catch { } // graceful fallback: search without .gitignore filtering
+
+        int count = 0;
+        try
+        {
+            await foreach (var result in _fileSearchService.SearchAsync(rootPath, term, caseSensitive, isIgnored, ct))
+            {
+                var r = result;
+                _pendingUiActions.Enqueue(() => _outputPanel?.AddSearchResult(r, rootPath));
+                count++;
+                if (count % 25 == 0)
+                {
+                    var c = count;
+                    _pendingUiActions.Enqueue(() => _outputPanel?.SetSearchStatus($"[dim]{c} results…[/]"));
+                }
+            }
+        }
+        catch (OperationCanceledException) { return; }
+
+        var final = count;
+        _pendingUiActions.Enqueue(() =>
+            _outputPanel?.SetSearchStatus(final == 0
+                ? "[yellow]No results[/]"
+                : $"[dim]{final} result{(final != 1 ? "s" : "")}[/]"));
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -208,6 +270,8 @@ public class IdeApp : IDisposable
         GC.SuppressFinalize(this);
         try { CaptureWorkspaceState(); _workspaceState?.Save(); } catch { } // Best effort — don't prevent shutdown
         _cts.Cancel();
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
         _fileWatcher?.Dispose();
         _contextMenu?.DismissContextMenu();
         _ws.ConsoleDriver.KeyPressed   -= OnGlobalDriverKeyPressed;
@@ -567,6 +631,24 @@ public class IdeApp : IDisposable
                 if (editor != null)
                     _mainWindow.FocusControl(editor);
             }
+        };
+
+        _outputPanel.SearchNavigateRequested += (_, result) =>
+        {
+            _editorManager?.OpenFile(result.FilePath);
+            _editorManager?.GoToLine(result.Line);
+            if (_mainWindow != null)
+            {
+                _ws.SetActiveWindow(_mainWindow);
+                var editor = _editorManager?.CurrentEditor;
+                if (editor != null)
+                    _mainWindow.FocusControl(editor);
+            }
+        };
+
+        _outputPanel.SearchRequested += (_, args) =>
+        {
+            _ = RunFileSearchAsync(args.Term, args.CaseSensitive);
         };
 
         _editorManager!.OpenFilesStateChanged += (_, _) =>
@@ -1002,6 +1084,7 @@ public class IdeApp : IDisposable
         // Edit
         _commandRegistry.Register(new IdeCommand { Id = "edit.find",            Category = "Edit",  Label = "Find\u2026",        Keybinding = "Ctrl+F",      KeyCombo = new(ConsoleKey.F, ConsoleModifiers.Control),     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = CommandPriority.Medium });
         _commandRegistry.Register(new IdeCommand { Id = "edit.replace",         Category = "Edit",  Label = "Replace\u2026",     Keybinding = "Ctrl+H",      KeyCombo = new(ConsoleKey.H, ConsoleModifiers.Control),     Execute = () => _layout?.ShowFindReplace(),                                                    Priority = CommandPriority.Normal });
+        _commandRegistry.Register(new IdeCommand { Id = "edit.search-files",    Category = "Edit",  Label = "Search in Files",   Keybinding = "Ctrl+Shift+F", KeyCombo = new(ConsoleKey.F, ConsoleModifiers.Control | ConsoleModifiers.Shift), Execute = ShowSearch,                         Priority = CommandPriority.Medium });
         _commandRegistry.Register(new IdeCommand { Id = "edit.reload",          Category = "Edit",  Label = "Reload from Disk",  Keybinding = "Alt+Shift+R", KeyCombo = new(ConsoleKey.R, ConsoleModifiers.Alt | ConsoleModifiers.Shift), Execute = ReloadCurrentFromDisk,                  Priority = CommandPriority.Lower });
         _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-word",       Category = "Edit",  Label = "Word Wrap",                                                                                                Execute = () => _layout?.SetWrapMode(WrapMode.WrapWords),                               Priority = CommandPriority.Minor });
         _commandRegistry.Register(new IdeCommand { Id = "edit.wrap-char",       Category = "Edit",  Label = "Character Wrap",                                                                                           Execute = () => _layout?.SetWrapMode(WrapMode.Wrap),                                   Priority = CommandPriority.Minor });

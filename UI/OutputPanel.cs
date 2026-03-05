@@ -21,7 +21,17 @@ public class OutputPanel
     private TerminalControl? _shellTerminal;
     private int _shellTabIndex = -1;
 
+    // Search tab
+    private readonly PromptControl _searchInput;
+    private readonly CheckboxControl _caseSensitiveBox;
+    private readonly MarkupControl _searchStatus;
+    private readonly ListControl _searchResults;
+    private int _searchTabIndex;
+    private System.Threading.Timer? _searchDebounceTimer;
+
     public event EventHandler<BuildDiagnostic>? DiagnosticNavigateRequested;
+    public event EventHandler<SearchResult>? SearchNavigateRequested;
+    public event EventHandler<(string Term, bool CaseSensitive)>? SearchRequested;
 
     public TabControl TabControl => _tabControl;
 
@@ -77,6 +87,42 @@ public class OutputPanel
         _tabControl.AddTab("Test", _testPanel);
         _tabControl.AddTab("Git Output", _gitPanel);
         _tabControl.AddTab("Problems", _problemsList);
+
+        // Search tab — toolbar + results list inside a scrollable panel
+        _searchInput = new PromptControl { Prompt = "Search: ", InputWidth = 30 };
+        _caseSensitiveBox = new CheckboxControl { Label = "Aa", Checked = false };
+        _searchStatus = new MarkupControl(new List<string> { "[dim]Ready[/]" });
+        _searchResults = new ListControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Fill
+        };
+        _searchResults.ItemActivated += OnSearchResultActivated;
+        _searchInput.InputChanged += OnSearchInputChanged;
+
+        var searchToolbar = ToolbarControl.Create()
+            .Add(_searchInput)
+            .Add(_caseSensitiveBox)
+            .Add(_searchStatus)
+            .WithSpacing(1)
+            .Build();
+
+        var searchGrid = new HorizontalGridControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Fill
+        };
+        var searchCol = new ColumnContainer(searchGrid)
+        {
+            VerticalAlignment = VerticalAlignment.Fill
+        };
+        searchCol.AddContent(searchToolbar);
+        searchCol.AddContent(Controls.RuleBuilder().WithColor(ColorScheme.RuleColor).Build());
+        searchCol.AddContent(_searchResults);
+        searchGrid.AddColumn(searchCol);
+
+        _tabControl.AddTab("Search", searchGrid);
+        _searchTabIndex = _tabControl.TabCount - 1;
     }
 
     public void AppendBuildLine(string line)
@@ -213,5 +259,48 @@ public class OutputPanel
     {
         if (item.Tag is BuildDiagnostic diag)
             DiagnosticNavigateRequested?.Invoke(this, diag);
+    }
+
+    // ── Search tab ──────────────────────────────────────────────
+
+    public void SwitchToSearchTab()
+    {
+        _tabControl.ActiveTabIndex = _searchTabIndex;
+        _searchInput.SetFocus(true, SharpConsoleUI.Controls.FocusReason.Keyboard);
+    }
+
+    public void ClearSearchResults() => _searchResults.ClearItems();
+
+    public void AddSearchResult(SearchResult result, string rootPath)
+    {
+        var relPath = Path.GetRelativePath(rootPath, result.FilePath).Replace('\\', '/');
+        var lineText = result.LineText.Length > 120
+            ? result.LineText[..120] + "…"
+            : result.LineText;
+        var text = $"[dim]{Markup.Escape(relPath)}:{result.Line}[/]  {Markup.Escape(lineText.TrimStart())}";
+        _searchResults.AddItem(new ListItem(text) { Tag = result });
+    }
+
+    public void SetSearchStatus(string markup)
+    {
+        _searchStatus.SetContent(new List<string> { markup });
+    }
+
+    private void OnSearchInputChanged(object? sender, string newText)
+    {
+        // Debounce: reset timer on each keystroke, fire after 400ms
+        _searchDebounceTimer?.Dispose();
+        _searchDebounceTimer = new System.Threading.Timer(_ =>
+        {
+            var term = newText;
+            var caseSensitive = _caseSensitiveBox.Checked;
+            SearchRequested?.Invoke(this, (term, caseSensitive));
+        }, null, 400, Timeout.Infinite);
+    }
+
+    private void OnSearchResultActivated(object? sender, ListItem item)
+    {
+        if (item.Tag is SearchResult result)
+            SearchNavigateRequested?.Invoke(this, result);
     }
 }
