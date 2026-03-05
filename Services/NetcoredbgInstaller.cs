@@ -90,41 +90,48 @@ public static class NetcoredbgInstaller
             if (Directory.Exists(InstallDir))
             {
                 progress?.Report("Removing previous installation...");
-                Directory.Delete(InstallDir, recursive: true);
+                DeleteDirectoryRobust(InstallDir);
             }
 
             Directory.CreateDirectory(InstallDir);
 
-            // 5. Extract
-            progress?.Report($"Extracting to {InstallDir}...");
+            // 5. Extract to a temp directory first, then move contents to InstallDir.
+            //    The archive nests everything under a "netcoredbg/" folder whose name
+            //    collides with the "netcoredbg" binary inside it, so extracting directly
+            //    into InstallDir and then flattening fails on the File.Move.
+            var extractDir = Path.Combine(Path.GetTempPath(), "netcoredbg_extract_" + Path.GetRandomFileName());
+            Directory.CreateDirectory(extractDir);
+            try
+            {
+                progress?.Report("Extracting...");
 
-            if (assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-            {
-                await using var fileStream = File.OpenRead(tempFile);
-                await using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
-                await TarFile.ExtractToDirectoryAsync(gzipStream, InstallDir, overwriteFiles: true, ct);
-            }
-            else if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            {
-                ZipFile.ExtractToDirectory(tempFile, InstallDir, overwriteFiles: true);
-            }
+                if (assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+                {
+                    await using var fileStream = File.OpenRead(tempFile);
+                    await using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+                    await TarFile.ExtractToDirectoryAsync(gzipStream, extractDir, overwriteFiles: true, ct);
+                }
+                else if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    ZipFile.ExtractToDirectory(tempFile, extractDir, overwriteFiles: true);
+                }
 
-            // The archive may contain a nested directory — flatten if needed
-            var nestedDir = Path.Combine(InstallDir, "netcoredbg");
-            if (Directory.Exists(nestedDir))
+                // The archive may nest everything under a "netcoredbg/" subdirectory
+                var sourceDir = Path.Combine(extractDir, "netcoredbg");
+                if (!Directory.Exists(sourceDir))
+                    sourceDir = extractDir;
+
+                progress?.Report($"Installing to {InstallDir}...");
+
+                foreach (var file in Directory.GetFiles(sourceDir))
+                    File.Move(file, Path.Combine(InstallDir, Path.GetFileName(file)), overwrite: true);
+
+                foreach (var dir in Directory.GetDirectories(sourceDir))
+                    Directory.Move(dir, Path.Combine(InstallDir, Path.GetFileName(dir)));
+            }
+            finally
             {
-                foreach (var file in Directory.GetFiles(nestedDir))
-                {
-                    var dest = Path.Combine(InstallDir, Path.GetFileName(file));
-                    File.Move(file, dest, overwrite: true);
-                }
-                foreach (var dir in Directory.GetDirectories(nestedDir))
-                {
-                    var dest = Path.Combine(InstallDir, Path.GetFileName(dir));
-                    if (Directory.Exists(dest)) Directory.Delete(dest, true);
-                    Directory.Move(dir, dest);
-                }
-                Directory.Delete(nestedDir, recursive: true);
+                try { Directory.Delete(extractDir, recursive: true); } catch { /* ignore */ }
             }
 
             // 6. chmod +x on Unix
@@ -151,6 +158,18 @@ public static class NetcoredbgInstaller
         {
             try { File.Delete(tempFile); } catch { /* ignore */ }
         }
+    }
+
+    /// <summary>
+    /// Renames the directory out of the way, then deletes it. This avoids the
+    /// "Directory not empty" race on Windows/WSL where Directory.Delete returns
+    /// before the filesystem has fully released the handles.
+    /// </summary>
+    private static void DeleteDirectoryRobust(string path)
+    {
+        var trash = path + "_trash_" + Path.GetRandomFileName();
+        Directory.Move(path, trash);
+        try { Directory.Delete(trash, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
     private static async Task<string> RunVersionCheckAsync(string exe, CancellationToken ct)
