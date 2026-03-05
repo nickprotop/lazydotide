@@ -21,7 +21,7 @@ internal class SemanticHighlighter : ISyntaxHighlighter
     // Color mapping (VS Code Dark+ style)
     private static readonly Dictionary<string, Color> TokenColors = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["namespace"] = Color.Grey,
+        ["namespace"] = Color.LightSteelBlue,
         ["type"] = Color.MediumTurquoise,
         ["class"] = Color.MediumTurquoise,
         ["struct"] = Color.MediumTurquoise,
