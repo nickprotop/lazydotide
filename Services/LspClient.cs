@@ -115,7 +115,7 @@ public class LspClient : IAsyncDisposable
                     formatting = new { },
                     semanticTokens = new
                     {
-                        full = true,
+                        requests = new { full = true },
                         tokenTypes = new[] { "namespace", "type", "class", "enum", "interface", "struct",
                             "typeParameter", "parameter", "variable", "property", "enumMember",
                             "event", "function", "method", "keyword", "comment", "string",
