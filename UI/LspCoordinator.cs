@@ -483,7 +483,8 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (_lsp == null || _lsp.TokenLegend == null) return;
 
-        if (Interlocked.Increment(ref _busyCount) == 1)
+        var isFirst = attempt == 0;
+        if (isFirst && Interlocked.Increment(ref _busyCount) == 1)
             _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(true));
 
         try
@@ -507,7 +508,6 @@ internal class LspCoordinator : IAsyncDisposable
                 // Server may still be indexing — retry with increasing delay
                 await Task.Delay(RetryDelaysMs[attempt]);
                 await RefreshSemanticTokensAsync(filePath, attempt + 1);
-                return; // busy count handled by recursive call
             }
         }
         catch (Exception ex)
@@ -515,7 +515,7 @@ internal class LspCoordinator : IAsyncDisposable
             LogError("RefreshSemanticTokensAsync", ex);
         }
 
-        if (Interlocked.Decrement(ref _busyCount) == 0)
+        if (isFirst && Interlocked.Decrement(ref _busyCount) == 0)
             _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(false));
     }
 
