@@ -40,7 +40,10 @@ public class IdeApp : IDisposable
     private MarkupControl? _statusLeft;   // git + error combined
     private MarkupControl? _cursorStatus;
     private MarkupControl? _syntaxStatus;
+    private MarkupControl? _lspStatus;
     private string _errorMarkup = "";
+    private bool _lspBusy;
+    private int _lspSpinnerFrame;
     private MarkupControl? _dashboard;
 
     // Layout controls (referenced during CreateLayout, owned by LayoutController after init)
@@ -367,6 +370,15 @@ public class IdeApp : IDisposable
         leftCol.AddContent(_statusLeft);
         statusBar.AddColumn(leftCol);
 
+        // LSP activity indicator
+        var lspCol = new ColumnContainer(statusBar) { Width = 10 };
+        _lspStatus = new MarkupControl(new List<string> { "" })
+        {
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        lspCol.AddContent(_lspStatus);
+        statusBar.AddColumn(lspCol);
+
         // Middle fixed: syntax highlighter name
         var syntaxCol = new ColumnContainer(statusBar) { Width = 14 };
         _syntaxStatus = new MarkupControl(new List<string> { "[dim]Plain Text[/]" })
@@ -456,6 +468,12 @@ public class IdeApp : IDisposable
             _layout?.AboutRefresh?.Invoke();
             _layout?.UpdateDashboard();
             _lspCoord.SetupSemanticHighlightersForOpenFiles();
+        };
+        _lspCoord.LspBusyChanged += busy =>
+        {
+            _lspBusy = busy;
+            if (!busy)
+                _lspStatus?.SetContent(new List<string> { "" });
         };
         _debugCoord!.StateChanged += () =>
         {
@@ -697,6 +715,13 @@ public class IdeApp : IDisposable
                     _outputPanel?.AppendTestLine(line);
                 while (_pendingUiActions.TryDequeue(out var action))
                     action();
+
+                if (_lspBusy)
+                {
+                    var frames = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+                    _lspSpinnerFrame = (_lspSpinnerFrame + 1) % frames.Length;
+                    _lspStatus?.SetContent(new List<string> { $"[cyan1]{frames[_lspSpinnerFrame]} LSP[/]" });
+                }
 
                 await Task.Delay(RenderFrameMs, ct);
             }

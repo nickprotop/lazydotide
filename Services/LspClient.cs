@@ -18,7 +18,7 @@ public class LspClient : IAsyncDisposable
         public const int CodeAction = 10000;
         public const int Rename = 10000;
         public const int DocumentSymbol = 10000;
-        public const int SemanticTokens = 10000;
+        public const int SemanticTokens = 30000;
         public const int Shutdown = 2000;
         public const int DidChangeDebounce = 500;
     }

@@ -21,6 +21,7 @@ internal class LspCoordinator : IAsyncDisposable
     private static void LogError(string context, Exception ex) =>
         DiagnosticLog.Error("lsp-coord", context, ex);
 
+
     private readonly EditorManager _editorManager;
     private readonly SidePanel _sidePanel;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
@@ -35,6 +36,7 @@ internal class LspCoordinator : IAsyncDisposable
     private Timer? _dotTriggerDebounce;
     private Timer? _symbolRefreshDebounce;
     private Timer? _semanticTokenDebounce;
+    private int _busyCount;
 
     // Semantic token highlighters cache
     private readonly ConcurrentDictionary<string, SemanticHighlighter> _semanticHighlighters = new();
@@ -47,6 +49,7 @@ internal class LspCoordinator : IAsyncDisposable
     // Events
     public event EventHandler<List<BuildDiagnostic>>? DiagnosticsUpdated;
     public Action? LspInitCompleted;
+    public Action<bool>? LspBusyChanged; // true = busy, false = idle
 
     // Public accessors
     public bool HasLsp => _lsp != null;
@@ -474,9 +477,14 @@ internal class LspCoordinator : IAsyncDisposable
             null, immediate ? 0 : SemanticTokenRefreshMs, Timeout.Infinite);
     }
 
-    private async Task RefreshSemanticTokensAsync(string filePath)
+    private static readonly int[] RetryDelaysMs = [3000, 8000, 15000];
+
+    private async Task RefreshSemanticTokensAsync(string filePath, int attempt = 0)
     {
         if (_lsp == null || _lsp.TokenLegend == null) return;
+
+        if (Interlocked.Increment(ref _busyCount) == 1)
+            _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(true));
 
         try
         {
@@ -491,17 +499,24 @@ internal class LspCoordinator : IAsyncDisposable
                     highlighter.UpdateTokens(tokens, legend);
                     var editor = _editorManager.GetEditorByPath(filePath);
                     if (editor != null)
-                    {
-                        // Re-assign to flush the editor's internal syntax token cache
                         editor.SyntaxHighlighter = editor.SyntaxHighlighter;
-                    }
                 });
+            }
+            else if (attempt < RetryDelaysMs.Length && _semanticHighlighters.ContainsKey(filePath))
+            {
+                // Server may still be indexing — retry with increasing delay
+                await Task.Delay(RetryDelaysMs[attempt]);
+                await RefreshSemanticTokensAsync(filePath, attempt + 1);
+                return; // busy count handled by recursive call
             }
         }
         catch (Exception ex)
         {
             LogError("RefreshSemanticTokensAsync", ex);
         }
+
+        if (Interlocked.Decrement(ref _busyCount) == 0)
+            _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(false));
     }
 
     public void RemoveSemanticHighlighter(string filePath)
@@ -513,8 +528,32 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (_lsp == null || _lsp.TokenLegend == null) return;
 
-        foreach (var (filePath, _) in _editorManager.GetOpenDocuments())
-            SetupSemanticHighlighter(filePath);
+        var files = _editorManager.GetOpenDocuments()
+            .Select(d => d.FilePath)
+            .Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        foreach (var filePath in files)
+        {
+            // Set up the highlighter wrapper (no immediate refresh — we'll batch below)
+            if (_semanticHighlighters.ContainsKey(filePath)) continue;
+            var editor = _editorManager.GetEditorByPath(filePath);
+            if (editor == null) continue;
+            var currentHighlighter = editor.SyntaxHighlighter;
+            if (currentHighlighter is SemanticHighlighter) continue;
+            var semantic = new SemanticHighlighter(currentHighlighter ?? new CSharpSyntaxHighlighter());
+            editor.SyntaxHighlighter = semantic;
+            _semanticHighlighters[filePath] = semantic;
+        }
+
+        // Fire all initial token fetches concurrently (each has its own retry logic)
+        if (files.Count > 0)
+            _ = Task.Run(async () =>
+            {
+                foreach (var filePath in files)
+                    if (_semanticHighlighters.ContainsKey(filePath))
+                        await RefreshSemanticTokensAsync(filePath);
+            });
     }
 
     // ── Dot trigger / auto-completion ──────────────────────────────────
