@@ -160,7 +160,7 @@ public class IdeApp : IDisposable
 
         _lspCoord = new LspCoordinator(_editorManager!, _sidePanel!, _mainWindow!, _pendingUiActions);
 
-        _debugCoord = new DebugCoordinator(_editorManager!, _sidePanel!, _outputPanel!, _projectService, _mainWindow!, _pendingUiActions);
+        _debugCoord = new DebugCoordinator(_editorManager!, _sidePanel!, _outputPanel!, _projectService, _mainWindow!, _pendingUiActions, _ws);
 
         _layout = new LayoutController(_ws, _projectService, _editorManager!, _sidePanel!, _lspCoord, _debugCoord, _config,
             _mainWindow!, _outputWindow!, _explorerCol, _explorerSplitter,
@@ -169,7 +169,7 @@ public class IdeApp : IDisposable
         WireHandlerEvents();
 
         _menuBar = new MenuBarBuilder(_ws, _editorManager!, _explorer!, _sidePanel!,
-            _buildService, _config, _pipeline!, _gitOps!, _buildOps!, _lspCoord, _layout, _mainWindow!);
+            _buildService, _config, _pipeline!, _gitOps!, _buildOps!, _lspCoord, _debugCoord!, _layout, _mainWindow!);
         var fileOps = new FileOperationDelegates(
             HandleNewFileAsync, HandleNewFolderAsync,
             HandleRenameAsync, HandleDeleteAsync,

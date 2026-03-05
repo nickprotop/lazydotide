@@ -16,6 +16,7 @@ internal class MenuBarBuilder
     private readonly GitCoordinator _gitOps;
     private readonly BuildCoordinator _buildOps;
     private readonly LspCoordinator _lspCoord;
+    private readonly DebugCoordinator _debugCoord;
     private readonly LayoutController _layout;
 
     // Delegates for IdeApp-owned operations
@@ -42,6 +43,7 @@ internal class MenuBarBuilder
         GitCoordinator gitOps,
         BuildCoordinator buildOps,
         LspCoordinator lspCoord,
+        DebugCoordinator debugCoord,
         LayoutController layout,
         Window mainWindow)
     {
@@ -55,6 +57,7 @@ internal class MenuBarBuilder
         _gitOps = gitOps;
         _buildOps = buildOps;
         _lspCoord = lspCoord;
+        _debugCoord = debugCoord;
         _layout = layout;
         _mainWindow = mainWindow;
     }
@@ -147,7 +150,12 @@ internal class MenuBarBuilder
                     sub.AddItem("Git", () => _layout.ShowSourceControl());
                     if (_sidePanel.TabControl.HasTab("Shell"))
                         sub.AddItem("Shell", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _sidePanel.SwitchToShellTab(); });
+                    sub.AddSeparator();
+                    sub.AddItem("Variables", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _debugCoord.ShowVariablesTab(); });
+                    sub.AddItem("Call Stack", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _debugCoord.ShowCallStackTab(); });
                 });
+
+                m.AddItem("Debug Console", () => { if (!_layout.OutputVisible) _layout.ToggleOutput(); _debugCoord.ShowDebugConsoleTab(); });
             })
             .AddItem("Git", m => m
                 .AddItem("Source Control", "Alt+G", () => _layout.ShowSourceControl())

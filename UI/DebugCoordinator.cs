@@ -24,6 +24,7 @@ internal class DebugCoordinator : IAsyncDisposable
     private readonly ProjectService _projectService;
     private readonly Window _mainWindow;
     private readonly ConcurrentQueue<Action> _pendingUiActions;
+    private readonly ConsoleWindowSystem _ws;
 
     private DapClient? _client;
     private DebugSessionState _state = DebugSessionState.Idle;
@@ -45,10 +46,9 @@ internal class DebugCoordinator : IAsyncDisposable
     private MarkupControl? _debugConsoleMarkup;
     private readonly List<string> _debugConsoleLines = new();
     private ToolbarControl? _debugToolbar;
-    private bool _debugTabsCreated;
 
     // Variable node metadata for lazy expansion
-    private record VariableNodeTag(int VariablesReference, bool ChildrenLoaded);
+    private record VariableNodeTag(int VariablesReference, bool ChildrenLoaded, string Name = "", string Value = "", string? Type = null);
 
     // Events
     public event Action? StateChanged;
@@ -64,7 +64,8 @@ internal class DebugCoordinator : IAsyncDisposable
         OutputPanel outputPanel,
         ProjectService projectService,
         Window mainWindow,
-        ConcurrentQueue<Action> pendingUiActions)
+        ConcurrentQueue<Action> pendingUiActions,
+        ConsoleWindowSystem ws)
     {
         _editorManager = editorManager;
         _sidePanel = sidePanel;
@@ -72,6 +73,7 @@ internal class DebugCoordinator : IAsyncDisposable
         _projectService = projectService;
         _mainWindow = mainWindow;
         _pendingUiActions = pendingUiActions;
+        _ws = ws;
     }
 
     // ── Detection ──
@@ -554,10 +556,33 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private void EnsureDebugTabs()
     {
-        if (_debugTabsCreated) return;
-        _debugTabsCreated = true;
+        EnsureVariablesTab();
+        EnsureCallStackTab();
+        EnsureDebugConsoleTab();
+    }
 
-        // Variables tree in side panel
+    public void ShowVariablesTab()
+    {
+        EnsureVariablesTab();
+        _sidePanel.TabControl.SwitchToTab("Variables");
+    }
+
+    public void ShowCallStackTab()
+    {
+        EnsureCallStackTab();
+        _sidePanel.TabControl.SwitchToTab("Call Stack");
+    }
+
+    public void ShowDebugConsoleTab()
+    {
+        EnsureDebugConsoleTab();
+        _outputPanel.TabControl.SwitchToTab("Debug Console");
+    }
+
+    private void EnsureVariablesTab()
+    {
+        if (_sidePanel.TabControl.HasTab("Variables")) return;
+
         _variablesTree = new TreeControl
         {
             Guide = TreeGuide.Line,
@@ -566,7 +591,9 @@ internal class DebugCoordinator : IAsyncDisposable
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
-        _variablesTree.NodeActivated += OnVariableNodeActivated;
+        _variablesTree.NodeExpandCollapse += OnVariableNodeExpandCollapse;
+        _variablesTree.MouseDoubleClick += OnVariableNodeDoubleClick;
+        _mainWindow.KeyPressed += OnVariablesTreeKeyPressed;
         var varsPanel = new ScrollablePanelControl
         {
             ShowScrollbar = true,
@@ -575,8 +602,12 @@ internal class DebugCoordinator : IAsyncDisposable
         };
         varsPanel.AddControl(_variablesTree);
         _sidePanel.TabControl.AddTab("Variables", varsPanel, isClosable: true);
+    }
 
-        // Call stack list in side panel
+    private void EnsureCallStackTab()
+    {
+        if (_sidePanel.TabControl.HasTab("Call Stack")) return;
+
         _callStackList = new ListControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -610,9 +641,13 @@ internal class DebugCoordinator : IAsyncDisposable
         };
         stackPanel.AddControl(_callStackList);
         _sidePanel.TabControl.AddTab("Call Stack", stackPanel, isClosable: true);
+    }
 
-        // Debug console in output panel
-        _debugConsoleMarkup = new MarkupControl(new List<string>())
+    private void EnsureDebugConsoleTab()
+    {
+        if (_outputPanel.TabControl.HasTab("Debug Console")) return;
+
+        _debugConsoleMarkup = new MarkupControl(new List<string>(_debugConsoleLines))
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Top
@@ -668,9 +703,23 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private static string FormatVariableNode(DapVariable v)
     {
-        var prefix = v.VariablesReference > 0 ? "▶ " : "";
-        var typeStr = v.Type != null ? $"[dim] ({Markup.Escape(v.Type)})[/]" : "";
-        return $"{prefix}[cyan1]{Markup.Escape(v.Name)}[/] = {Markup.Escape(v.Value)}{typeStr}";
+        var escapedName = Markup.Escape(v.Name);
+        var escapedValue = Markup.Escape(v.Value);
+
+        if (v.VariablesReference > 0)
+        {
+            // Expandable object: name (Type) = shortPreview
+            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var preview = escapedValue.Length > 20 ? escapedValue[..20] + "..." : escapedValue;
+            return $"[cyan1]{escapedName}[/]{typeStr} = {preview}";
+        }
+        else
+        {
+            // Leaf: name = truncatedValue (Type)
+            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var display = escapedValue.Length > 30 ? escapedValue[..30] + "..." : escapedValue;
+            return $"[cyan1]{escapedName}[/] = {display}{typeStr}";
+        }
     }
 
     private void UpdateVariables(List<(DapScope Scope, List<DapVariable> Variables)> scopeData)
@@ -694,9 +743,17 @@ internal class DebugCoordinator : IAsyncDisposable
             foreach (var v in vars)
             {
                 var child = scopeNode.AddChild(FormatVariableNode(v));
-                child.Tag = new VariableNodeTag(v.VariablesReference, false);
-                if (v.VariablesReference > 0 && expandedPaths.Contains($"{scopePath}/{v.Name}"))
-                    toExpand.Add((child, v.VariablesReference, $"{scopePath}/{v.Name}"));
+                child.Tag = new VariableNodeTag(v.VariablesReference, false, v.Name, v.Value, v.Type);
+                if (v.VariablesReference > 0)
+                {
+                    if (expandedPaths.Contains($"{scopePath}/{v.Name}"))
+                        toExpand.Add((child, v.VariablesReference, $"{scopePath}/{v.Name}"));
+                    else
+                    {
+                        child.AddChild("[dim]Loading...[/]");
+                        child.IsExpanded = false;
+                    }
+                }
             }
         }
 
@@ -721,8 +778,11 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private static string ExtractVariableName(TreeNode node)
     {
-        // Node text is like "▶ [cyan1]name[/] = value..." — extract the raw name from the tag isn't available,
-        // so parse between [cyan1] and [/]
+        // Prefer the Name stored in the tag
+        if (node.Tag is VariableNodeTag { Name: { Length: > 0 } name })
+            return name;
+
+        // Fallback: parse between [cyan1] and [/]
         var text = node.Text;
         const string start = "[cyan1]";
         const string end = "[/]";
@@ -755,11 +815,21 @@ internal class DebugCoordinator : IAsyncDisposable
                     foreach (var v in children)
                     {
                         var child = node.AddChild(FormatVariableNode(v));
-                        child.Tag = new VariableNodeTag(v.VariablesReference, false);
-                        if (v.VariablesReference > 0 && expandedPaths.Contains($"{path}/{v.Name}"))
-                            nextLevel.Add((child, v.VariablesReference, $"{path}/{v.Name}"));
+                        child.Tag = new VariableNodeTag(v.VariablesReference, false, v.Name, v.Value, v.Type);
+                        if (v.VariablesReference > 0)
+                        {
+                            if (expandedPaths.Contains($"{path}/{v.Name}"))
+                                nextLevel.Add((child, v.VariablesReference, $"{path}/{v.Name}"));
+                            else
+                            {
+                                child.AddChild("[dim]Loading...[/]");
+                                child.IsExpanded = false;
+                            }
+                        }
                     }
-                    node.Tag = new VariableNodeTag(varRef, true);
+                    node.Tag = node.Tag is VariableNodeTag nt
+                        ? nt with { VariablesReference = varRef, ChildrenLoaded = true }
+                        : new VariableNodeTag(varRef, true);
                     node.IsExpanded = true;
                 }
                 tcs.SetResult();
@@ -773,18 +843,49 @@ internal class DebugCoordinator : IAsyncDisposable
         catch (Exception ex) { Log($"RestoreExpandedVariables: {ex.Message}"); }
     }
 
-    private void OnVariableNodeActivated(object? sender, TreeNodeEventArgs args)
+    private void OnVariableNodeDoubleClick(object? sender, MouseEventArgs e)
+    {
+        var node = _variablesTree?.SelectedNode;
+        if (node?.Tag is not VariableNodeTag tag) return;
+
+        // For expandable nodes, the tree already toggled expand/collapse — undo it
+        if (tag.VariablesReference > 0)
+            node.IsExpanded = !node.IsExpanded;
+
+        OpenVariableInspector(tag);
+    }
+
+    private void OnVariablesTreeKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        // Enter on variables tree opens inspector (tree ignores Enter with Ctrl modifier,
+        // so we catch Ctrl+Enter here; plain Enter is consumed by the tree for expand/collapse)
+        if (e.KeyInfo is { Key: ConsoleKey.Enter, Modifiers: ConsoleModifiers.Control }
+            && _variablesTree != null && _variablesTree.HasFocus
+            && _variablesTree.SelectedNode?.Tag is VariableNodeTag tag)
+        {
+            OpenVariableInspector(tag);
+            e.Handled = true;
+        }
+    }
+
+    private void OpenVariableInspector(VariableNodeTag tag)
+    {
+        Func<int, Task<List<DapVariable>>> fetchChildren = varRef =>
+            _client != null ? _client.VariablesAsync(varRef) : Task.FromResult(new List<DapVariable>());
+
+        _ = VariableInspectorDialog.ShowAsync(tag.Name, tag.Value, tag.Type, tag.VariablesReference, fetchChildren, _ws);
+    }
+
+    private void OnVariableNodeExpandCollapse(object? sender, TreeNodeEventArgs args)
     {
         var node = args.Node;
         if (node?.Tag is not VariableNodeTag tag) return;
 
-        if (tag.ChildrenLoaded)
-        {
-            node.IsExpanded = !node.IsExpanded;
-            return;
-        }
+        // Already loaded or not expandable — let TreeControl handle normally
+        if (tag.ChildrenLoaded || tag.VariablesReference <= 0) return;
 
-        if (tag.VariablesReference <= 0) return;
+        // Only act on expand (not collapse)
+        if (!node.IsExpanded) return;
 
         var varRef = tag.VariablesReference;
         _ = Task.Run(async () =>
@@ -794,13 +895,23 @@ internal class DebugCoordinator : IAsyncDisposable
                 var children = await _client!.VariablesAsync(varRef);
                 _pendingUiActions.Enqueue(() =>
                 {
+                    // Clear placeholder and add real children
+                    node.ClearChildren();
+
                     foreach (var v in children)
                     {
                         var child = node.AddChild(FormatVariableNode(v));
-                        child.Tag = new VariableNodeTag(v.VariablesReference, false);
+                        child.Tag = new VariableNodeTag(v.VariablesReference, false, v.Name, v.Value, v.Type);
+                        if (v.VariablesReference > 0)
+                        {
+                            child.AddChild("[dim]Loading...[/]");
+                            child.IsExpanded = false;
+                        }
                     }
-                    node.Tag = new VariableNodeTag(varRef, true);
-                    node.IsExpanded = true;
+                    node.Tag = tag with { ChildrenLoaded = true };
+
+                    // Force tree to pick up the new children
+                    _variablesTree?.Container?.Invalidate(true);
                 });
             }
             catch (Exception ex) { Log($"Variable expand: {ex.Message}"); }
