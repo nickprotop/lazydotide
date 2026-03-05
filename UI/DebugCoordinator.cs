@@ -2,10 +2,12 @@ using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
 using Spectre.Console;
 using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using TreeNode = SharpConsoleUI.Controls.TreeNode;
 
 namespace DotNetIDE;
 
@@ -44,6 +46,9 @@ internal class DebugCoordinator : IAsyncDisposable
     private readonly List<string> _debugConsoleLines = new();
     private ToolbarControl? _debugToolbar;
     private bool _debugTabsCreated;
+
+    // Variable node metadata for lazy expansion
+    private record VariableNodeTag(int VariablesReference, bool ChildrenLoaded);
 
     // Events
     public event Action? StateChanged;
@@ -387,16 +392,7 @@ internal class DebugCoordinator : IAsyncDisposable
                     _pendingUiActions.Enqueue(() => UpdateCallStack(frames));
 
                     // Fetch scopes & variables for top frame
-                    var scopes = await _client!.ScopesAsync(topFrame.Id);
-                    var allVars = new List<(DapScope Scope, List<DapVariable> Variables)>();
-                    foreach (var scope in scopes)
-                    {
-                        if (scope.Expensive) continue;
-                        var vars = await _client!.VariablesAsync(scope.VariablesReference);
-                        allVars.Add((scope, vars));
-                    }
-
-                    _pendingUiActions.Enqueue(() => UpdateVariables(allVars));
+                    await FetchAndDisplayVariables(topFrame.Id);
                 }
             }
             catch (Exception ex) { Log($"OnStopped fetch: {ex.Message}"); }
@@ -570,6 +566,7 @@ internal class DebugCoordinator : IAsyncDisposable
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
+        _variablesTree.NodeActivated += OnVariableNodeActivated;
         var varsPanel = new ScrollablePanelControl
         {
             ShowScrollbar = true,
@@ -587,10 +584,22 @@ internal class DebugCoordinator : IAsyncDisposable
         };
         _callStackList.ItemActivated += (_, item) =>
         {
-            if (item?.Tag is DapStackFrame frame && frame.Source?.Path != null)
+            if (item?.Tag is DapStackFrame frame)
             {
-                _editorManager.OpenFile(frame.Source.Path);
-                _editorManager.GoToLine(frame.Line);
+                if (frame.Source?.Path != null)
+                {
+                    _editorManager.OpenFile(frame.Source.Path);
+                    _editorManager.GoToLine(frame.Line);
+                }
+                if (_state == DebugSessionState.Paused && frame.Id != _stoppedFrameId)
+                {
+                    _stoppedFrameId = frame.Id;
+                    _ = Task.Run(async () =>
+                    {
+                        try { await FetchAndDisplayVariables(frame.Id); }
+                        catch (Exception ex) { Log($"Frame switch variables: {ex.Message}"); }
+                    });
+                }
             }
         };
         var stackPanel = new ScrollablePanelControl
@@ -644,19 +653,158 @@ internal class DebugCoordinator : IAsyncDisposable
         _debugToolbar.Visible = _state != DebugSessionState.Idle;
     }
 
+    private async Task FetchAndDisplayVariables(int frameId)
+    {
+        var scopes = await _client!.ScopesAsync(frameId);
+        var allVars = new List<(DapScope Scope, List<DapVariable> Variables)>();
+        foreach (var scope in scopes)
+        {
+            if (scope.Expensive) continue;
+            var vars = await _client!.VariablesAsync(scope.VariablesReference);
+            allVars.Add((scope, vars));
+        }
+        _pendingUiActions.Enqueue(() => UpdateVariables(allVars));
+    }
+
+    private static string FormatVariableNode(DapVariable v)
+    {
+        var prefix = v.VariablesReference > 0 ? "▶ " : "";
+        var typeStr = v.Type != null ? $"[dim] ({Markup.Escape(v.Type)})[/]" : "";
+        return $"{prefix}[cyan1]{Markup.Escape(v.Name)}[/] = {Markup.Escape(v.Value)}{typeStr}";
+    }
+
     private void UpdateVariables(List<(DapScope Scope, List<DapVariable> Variables)> scopeData)
     {
         if (_variablesTree == null) return;
+
+        // Collect previously expanded variable name paths (e.g. "Locals/myObj", "Locals/myObj/Items")
+        var expandedPaths = new HashSet<string>();
+        foreach (var root in _variablesTree.RootNodes)
+            CollectExpandedVarPaths(root.Children, root.Text, expandedPaths);
+
         _variablesTree.Clear();
+
+        // Nodes that need async child expansion to restore previous state
+        var toExpand = new List<(TreeNode Node, int VarRef, string Path)>();
+
         foreach (var (scope, vars) in scopeData)
         {
             var scopeNode = _variablesTree.AddRootNode($"[bold]{Markup.Escape(scope.Name)}[/]");
+            var scopePath = scopeNode.Text;
             foreach (var v in vars)
             {
-                var typeStr = v.Type != null ? $"[dim] ({Markup.Escape(v.Type)})[/]" : "";
-                scopeNode.AddChild($"[cyan1]{Markup.Escape(v.Name)}[/] = {Markup.Escape(v.Value)}{typeStr}");
+                var child = scopeNode.AddChild(FormatVariableNode(v));
+                child.Tag = new VariableNodeTag(v.VariablesReference, false);
+                if (v.VariablesReference > 0 && expandedPaths.Contains($"{scopePath}/{v.Name}"))
+                    toExpand.Add((child, v.VariablesReference, $"{scopePath}/{v.Name}"));
             }
         }
+
+        // Re-expand previously expanded nodes
+        if (toExpand.Count > 0)
+            _ = RestoreExpandedVariables(toExpand, expandedPaths);
+    }
+
+    private static void CollectExpandedVarPaths(IEnumerable<TreeNode> nodes, string parentPath, HashSet<string> paths)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.Tag is VariableNodeTag { ChildrenLoaded: true } && node.IsExpanded)
+            {
+                var name = ExtractVariableName(node);
+                var path = $"{parentPath}/{name}";
+                paths.Add(path);
+                CollectExpandedVarPaths(node.Children, path, paths);
+            }
+        }
+    }
+
+    private static string ExtractVariableName(TreeNode node)
+    {
+        // Node text is like "▶ [cyan1]name[/] = value..." — extract the raw name from the tag isn't available,
+        // so parse between [cyan1] and [/]
+        var text = node.Text;
+        const string start = "[cyan1]";
+        const string end = "[/]";
+        var i = text.IndexOf(start, StringComparison.Ordinal);
+        if (i < 0) return text;
+        i += start.Length;
+        var j = text.IndexOf(end, i, StringComparison.Ordinal);
+        return j < 0 ? text[i..] : text[i..j];
+    }
+
+    private async Task RestoreExpandedVariables(List<(TreeNode Node, int VarRef, string Path)> toExpand, HashSet<string> expandedPaths)
+    {
+        try
+        {
+            // Fetch all children in parallel on background thread
+            var fetched = new List<(TreeNode Node, int VarRef, string Path, List<DapVariable> Children)>();
+            foreach (var (node, varRef, path) in toExpand)
+            {
+                var children = await _client!.VariablesAsync(varRef);
+                fetched.Add((node, varRef, path, children));
+            }
+
+            // Apply to tree and collect next level — all synchronously via UI queue
+            var nextLevel = new List<(TreeNode Node, int VarRef, string Path)>();
+            var tcs = new TaskCompletionSource();
+            _pendingUiActions.Enqueue(() =>
+            {
+                foreach (var (node, varRef, path, children) in fetched)
+                {
+                    foreach (var v in children)
+                    {
+                        var child = node.AddChild(FormatVariableNode(v));
+                        child.Tag = new VariableNodeTag(v.VariablesReference, false);
+                        if (v.VariablesReference > 0 && expandedPaths.Contains($"{path}/{v.Name}"))
+                            nextLevel.Add((child, v.VariablesReference, $"{path}/{v.Name}"));
+                    }
+                    node.Tag = new VariableNodeTag(varRef, true);
+                    node.IsExpanded = true;
+                }
+                tcs.SetResult();
+            });
+
+            await tcs.Task;
+
+            if (nextLevel.Count > 0)
+                await RestoreExpandedVariables(nextLevel, expandedPaths);
+        }
+        catch (Exception ex) { Log($"RestoreExpandedVariables: {ex.Message}"); }
+    }
+
+    private void OnVariableNodeActivated(object? sender, TreeNodeEventArgs args)
+    {
+        var node = args.Node;
+        if (node?.Tag is not VariableNodeTag tag) return;
+
+        if (tag.ChildrenLoaded)
+        {
+            node.IsExpanded = !node.IsExpanded;
+            return;
+        }
+
+        if (tag.VariablesReference <= 0) return;
+
+        var varRef = tag.VariablesReference;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var children = await _client!.VariablesAsync(varRef);
+                _pendingUiActions.Enqueue(() =>
+                {
+                    foreach (var v in children)
+                    {
+                        var child = node.AddChild(FormatVariableNode(v));
+                        child.Tag = new VariableNodeTag(v.VariablesReference, false);
+                    }
+                    node.Tag = new VariableNodeTag(varRef, true);
+                    node.IsExpanded = true;
+                });
+            }
+            catch (Exception ex) { Log($"Variable expand: {ex.Message}"); }
+        });
     }
 
     private void UpdateCallStack(List<DapStackFrame> frames)
