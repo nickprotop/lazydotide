@@ -117,22 +117,29 @@ public class FindReplaceDialog : DialogBase<bool>
         _statusLabel.SetContent(new List<string> { message });
     }
 
+    private string GetMatchStatus()
+    {
+        var editor = _editorManager.CurrentEditor;
+        if (editor == null || !editor.HasActiveSearch) return "[yellow]Not found[/]";
+        return $"Match {editor.CurrentMatchIndex + 1} of {editor.MatchCount}";
+    }
+
     private void DoFindNext()
     {
         bool found = _editorManager.FindNext(_findPrompt.Input, _caseBox.Checked);
-        SetStatus(found ? "" : "[yellow]Not found[/]");
+        SetStatus(found ? GetMatchStatus() : "[yellow]Not found[/]");
     }
 
     private void DoFindPrev()
     {
         bool found = _editorManager.FindPrevious(_findPrompt.Input, _caseBox.Checked);
-        SetStatus(found ? "" : "[yellow]Not found[/]");
+        SetStatus(found ? GetMatchStatus() : "[yellow]Not found[/]");
     }
 
     private void DoReplace()
     {
         bool found = _editorManager.ReplaceNext(_findPrompt.Input, _replacePrompt.Input, _caseBox.Checked);
-        SetStatus(found ? "" : "[yellow]Not found[/]");
+        SetStatus(found ? GetMatchStatus() : "[yellow]No more matches[/]");
     }
 
     private void DoReplaceAll()
@@ -141,5 +148,11 @@ public class FindReplaceDialog : DialogBase<bool>
         SetStatus(count > 0
             ? $"[green]{count} replacement{(count != 1 ? "s" : "")} made[/]"
             : "[yellow]Not found[/]");
+    }
+
+    protected override void OnCleanup()
+    {
+        _editorManager.ClearSearch();
+        base.OnCleanup();
     }
 }

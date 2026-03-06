@@ -439,36 +439,33 @@ public class EditorManager
     }
 
     // ──────────────────────────────────────────────────────────────
-    // Search / Replace
+    // Search / Replace — delegates to MultilineEditControl's API
     // ──────────────────────────────────────────────────────────────
+
+    private bool _lastCaseSensitive;
+
+    private void EnsureSearch(MultilineEditControl editor, string query, bool caseSensitive)
+    {
+        if (editor.SearchTerm != query || _lastCaseSensitive != caseSensitive)
+        {
+            _lastCaseSensitive = caseSensitive;
+            editor.Find(query, caseSensitive);
+        }
+    }
 
     public bool FindNext(string query, bool caseSensitive)
     {
         var editor = CurrentEditor;
         if (editor == null || string.IsNullOrEmpty(query)) return false;
 
-        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        var lines = editor.Content.Split('\n');
-
-        int startLine = editor.CurrentLine - 1;
-        int startCol  = editor.CurrentColumn - 1;
-
-        // Two-pass search: from cursor forward, then wrap from start
-        for (int pass = 0; pass < 2; pass++)
+        if (editor.SearchTerm != query || _lastCaseSensitive != caseSensitive)
         {
-            int fromLine = pass == 0 ? startLine : 0;
-            for (int i = fromLine; i < lines.Length; i++)
-            {
-                int fromCol = (pass == 0 && i == startLine) ? startCol : 0;
-                int idx = lines[i].IndexOf(query, fromCol, comparison);
-                if (idx >= 0)
-                {
-                    editor.SelectRange(i, idx, i, idx + query.Length);
-                    return true;
-                }
-            }
+            _lastCaseSensitive = caseSensitive;
+            editor.Find(query, caseSensitive);
+            return editor.MatchCount > 0;
         }
-        return false;
+
+        return editor.FindNext();
     }
 
     public bool FindPrevious(string query, bool caseSensitive)
@@ -476,74 +473,16 @@ public class EditorManager
         var editor = CurrentEditor;
         if (editor == null || string.IsNullOrEmpty(query)) return false;
 
-        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        var lines = editor.Content.Split('\n');
-
-        int curLine = editor.CurrentLine - 1;
-        int curCol  = editor.CurrentColumn - 1;
-
-        // Collect all matches
-        var matches = new List<(int Line, int Col)>();
-        for (int i = 0; i < lines.Length; i++)
+        if (editor.SearchTerm != query || _lastCaseSensitive != caseSensitive)
         {
-            int from = 0;
-            while (true)
-            {
-                int idx = lines[i].IndexOf(query, from, comparison);
-                if (idx < 0) break;
-                matches.Add((i, idx));
-                from = idx + 1;
-            }
-        }
-        if (matches.Count == 0) return false;
-
-        // Find last match before cursor
-        int target = -1;
-        for (int m = matches.Count - 1; m >= 0; m--)
-        {
-            var (ml, mc) = matches[m];
-            if (ml < curLine || (ml == curLine && mc < curCol - query.Length + 1))
-            {
-                target = m;
-                break;
-            }
-        }
-        if (target < 0) target = matches.Count - 1; // wrap
-
-        var (line, col) = matches[target];
-        editor.SelectRange(line, col, line, col + query.Length);
-        return true;
-    }
-
-    public int ReplaceAll(string query, string replacement, bool caseSensitive)
-    {
-        var editor = CurrentEditor;
-        if (editor == null || string.IsNullOrEmpty(query)) return 0;
-
-        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        string content = editor.Content;
-
-        int count = 0;
-        int idx = 0;
-        var sb = new System.Text.StringBuilder();
-        while (true)
-        {
-            int found = content.IndexOf(query, idx, comparison);
-            if (found < 0)
-            {
-                sb.Append(content, idx, content.Length - idx);
-                break;
-            }
-            sb.Append(content, idx, found - idx);
-            sb.Append(replacement);
-            idx = found + query.Length;
-            count++;
+            _lastCaseSensitive = caseSensitive;
+            editor.Find(query, caseSensitive);
+            if (editor.MatchCount > 0)
+                editor.FindPrevious();
+            return editor.MatchCount > 0;
         }
 
-        if (count > 0)
-            editor.Content = sb.ToString();
-
-        return count;
+        return editor.FindPrevious();
     }
 
     public bool ReplaceNext(string query, string replacement, bool caseSensitive)
@@ -551,29 +490,23 @@ public class EditorManager
         var editor = CurrentEditor;
         if (editor == null || string.IsNullOrEmpty(query)) return false;
 
-        // FindNext to select the match
-        if (!FindNext(query, caseSensitive)) return false;
+        EnsureSearch(editor, query, caseSensitive);
+        return editor.Replace(replacement);
+    }
 
-        // After FindNext cursor is at end of match; replace match at (currentLine-1, currentColumn-1-queryLength)
-        var lines = editor.Content.Split('\n');
-        int matchLine = editor.CurrentLine - 1;
-        int matchCol  = editor.CurrentColumn - 1 - query.Length;
+    public int ReplaceAll(string query, string replacement, bool caseSensitive)
+    {
+        var editor = CurrentEditor;
+        if (editor == null || string.IsNullOrEmpty(query)) return 0;
 
-        if (matchLine < 0 || matchLine >= lines.Length || matchCol < 0) return false;
+        editor.Find(query, caseSensitive);
+        _lastCaseSensitive = caseSensitive;
+        return editor.ReplaceAll(replacement);
+    }
 
-        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        string line = lines[matchLine];
-        if (matchCol + query.Length > line.Length) return false;
-
-        // Verify the match still exists at expected position
-        if (!line.Substring(matchCol, query.Length).Equals(query, comparison)) return false;
-
-        lines[matchLine] = line[..matchCol] + replacement + line[(matchCol + query.Length)..];
-        editor.Content = string.Join('\n', lines);
-
-        // Advance to next match
-        FindNext(query, caseSensitive);
-        return true;
+    public void ClearSearch()
+    {
+        CurrentEditor?.ClearFind();
     }
 
     // ──────────────────────────────────────────────────────────────
