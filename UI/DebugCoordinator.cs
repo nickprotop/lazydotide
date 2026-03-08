@@ -17,13 +17,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private static void Log(string msg) => DiagnosticLog.Write("debug", msg);
 
-    private readonly EditorManager _editorManager;
-    private readonly SidePanel _sidePanel;
-    private readonly OutputPanel _outputPanel;
-    private readonly ProjectService _projectService;
-    private readonly Window _mainWindow;
-    private readonly ConcurrentQueue<Action> _pendingUiActions;
-    private readonly ConsoleWindowSystem _ws;
+    private readonly AppContext _ctx;
 
     private DapClient? _client;
     private DebugSessionState _state = DebugSessionState.Idle;
@@ -57,22 +51,9 @@ internal class DebugCoordinator : IAsyncDisposable
     public bool DapDetectionDone => _detectionDone;
     public string? DetectedDapExe => _detectedServer?.Exe;
 
-    public DebugCoordinator(
-        EditorManager editorManager,
-        SidePanel sidePanel,
-        OutputPanel outputPanel,
-        ProjectService projectService,
-        Window mainWindow,
-        ConcurrentQueue<Action> pendingUiActions,
-        ConsoleWindowSystem ws)
+    public DebugCoordinator(AppContext ctx)
     {
-        _editorManager = editorManager;
-        _sidePanel = sidePanel;
-        _outputPanel = outputPanel;
-        _projectService = projectService;
-        _mainWindow = mainWindow;
-        _pendingUiActions = pendingUiActions;
-        _ws = ws;
+        _ctx = ctx;
     }
 
     // ── Detection ──
@@ -84,7 +65,7 @@ internal class DebugCoordinator : IAsyncDisposable
             _detectedServer = DapDetector.Find();
             _detectionDone = true;
             Log($"DAP detection: {(_detectedServer != null ? _detectedServer.Exe : "not found")}");
-            _pendingUiActions.Enqueue(() => StateChanged?.Invoke());
+            _ctx.PendingUiActions.Enqueue(() => StateChanged?.Invoke());
         });
     }
 
@@ -113,7 +94,7 @@ internal class DebugCoordinator : IAsyncDisposable
             lines.Add(line0Based);
 
         // Update gutter
-        var gutter = _editorManager.GetBpGutterByPath(filePath);
+        var gutter = _ctx.EditorManager.GetBpGutterByPath(filePath);
         if (gutter != null)
         {
             if (lines.Contains(line0Based))
@@ -123,7 +104,7 @@ internal class DebugCoordinator : IAsyncDisposable
         }
 
         // Update line highlight
-        var editor = _editorManager.GetEditorByPath(filePath);
+        var editor = _ctx.EditorManager.GetEditorByPath(filePath);
         if (editor != null)
         {
             if (lines.Contains(line0Based))
@@ -139,16 +120,16 @@ internal class DebugCoordinator : IAsyncDisposable
 
     public void ToggleBreakpointAtCursor()
     {
-        var filePath = _editorManager.CurrentFilePath;
-        var editor = _editorManager.CurrentEditor;
+        var filePath = _ctx.EditorManager.CurrentFilePath;
+        var editor = _ctx.EditorManager.CurrentEditor;
         if (filePath == null || editor == null) return;
         ToggleBreakpoint(filePath, editor.CurrentLine - 1); // CurrentLine is 1-based
     }
 
     public void RegisterGutter(string filePath)
     {
-        var gutter = _editorManager.GetBpGutterByPath(filePath);
-        var editor = _editorManager.GetEditorByPath(filePath);
+        var gutter = _ctx.EditorManager.GetBpGutterByPath(filePath);
+        var editor = _ctx.EditorManager.GetEditorByPath(filePath);
         if (gutter == null) return;
 
         // Apply existing breakpoints to newly opened gutter
@@ -217,29 +198,29 @@ internal class DebugCoordinator : IAsyncDisposable
         if (_detectedServer == null) return;
 
         // Build first
-        var target = _projectService.FindBuildTarget();
+        var target = _ctx.ProjectService.FindBuildTarget();
         if (target == null)
         {
             Log("No build target found");
             return;
         }
 
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
-            _outputPanel.ClearBuildOutput();
-            _outputPanel.SwitchToBuildTab();
+            _ctx.OutputPanel.ClearBuildOutput();
+            _ctx.OutputPanel.SwitchToBuildTab();
         });
 
         var buildResult = await buildService.BuildAsync(target, line => buildLines.Enqueue(line), ct);
         if (!buildResult.Success)
         {
             Log("Build failed, aborting debug");
-            _pendingUiActions.Enqueue(() => _outputPanel.PopulateProblems(buildResult.Diagnostics));
+            _ctx.PendingUiActions.Enqueue(() => _ctx.OutputPanel.PopulateProblems(buildResult.Diagnostics));
             return;
         }
 
         // Find the DLL to launch
-        var runTarget = _projectService.FindRunTarget() ?? target;
+        var runTarget = _ctx.ProjectService.FindRunTarget() ?? target;
         var program = GetDllPath(runTarget);
         if (program == null)
         {
@@ -295,7 +276,7 @@ internal class DebugCoordinator : IAsyncDisposable
         await _client.SendConfigurationDone();
 
         SetState(DebugSessionState.Running);
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             EnsureDebugTabs();
             EnsureDebugToolbar();
@@ -350,7 +331,7 @@ internal class DebugCoordinator : IAsyncDisposable
         _stoppedThreadId = e.ThreadId;
         SetState(DebugSessionState.Paused);
 
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             UpdateToolbarState();
             AppendDebugConsole($"[yellow]Paused: {MarkupParser.Escape(e.Reason)}[/]" +
@@ -371,26 +352,26 @@ internal class DebugCoordinator : IAsyncDisposable
                     // Navigate to stopped location
                     if (topFrame.Source?.Path != null)
                     {
-                        _pendingUiActions.Enqueue(() =>
+                        _ctx.PendingUiActions.Enqueue(() =>
                         {
                             ClearStoppedIndicators();
                             _stoppedFilePath = topFrame.Source.Path;
                             _stoppedLine = topFrame.Line - 1; // DAP is 1-based
 
-                            _editorManager.OpenFile(topFrame.Source.Path);
-                            _editorManager.GoToLine(topFrame.Line);
+                            _ctx.EditorManager.OpenFile(topFrame.Source.Path);
+                            _ctx.EditorManager.GoToLine(topFrame.Line);
 
                             // Set stopped indicators
-                            var gutter = _editorManager.GetBpGutterByPath(topFrame.Source.Path);
+                            var gutter = _ctx.EditorManager.GetBpGutterByPath(topFrame.Source.Path);
                             gutter?.SetStoppedLine(_stoppedLine);
 
-                            var editor = _editorManager.GetEditorByPath(topFrame.Source.Path);
+                            var editor = _ctx.EditorManager.GetEditorByPath(topFrame.Source.Path);
                             editor?.SetLineHighlight(_stoppedLine, StoppedLineBg);
                         });
                     }
 
                     // Update call stack
-                    _pendingUiActions.Enqueue(() => UpdateCallStack(frames));
+                    _ctx.PendingUiActions.Enqueue(() => UpdateCallStack(frames));
 
                     // Fetch scopes & variables for top frame
                     await FetchAndDisplayVariables(topFrame.Id);
@@ -403,7 +384,7 @@ internal class DebugCoordinator : IAsyncDisposable
     private void OnContinued(object? sender, EventArgs e)
     {
         SetState(DebugSessionState.Running);
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             ClearStoppedIndicators();
             UpdateToolbarState();
@@ -412,7 +393,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private void OnTerminated(object? sender, EventArgs e)
     {
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             AppendDebugConsole("[dim]Debug session terminated[/]");
             _ = CleanupSessionAsync();
@@ -421,7 +402,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private void OnExited(object? sender, int exitCode)
     {
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             AppendDebugConsole($"[dim]Process exited with code {exitCode}[/]");
             _ = CleanupSessionAsync();
@@ -440,7 +421,7 @@ internal class DebugCoordinator : IAsyncDisposable
             _ => $"[dim]{escaped}[/]"
         };
 
-        _pendingUiActions.Enqueue(() => AppendDebugConsole(formatted));
+        _ctx.PendingUiActions.Enqueue(() => AppendDebugConsole(formatted));
     }
 
     // ── Internal Helpers ──
@@ -448,7 +429,7 @@ internal class DebugCoordinator : IAsyncDisposable
     private void SetState(DebugSessionState newState)
     {
         _state = newState;
-        _pendingUiActions.Enqueue(() => StateChanged?.Invoke());
+        _ctx.PendingUiActions.Enqueue(() => StateChanged?.Invoke());
     }
 
     private async Task CleanupSessionAsync()
@@ -462,7 +443,7 @@ internal class DebugCoordinator : IAsyncDisposable
         ClearStoppedIndicators();
         _state = DebugSessionState.Idle;
 
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             UpdateToolbarState();
             StateChanged?.Invoke();
@@ -473,10 +454,10 @@ internal class DebugCoordinator : IAsyncDisposable
     {
         if (_stoppedFilePath != null)
         {
-            var gutter = _editorManager.GetBpGutterByPath(_stoppedFilePath);
+            var gutter = _ctx.EditorManager.GetBpGutterByPath(_stoppedFilePath);
             gutter?.ClearStoppedLine();
 
-            var editor = _editorManager.GetEditorByPath(_stoppedFilePath);
+            var editor = _ctx.EditorManager.GetEditorByPath(_stoppedFilePath);
             if (editor != null && _stoppedLine >= 0)
             {
                 // Restore breakpoint highlight if there's a breakpoint on this line, otherwise clear
@@ -563,24 +544,24 @@ internal class DebugCoordinator : IAsyncDisposable
     public void ShowVariablesTab()
     {
         EnsureVariablesTab();
-        _sidePanel.TabControl.SwitchToTab("Variables");
+        _ctx.SidePanel.TabControl.SwitchToTab("Variables");
     }
 
     public void ShowCallStackTab()
     {
         EnsureCallStackTab();
-        _sidePanel.TabControl.SwitchToTab("Call Stack");
+        _ctx.SidePanel.TabControl.SwitchToTab("Call Stack");
     }
 
     public void ShowDebugConsoleTab()
     {
         EnsureDebugConsoleTab();
-        _outputPanel.TabControl.SwitchToTab("Debug Console");
+        _ctx.OutputPanel.TabControl.SwitchToTab("Debug Console");
     }
 
     private void EnsureVariablesTab()
     {
-        if (_sidePanel.TabControl.HasTab("Variables")) return;
+        if (_ctx.SidePanel.TabControl.HasTab("Variables")) return;
 
         _variablesTree = new TreeControl
         {
@@ -592,7 +573,7 @@ internal class DebugCoordinator : IAsyncDisposable
         };
         _variablesTree.NodeExpandCollapse += OnVariableNodeExpandCollapse;
         _variablesTree.MouseDoubleClick += OnVariableNodeDoubleClick;
-        _mainWindow.KeyPressed += OnVariablesTreeKeyPressed;
+        _ctx.MainWindow.KeyPressed += OnVariablesTreeKeyPressed;
         var varsPanel = new ScrollablePanelControl
         {
             ShowScrollbar = true,
@@ -600,12 +581,12 @@ internal class DebugCoordinator : IAsyncDisposable
             VerticalAlignment = VerticalAlignment.Fill
         };
         varsPanel.AddControl(_variablesTree);
-        _sidePanel.TabControl.AddTab("Variables", varsPanel, isClosable: true);
+        _ctx.SidePanel.TabControl.AddTab("Variables", varsPanel, isClosable: true);
     }
 
     private void EnsureCallStackTab()
     {
-        if (_sidePanel.TabControl.HasTab("Call Stack")) return;
+        if (_ctx.SidePanel.TabControl.HasTab("Call Stack")) return;
 
         _callStackList = new ListControl
         {
@@ -618,8 +599,8 @@ internal class DebugCoordinator : IAsyncDisposable
             {
                 if (frame.Source?.Path != null)
                 {
-                    _editorManager.OpenFile(frame.Source.Path);
-                    _editorManager.GoToLine(frame.Line);
+                    _ctx.EditorManager.OpenFile(frame.Source.Path);
+                    _ctx.EditorManager.GoToLine(frame.Line);
                 }
                 if (_state == DebugSessionState.Paused && frame.Id != _stoppedFrameId)
                 {
@@ -639,12 +620,12 @@ internal class DebugCoordinator : IAsyncDisposable
             VerticalAlignment = VerticalAlignment.Fill
         };
         stackPanel.AddControl(_callStackList);
-        _sidePanel.TabControl.AddTab("Call Stack", stackPanel, isClosable: true);
+        _ctx.SidePanel.TabControl.AddTab("Call Stack", stackPanel, isClosable: true);
     }
 
     private void EnsureDebugConsoleTab()
     {
-        if (_outputPanel.TabControl.HasTab("Debug Console")) return;
+        if (_ctx.OutputPanel.TabControl.HasTab("Debug Console")) return;
 
         _debugConsoleMarkup = new MarkupControl(new List<string>(_debugConsoleLines))
         {
@@ -659,7 +640,7 @@ internal class DebugCoordinator : IAsyncDisposable
             VerticalAlignment = VerticalAlignment.Fill
         };
         _debugConsole.AddControl(_debugConsoleMarkup);
-        _outputPanel.TabControl.AddTab("Debug Console", _debugConsole, isClosable: true);
+        _ctx.OutputPanel.TabControl.AddTab("Debug Console", _debugConsole, isClosable: true);
     }
 
     private void EnsureDebugToolbar()
@@ -678,7 +659,7 @@ internal class DebugCoordinator : IAsyncDisposable
             .StickyTop()
             .Build();
 
-        _mainWindow.InsertControl(3, _debugToolbar); // After the existing toolbar
+        _ctx.MainWindow.InsertControl(3, _debugToolbar); // After the existing toolbar
     }
 
     private void UpdateToolbarState()
@@ -697,7 +678,7 @@ internal class DebugCoordinator : IAsyncDisposable
             var vars = await _client!.VariablesAsync(scope.VariablesReference);
             allVars.Add((scope, vars));
         }
-        _pendingUiActions.Enqueue(() => UpdateVariables(allVars));
+        _ctx.PendingUiActions.Enqueue(() => UpdateVariables(allVars));
     }
 
     private static string FormatVariableNode(DapVariable v)
@@ -807,7 +788,7 @@ internal class DebugCoordinator : IAsyncDisposable
             // Apply to tree and collect next level — all synchronously via UI queue
             var nextLevel = new List<(TreeNode Node, int VarRef, string Path)>();
             var tcs = new TaskCompletionSource();
-            _pendingUiActions.Enqueue(() =>
+            _ctx.PendingUiActions.Enqueue(() =>
             {
                 foreach (var (node, varRef, path, children) in fetched)
                 {
@@ -872,7 +853,7 @@ internal class DebugCoordinator : IAsyncDisposable
         Func<int, Task<List<DapVariable>>> fetchChildren = varRef =>
             _client != null ? _client.VariablesAsync(varRef) : Task.FromResult(new List<DapVariable>());
 
-        _ = VariableInspectorDialog.ShowAsync(tag.Name, tag.Value, tag.Type, tag.VariablesReference, fetchChildren, _ws);
+        _ = VariableInspectorDialog.ShowAsync(tag.Name, tag.Value, tag.Type, tag.VariablesReference, fetchChildren, _ctx.WindowSystem);
     }
 
     private void OnVariableNodeExpandCollapse(object? sender, TreeNodeEventArgs args)
@@ -892,7 +873,7 @@ internal class DebugCoordinator : IAsyncDisposable
             try
             {
                 var children = await _client!.VariablesAsync(varRef);
-                _pendingUiActions.Enqueue(() =>
+                _ctx.PendingUiActions.Enqueue(() =>
                 {
                     // Clear placeholder and add real children
                     node.ClearChildren();

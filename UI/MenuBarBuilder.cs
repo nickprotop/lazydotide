@@ -6,13 +6,7 @@ namespace DotNetIDE;
 
 internal class MenuBarBuilder
 {
-    private readonly ConsoleWindowSystem _ws;
-    private readonly EditorManager _editorManager;
-    private readonly ExplorerPanel _explorer;
-    private readonly SidePanel _sidePanel;
-    private readonly BuildService _buildService;
-    private readonly IdeConfig _config;
-    private readonly FileMiddlewarePipeline _pipeline;
+    private readonly AppContext _ctx;
     private readonly GitCoordinator _gitOps;
     private readonly BuildCoordinator _buildOps;
     private readonly LspCoordinator _lspCoord;
@@ -28,44 +22,29 @@ internal class MenuBarBuilder
     public Action? HandleF5 { get; set; }
     public Action? HandleF5WithProfile { get; set; }
 
-    private readonly Window _mainWindow;
     private IWindowControl? _menuControl;
     private IWindowControl? _toolbarControl;
 
     public MenuBarBuilder(
-        ConsoleWindowSystem ws,
-        EditorManager editorManager,
-        ExplorerPanel explorer,
-        SidePanel sidePanel,
-        BuildService buildService,
-        IdeConfig config,
-        FileMiddlewarePipeline pipeline,
+        AppContext ctx,
         GitCoordinator gitOps,
         BuildCoordinator buildOps,
         LspCoordinator lspCoord,
         DebugCoordinator debugCoord,
-        LayoutController layout,
-        Window mainWindow)
+        LayoutController layout)
     {
-        _ws = ws;
-        _editorManager = editorManager;
-        _explorer = explorer;
-        _sidePanel = sidePanel;
-        _buildService = buildService;
-        _config = config;
-        _pipeline = pipeline;
+        _ctx = ctx;
         _gitOps = gitOps;
         _buildOps = buildOps;
         _lspCoord = lspCoord;
         _debugCoord = debugCoord;
         _layout = layout;
-        _mainWindow = mainWindow;
     }
 
     public void AddMenuBar()
     {
         if (_menuControl != null)
-            _mainWindow!.RemoveContent(_menuControl);
+            _ctx.MainWindow!.RemoveContent(_menuControl);
 
         var menu = Controls.Menu()
             .Horizontal()
@@ -73,17 +52,17 @@ internal class MenuBarBuilder
             .AddItem("File", m => m
                 .AddItem("Open Folder...", () => _ = OpenFolderAsync?.Invoke() ?? Task.CompletedTask)
                 .AddSeparator()
-                .AddItem("New File", "Ctrl+N", () => { var dir = _explorer.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = FileOps?.HandleNewFileAsync?.Invoke(dir) ?? Task.CompletedTask; } })
-                .AddItem("New Folder", "Ctrl+Shift+N", () => { var dir = _explorer.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = FileOps?.HandleNewFolderAsync?.Invoke(dir) ?? Task.CompletedTask; } })
-                .AddItem("Rename", "F2", () => { var p = _explorer.GetSelectedPath(); if (p != null) _ = FileOps?.HandleRenameAsync?.Invoke(p) ?? Task.CompletedTask; })
-                .AddItem("Delete", "Del", () => { var p = _explorer.GetSelectedPath(); if (p != null) _ = FileOps?.HandleDeleteAsync?.Invoke(p) ?? Task.CompletedTask; })
+                .AddItem("New File", "Ctrl+N", () => { var dir = _ctx.Explorer.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = FileOps?.HandleNewFileAsync?.Invoke(dir) ?? Task.CompletedTask; } })
+                .AddItem("New Folder", "Ctrl+Shift+N", () => { var dir = _ctx.Explorer.GetSelectedPath(); if (dir != null) { if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir); if (dir != null) _ = FileOps?.HandleNewFolderAsync?.Invoke(dir) ?? Task.CompletedTask; } })
+                .AddItem("Rename", "F2", () => { var p = _ctx.Explorer.GetSelectedPath(); if (p != null) _ = FileOps?.HandleRenameAsync?.Invoke(p) ?? Task.CompletedTask; })
+                .AddItem("Delete", "Del", () => { var p = _ctx.Explorer.GetSelectedPath(); if (p != null) _ = FileOps?.HandleDeleteAsync?.Invoke(p) ?? Task.CompletedTask; })
                 .AddSeparator()
-                .AddItem("Save", "Ctrl+S", () => _editorManager.SaveCurrent())
+                .AddItem("Save", "Ctrl+S", () => _ctx.EditorManager.SaveCurrent())
                 .AddItem("Close Tab", "Ctrl+W", () => CloseCurrentTab?.Invoke())
                 .AddSeparator()
                 .AddItem("Refresh Explorer", "F5", () => _ = FileOps?.RefreshExplorerAndGitAsync?.Invoke() ?? Task.CompletedTask)
                 .AddSeparator()
-                .AddItem("Exit", "Alt+F4", () => _ws.Shutdown(0)))
+                .AddItem("Exit", "Alt+F4", () => _ctx.WindowSystem.Shutdown(0)))
             .AddItem("Edit", m =>
             {
                 m.AddItem("Word Wrap", () => _layout.SetWrapMode(WrapMode.WrapWords))
@@ -95,11 +74,11 @@ internal class MenuBarBuilder
                  .AddSeparator()
                  .AddItem("Syntax Highlighter", sub =>
                  {
-                     foreach (var (name, highlighter) in _pipeline.GetAvailableHighlighters())
+                     foreach (var (name, highlighter) in _ctx.Pipeline.GetAvailableHighlighters())
                      {
                          var n = name;
                          var h = highlighter;
-                         sub.AddItem(n, () => _editorManager.SetSyntaxHighlighter(n, h));
+                         sub.AddItem(n, () => _ctx.EditorManager.SetSyntaxHighlighter(n, h));
                      }
                  });
             })
@@ -108,7 +87,7 @@ internal class MenuBarBuilder
                 .AddItem("Test", "F7", () => _ = _buildOps.TestProjectAsync())
                 .AddSeparator()
                 .AddItem("Clean", () => _ = _buildOps.CleanProjectAsync())
-                .AddItem("Stop", "F4", () => _buildService.Cancel()))
+                .AddItem("Stop", "F4", () => _ctx.BuildService.Cancel()))
             .AddItem("Run", m => m
                 .AddItem("Start Debugging", "F5", () => HandleF5?.Invoke())
                 .AddItem("Start with Profile…", "", () => HandleF5WithProfile?.Invoke())
@@ -117,7 +96,7 @@ internal class MenuBarBuilder
                 .AddItem("Toggle Breakpoint", "F9", () => { })
                 .AddSeparator()
                 .AddItem("Stop Debugging", "Shift+F5", () => { })
-                .AddItem("Stop", "F4", () => _buildService.Cancel()))
+                .AddItem("Stop", "F4", () => _ctx.BuildService.Cancel()))
             .AddItem("View", m =>
             {
                 m.AddItem("Toggle Explorer", "Ctrl+B", () => _layout.ToggleExplorer())
@@ -128,13 +107,13 @@ internal class MenuBarBuilder
                 // Editor Tabs submenu (dynamic)
                 m.AddItem("Editor Tabs", sub =>
                 {
-                    if (_editorManager.TabControl.TabCount > 0)
+                    if (_ctx.EditorManager.TabControl.TabCount > 0)
                     {
-                        var tabs = _editorManager.TabControl.TabPages;
+                        var tabs = _ctx.EditorManager.TabControl.TabPages;
                         for (int i = 0; i < tabs.Count; i++)
                         {
                             int idx = i;
-                            sub.AddItem(tabs[i].Title, () => _editorManager.TabControl.ActiveTabIndex = idx);
+                            sub.AddItem(tabs[i].Title, () => _ctx.EditorManager.TabControl.ActiveTabIndex = idx);
                         }
                     }
                     else
@@ -146,10 +125,10 @@ internal class MenuBarBuilder
                 // Side Panel submenu
                 m.AddItem("Side Panel", sub =>
                 {
-                    sub.AddItem("Symbols", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _sidePanel.SwitchToSymbolsTab(); });
+                    sub.AddItem("Symbols", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _ctx.SidePanel.SwitchToSymbolsTab(); });
                     sub.AddItem("Git", () => _layout.ShowSourceControl());
-                    if (_sidePanel.TabControl.HasTab("Shell"))
-                        sub.AddItem("Shell", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _sidePanel.SwitchToShellTab(); });
+                    if (_ctx.SidePanel.TabControl.HasTab("Shell"))
+                        sub.AddItem("Shell", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _ctx.SidePanel.SwitchToShellTab(); });
                     sub.AddSeparator();
                     sub.AddItem("Variables", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _debugCoord.ShowVariablesTab(); });
                     sub.AddItem("Call Stack", () => { if (!_layout.SidePanelVisible) _layout.ToggleSidePanel(); _debugCoord.ShowCallStackTab(); });
@@ -192,8 +171,8 @@ internal class MenuBarBuilder
                     .AddItem("Navigate Back",        "Alt+Left",  () => _lspCoord.NavigateBack()));
 
                 m.AddItem("Refactor", sub => sub
-                    .AddItem("Rename Symbol", "Ctrl+F2", () => _ = _lspCoord.ShowRenameAsync(_ws))
-                    .AddItem("Code Actions",  "Ctrl+.",  () => _ = _lspCoord.ShowCodeActionsAsync(_ws))
+                    .AddItem("Rename Symbol", "Ctrl+F2", () => _ = _lspCoord.ShowRenameAsync(_ctx.WindowSystem))
+                    .AddItem("Code Actions",  "Ctrl+.",  () => _ = _lspCoord.ShowCodeActionsAsync(_ctx.WindowSystem))
                     .AddItem("Focus Symbols", "Alt+O",   () => _layout.FocusSymbolsTab()));
 
                 m.AddItem("Code", sub => sub
@@ -216,13 +195,13 @@ internal class MenuBarBuilder
                     .AddItem("Editor Shell Tab", "",         () => { if (IdeConstants.IsDesktopOs) _buildOps.OpenShellTab(); })
                     .AddItem("Side Panel Shell", "Shift+F8", () => { if (IdeConstants.IsDesktopOs) _layout.OpenSidePanelShell(); }));
 
-                if (_config.Tools.Count > 0)
+                if (_ctx.Config.Tools.Count > 0)
                 {
                     m.AddSeparator();
-                    for (int i = 0; i < _config.Tools.Count; i++)
+                    for (int i = 0; i < _ctx.Config.Tools.Count; i++)
                     {
                         int idx = i;
-                        var toolName = _config.Tools[i].Name;
+                        var toolName = _ctx.Config.Tools[i].Name;
                         m.AddItem(toolName, sub =>
                         {
                             sub.AddItem("Open in Tab",          () => { if (IdeConstants.IsDesktopOs) _buildOps.OpenConfigToolTab(idx); });
@@ -243,19 +222,19 @@ internal class MenuBarBuilder
 
         menu.StickyPosition = StickyPosition.Top;
         _menuControl = menu;
-        _mainWindow!.InsertControl(0, menu);
+        _ctx.MainWindow!.InsertControl(0, menu);
     }
 
     public void AddToolbar()
     {
         if (_toolbarControl != null)
-            _mainWindow!.RemoveContent(_toolbarControl);
+            _ctx.MainWindow!.RemoveContent(_toolbarControl);
 
         var toolbar = Controls.Toolbar()
             .AddButton("Debug F5", (_, _) => HandleF5?.Invoke())
             .AddButton("Build F6", (_, _) => _ = _buildOps.BuildProjectAsync())
             .AddButton("Test F7", (_, _) => _ = _buildOps.TestProjectAsync())
-            .AddButton("Stop F4", (_, _) => _buildService.Cancel())
+            .AddButton("Stop F4", (_, _) => _ctx.BuildService.Cancel())
             .AddButton("Shell F8", (_, _) => _buildOps.OpenShell())
             .AddButton("Shell Tab", (_, _) => { if (IdeConstants.IsDesktopOs) _buildOps.OpenShellTab(); })
             .AddButton("LazyNuGet F9", (_, _) => { if (IdeConstants.IsDesktopOs) _buildOps.OpenLazyNuGetTab(); })
@@ -266,6 +245,6 @@ internal class MenuBarBuilder
             .Build();
 
         _toolbarControl = toolbar;
-        _mainWindow!.InsertControl(2, toolbar);
+        _ctx.MainWindow!.InsertControl(2, toolbar);
     }
 }

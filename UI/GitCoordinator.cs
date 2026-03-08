@@ -7,18 +7,7 @@ namespace DotNetIDE;
 
 internal class GitCoordinator
 {
-    private readonly GitService _gitService;
-    private readonly ProjectService _projectService;
-    private readonly BuildService _buildService;
-    private readonly EditorManager _editorManager;
-    private readonly OutputPanel _outputPanel;
-    private readonly SidePanel _sidePanel;
-    private readonly ExplorerPanel _explorer;
-    private readonly ConcurrentQueue<string> _buildLines;
-    private readonly ConcurrentQueue<Action> _pendingUiActions;
-    private readonly CancellationToken _ct;
-    private readonly ConsoleWindowSystem _ws;
-    private readonly FileWatcher _fileWatcher;
+    private readonly AppContext _ctx;
 
     private string _gitMarkup = IdeConstants.GitStatusDefault;
 
@@ -26,48 +15,25 @@ internal class GitCoordinator
 
     public string GitMarkup => _gitMarkup;
 
-    public GitCoordinator(
-        GitService gitService,
-        ProjectService projectService,
-        BuildService buildService,
-        EditorManager editorManager,
-        OutputPanel outputPanel,
-        SidePanel sidePanel,
-        ExplorerPanel explorer,
-        ConsoleWindowSystem ws,
-        FileWatcher fileWatcher,
-        ConcurrentQueue<string> buildLines,
-        ConcurrentQueue<Action> pendingUiActions,
-        CancellationToken ct)
+    public GitCoordinator(AppContext ctx)
     {
-        _gitService = gitService;
-        _projectService = projectService;
-        _buildService = buildService;
-        _editorManager = editorManager;
-        _outputPanel = outputPanel;
-        _sidePanel = sidePanel;
-        _explorer = explorer;
-        _ws = ws;
-        _fileWatcher = fileWatcher;
-        _buildLines = buildLines;
-        _pendingUiActions = pendingUiActions;
-        _ct = ct;
+        _ctx = ctx;
     }
 
     private void EnqueueGitOutput(string line, bool clear = false)
     {
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
-            if (clear) _outputPanel.ClearGitOutput();
-            _outputPanel.AppendGitLine(line);
-            _outputPanel.SwitchToGitTab();
+            if (clear) _ctx.OutputPanel.ClearGitOutput();
+            _ctx.OutputPanel.AppendGitLine(line);
+            _ctx.OutputPanel.SwitchToGitTab();
         });
     }
 
     public async Task RefreshGitStatusAsync()
     {
-        var branch = await _gitService.GetBranchAsync(_projectService.RootPath);
-        var status = await _gitService.GetStatusSummaryAsync(_projectService.RootPath);
+        var branch = await _ctx.GitService.GetBranchAsync(_ctx.ProjectService.RootPath);
+        var status = await _ctx.GitService.GetStatusSummaryAsync(_ctx.ProjectService.RootPath);
 
         var bar = new IdeStatusBar();
 
@@ -103,8 +69,8 @@ internal class GitCoordinator
 
     public async Task RefreshGitFileStatusesAsync()
     {
-        var (detailedFiles, workingDir) = await _gitService.GetDetailedFileStatusesAsync(_projectService.RootPath);
-        var isPathIgnored = await _gitService.CreateIgnoreCheckerAsync(_projectService.RootPath);
+        var (detailedFiles, workingDir) = await _ctx.GitService.GetDetailedFileStatusesAsync(_ctx.ProjectService.RootPath);
+        var isPathIgnored = await _ctx.GitService.CreateIgnoreCheckerAsync(_ctx.ProjectService.RootPath);
 
         var fileStatuses = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
         foreach (var f in detailedFiles)
@@ -113,153 +79,153 @@ internal class GitCoordinator
                 fileStatuses[f.RelativePath] = f.Status;
         }
 
-        _pendingUiActions.Enqueue(() => _explorer.UpdateGitStatuses(fileStatuses, workingDir, isPathIgnored));
+        _ctx.PendingUiActions.Enqueue(() => _ctx.Explorer.UpdateGitStatuses(fileStatuses, workingDir, isPathIgnored));
 
-        var root = _projectService.RootPath;
-        var diffUpdates = await _editorManager.CollectGitDiffMarkersAsync(
-            path => _gitService.GetLineDiffMarkersAsync(root, path)!);
-        _pendingUiActions.Enqueue(() => _editorManager.ApplyGitDiffMarkers(diffUpdates));
+        var root = _ctx.ProjectService.RootPath;
+        var diffUpdates = await _ctx.EditorManager.CollectGitDiffMarkersAsync(
+            path => _ctx.GitService.GetLineDiffMarkersAsync(root, path)!);
+        _ctx.PendingUiActions.Enqueue(() => _ctx.EditorManager.ApplyGitDiffMarkers(diffUpdates));
 
-        var branch = await _gitService.GetBranchAsync(_projectService.RootPath);
-        var log = await _gitService.GetLogAsync(_projectService.RootPath, 15);
-        var (ahead, behind) = _gitService.GetAheadBehind(_projectService.RootPath);
+        var branch = await _ctx.GitService.GetBranchAsync(_ctx.ProjectService.RootPath);
+        var log = await _ctx.GitService.GetLogAsync(_ctx.ProjectService.RootPath, 15);
+        var (ahead, behind) = _ctx.GitService.GetAheadBehind(_ctx.ProjectService.RootPath);
         var sidePanelFiles = detailedFiles
             .Select(f => (f.RelativePath, f.AbsolutePath, f.Status, f.IsStaged))
             .ToList();
-        _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log, ahead, behind));
+        _ctx.PendingUiActions.Enqueue(() => _ctx.SidePanel.UpdateGitPanel(branch, sidePanelFiles, log, ahead, behind));
 
         // Update ahead/behind with fresh remote data in the background
         _ = Task.Run(async () =>
         {
-            _fileWatcher?.SuppressGitChanges();
+            _ctx.FileWatcher?.SuppressGitChanges();
             try
             {
-                var (freshAhead, freshBehind) = await _gitService.GetAheadBehindWithFetchAsync(_projectService.RootPath);
+                var (freshAhead, freshBehind) = await _ctx.GitService.GetAheadBehindWithFetchAsync(_ctx.ProjectService.RootPath);
                 if (freshAhead != ahead || freshBehind != behind)
-                    _pendingUiActions.Enqueue(() => _sidePanel.UpdateGitPanel(branch, sidePanelFiles, log, freshAhead, freshBehind));
+                    _ctx.PendingUiActions.Enqueue(() => _ctx.SidePanel.UpdateGitPanel(branch, sidePanelFiles, log, freshAhead, freshBehind));
             }
             finally
             {
-                _fileWatcher?.ResumeGitChanges();
+                _ctx.FileWatcher?.ResumeGitChanges();
             }
         });
     }
 
     public async Task RefreshGitDiffMarkersForFileAsync(string filePath)
     {
-        var markers = await _gitService.GetLineDiffMarkersAsync(_projectService.RootPath, filePath);
-        _pendingUiActions.Enqueue(() => _editorManager.UpdateGitDiffMarkers(filePath, markers));
+        var markers = await _ctx.GitService.GetLineDiffMarkersAsync(_ctx.ProjectService.RootPath, filePath);
+        _ctx.PendingUiActions.Enqueue(() => _ctx.EditorManager.UpdateGitDiffMarkers(filePath, markers));
     }
 
     public async Task RefreshExplorerAndGitAsync()
     {
-        _pendingUiActions.Enqueue(() => _explorer.Refresh());
+        _ctx.PendingUiActions.Enqueue(() => _ctx.Explorer.Refresh());
         await RefreshGitStatusAsync();
     }
 
     public async Task GitCommandAsync(string command)
     {
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
-            _outputPanel.ClearGitOutput();
-            _outputPanel.SwitchToGitTab();
-            _outputPanel.AppendGitLine($"$ git {command}");
+            _ctx.OutputPanel.ClearGitOutput();
+            _ctx.OutputPanel.SwitchToGitTab();
+            _ctx.OutputPanel.AppendGitLine($"$ git {command}");
         });
 
-        await _buildService.RunAsync(
-            "git", ["-C", _projectService.RootPath, .. command.Split(' ', StringSplitOptions.RemoveEmptyEntries)],
-            line => _pendingUiActions.Enqueue(() => _outputPanel.AppendGitLine(line)),
-            _ct, workingDirectory: _projectService.RootPath);
+        await _ctx.BuildService.RunAsync(
+            "git", ["-C", _ctx.ProjectService.RootPath, .. command.Split(' ', StringSplitOptions.RemoveEmptyEntries)],
+            line => _ctx.PendingUiActions.Enqueue(() => _ctx.OutputPanel.AppendGitLine(line)),
+            _ctx.CancellationToken, workingDirectory: _ctx.ProjectService.RootPath);
 
         await RefreshGitStatusAsync();
     }
 
     public async Task GitStageFileAsync(string absolutePath)
     {
-        await _gitService.StageAsync(_projectService.RootPath, absolutePath);
+        await _ctx.GitService.StageAsync(_ctx.ProjectService.RootPath, absolutePath);
         await RefreshGitStatusAsync();
     }
 
     public async Task GitUnstageFileAsync(string absolutePath)
     {
-        await _gitService.UnstageAsync(_projectService.RootPath, absolutePath);
+        await _ctx.GitService.UnstageAsync(_ctx.ProjectService.RootPath, absolutePath);
         await RefreshGitStatusAsync();
     }
 
     public async Task GitAddToGitignoreAsync(string absolutePath, bool isDirectory)
     {
-        await _gitService.AddToGitignoreAsync(_projectService.RootPath, absolutePath, isDirectory);
-        var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
-        _pendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
+        await _ctx.GitService.AddToGitignoreAsync(_ctx.ProjectService.RootPath, absolutePath, isDirectory);
+        var gitignorePath = Path.Combine(_ctx.ProjectService.RootPath, ".gitignore");
+        _ctx.PendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitRemoveFromGitignoreAsync(string absolutePath)
     {
-        await _gitService.RemoveFromGitignoreAsync(_projectService.RootPath, absolutePath);
-        var gitignorePath = Path.Combine(_projectService.RootPath, ".gitignore");
-        _pendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
+        await _ctx.GitService.RemoveFromGitignoreAsync(_ctx.ProjectService.RootPath, absolutePath);
+        var gitignorePath = Path.Combine(_ctx.ProjectService.RootPath, ".gitignore");
+        _ctx.PendingUiActions.Enqueue(() => ReloadIfOpen(gitignorePath));
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitStageAllAsync()
     {
-        await _gitService.StageAllAsync(_projectService.RootPath);
+        await _ctx.GitService.StageAllAsync(_ctx.ProjectService.RootPath);
         await RefreshGitStatusAsync();
     }
 
     public async Task GitUnstageAllAsync()
     {
-        await _gitService.UnstageAllAsync(_projectService.RootPath);
+        await _ctx.GitService.UnstageAllAsync(_ctx.ProjectService.RootPath);
         await RefreshGitStatusAsync();
     }
 
     public async Task GitDiscardFileAsync(string absolutePath)
     {
-        var confirmed = await GitDiscardConfirmDialog.ShowAsync(_ws!, absolutePath);
+        var confirmed = await GitDiscardConfirmDialog.ShowAsync(_ctx.WindowSystem, absolutePath);
         if (!confirmed) return;
-        await _gitService.DiscardChangesAsync(_projectService.RootPath, absolutePath);
-        _pendingUiActions.Enqueue(() => ReloadIfOpen(absolutePath));
+        await _ctx.GitService.DiscardChangesAsync(_ctx.ProjectService.RootPath, absolutePath);
+        _ctx.PendingUiActions.Enqueue(() => ReloadIfOpen(absolutePath));
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitDiscardAllAsync()
     {
-        var confirmed = await GitDiscardConfirmDialog.ShowAllAsync(_ws!);
+        var confirmed = await GitDiscardConfirmDialog.ShowAllAsync(_ctx.WindowSystem);
         if (!confirmed) return;
-        await _gitService.DiscardAllAsync(_projectService.RootPath);
-        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
+        await _ctx.GitService.DiscardAllAsync(_ctx.ProjectService.RootPath);
+        _ctx.PendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitShowDiffAsync(string absolutePath)
     {
-        var diff = await _gitService.GetDiffAsync(_projectService.RootPath, absolutePath);
+        var diff = await _ctx.GitService.GetDiffAsync(_ctx.ProjectService.RootPath, absolutePath);
         if (string.IsNullOrEmpty(diff))
         {
-            diff = await _gitService.GetStagedDiffAsync(_projectService.RootPath, absolutePath);
+            diff = await _ctx.GitService.GetStagedDiffAsync(_ctx.ProjectService.RootPath, absolutePath);
         }
         if (string.IsNullOrEmpty(diff)) return;
 
         var fileName = Path.GetFileName(absolutePath);
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter()));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter()));
     }
 
     public async Task GitShowDiffAllAsync()
     {
-        var diff = await _gitService.GetDiffAllAsync(_projectService.RootPath);
+        var diff = await _ctx.GitService.GetDiffAllAsync(_ctx.ProjectService.RootPath);
         if (string.IsNullOrEmpty(diff)) return;
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter()));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter()));
     }
 
     public async Task GitCommitAsync()
     {
-        var status = await _gitService.GetStatusSummaryAsync(_projectService.RootPath);
-        var message = await GitCommitDialog.ShowAsync(_ws!, status);
+        var status = await _ctx.GitService.GetStatusSummaryAsync(_ctx.ProjectService.RootPath);
+        var message = await GitCommitDialog.ShowAsync(_ctx.WindowSystem, status);
         if (message == null) return;
 
-        await _gitService.StageAllAsync(_projectService.RootPath);
-        var result = await _gitService.CommitAsync(_projectService.RootPath, message);
+        await _ctx.GitService.StageAllAsync(_ctx.ProjectService.RootPath);
+        var result = await _ctx.GitService.CommitAsync(_ctx.ProjectService.RootPath, message);
         EnqueueGitOutput(result.StartsWith("Error")
             ? result
             : $"Committed: {result}", clear: true);
@@ -268,44 +234,44 @@ internal class GitCoordinator
 
     public async Task GitStashAsync()
     {
-        var message = await GitStashDialog.ShowAsync(_ws!);
+        var message = await GitStashDialog.ShowAsync(_ctx.WindowSystem);
         if (message == null) return;
 
-        var result = await _gitService.StashAsync(_projectService.RootPath, message);
+        var result = await _ctx.GitService.StashAsync(_ctx.ProjectService.RootPath, message);
         EnqueueGitOutput(result, clear: true);
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitStashPopAsync()
     {
-        var result = await _gitService.StashPopAsync(_projectService.RootPath);
+        var result = await _ctx.GitService.StashPopAsync(_ctx.ProjectService.RootPath);
         EnqueueGitOutput(result, clear: true);
-        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
+        _ctx.PendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitSwitchBranchAsync()
     {
-        var branches = await _gitService.GetBranchesAsync(_projectService.RootPath);
+        var branches = await _ctx.GitService.GetBranchesAsync(_ctx.ProjectService.RootPath);
         if (branches.Count == 0) return;
         var current = branches.Count > 0 ? branches[0] : "";
-        var selected = await GitBranchPickerDialog.ShowAsync(_ws!, branches, current);
+        var selected = await GitBranchPickerDialog.ShowAsync(_ctx.WindowSystem, branches, current);
         if (selected == null) return;
 
-        var result = await _gitService.CheckoutAsync(_projectService.RootPath, selected);
+        var result = await _ctx.GitService.CheckoutAsync(_ctx.ProjectService.RootPath, selected);
         EnqueueGitOutput(result.StartsWith("Error")
             ? result
             : $"Switched to branch: {result}", clear: true);
-        _pendingUiActions.Enqueue(() => ReloadAllOpenFiles());
+        _ctx.PendingUiActions.Enqueue(() => ReloadAllOpenFiles());
         await RefreshExplorerAndGitAsync();
     }
 
     public async Task GitNewBranchAsync()
     {
-        var name = await GitNewBranchDialog.ShowAsync(_ws!);
+        var name = await GitNewBranchDialog.ShowAsync(_ctx.WindowSystem);
         if (name == null) return;
 
-        var result = await _gitService.CreateBranchAsync(_projectService.RootPath, name);
+        var result = await _ctx.GitService.CreateBranchAsync(_ctx.ProjectService.RootPath, name);
         EnqueueGitOutput(result.StartsWith("Error")
             ? result
             : $"Created branch: {result}", clear: true);
@@ -314,32 +280,32 @@ internal class GitCoordinator
 
     public async Task ShowCommitDetailAsync(GitLogEntry entry)
     {
-        var detail = await _gitService.GetCommitDetailAsync(_projectService.RootPath, entry.Sha);
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Commit: {entry.ShortSha}", detail, new CommitDetailSyntaxHighlighter()));
+        var detail = await _ctx.GitService.GetCommitDetailAsync(_ctx.ProjectService.RootPath, entry.Sha);
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Commit: {entry.ShortSha}", detail, new CommitDetailSyntaxHighlighter()));
     }
 
     public async Task GitShowLogAsync()
     {
-        var entries = await _gitService.GetLogAsync(_projectService.RootPath);
+        var entries = await _ctx.GitService.GetLogAsync(_ctx.ProjectService.RootPath);
         if (entries.Count == 0) return;
         var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
         var content = string.Join('\n', lines);
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab("Git Log", content));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab("Git Log", content));
     }
 
     public async Task GitShowFileLogAsync(string absolutePath)
     {
-        var entries = await _gitService.GetFileLogAsync(_projectService.RootPath, absolutePath);
+        var entries = await _ctx.GitService.GetFileLogAsync(_ctx.ProjectService.RootPath, absolutePath);
         if (entries.Count == 0) return;
         var fileName = Path.GetFileName(absolutePath);
         var lines = entries.Select(e => $"{e.ShortSha}  {e.Author,-16}  {e.When:yyyy-MM-dd HH:mm}  {e.MessageShort}");
         var content = string.Join('\n', lines);
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Log: {fileName}", content));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Log: {fileName}", content));
     }
 
     public async Task GitShowBlameAsync(string absolutePath)
     {
-        var blameLines = await _gitService.GetBlameAsync(_projectService.RootPath, absolutePath);
+        var blameLines = await _ctx.GitService.GetBlameAsync(_ctx.ProjectService.RootPath, absolutePath);
         if (blameLines.Count == 0) return;
 
         string[] sourceLines;
@@ -358,25 +324,25 @@ internal class GitCoordinator
 
         var fileName = Path.GetFileName(absolutePath);
         var content = string.Join('\n', output);
-        _pendingUiActions.Enqueue(() => OpenReadOnlyTab($"Blame: {fileName}", content));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Blame: {fileName}", content));
     }
 
     public void OpenReadOnlyTab(string title, string content, ISyntaxHighlighter? highlighter = null)
     {
-        _editorManager.OpenReadOnlyTab(title, content, highlighter);
+        _ctx.EditorManager.OpenReadOnlyTab(title, content, highlighter);
     }
 
     public void ReloadIfOpen(string absolutePath)
     {
-        var idx = _editorManager.GetTabIndexForPath(absolutePath);
+        var idx = _ctx.EditorManager.GetTabIndexForPath(absolutePath);
         if (idx >= 0)
-            _editorManager.ReloadTabFromDisk(idx);
+            _ctx.EditorManager.ReloadTabFromDisk(idx);
     }
 
     public void ReloadAllOpenFiles()
     {
-        for (int i = 0; i < _editorManager.TabCount; i++)
-            _editorManager.ReloadTabFromDisk(i);
+        for (int i = 0; i < _ctx.EditorManager.TabCount; i++)
+            _ctx.EditorManager.ReloadTabFromDisk(i);
     }
 
 }

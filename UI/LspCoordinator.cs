@@ -22,9 +22,7 @@ internal class LspCoordinator : IAsyncDisposable
         DiagnosticLog.Error("lsp-coord", context, ex);
 
 
-    private readonly EditorManager _editorManager;
-    private readonly SidePanel _sidePanel;
-    private readonly ConcurrentQueue<Action> _pendingUiActions;
+    private readonly AppContext _ctx;
 
     private LspClient? _lsp;
 
@@ -57,19 +55,13 @@ internal class LspCoordinator : IAsyncDisposable
     public bool LspDetectionDone => _lspDetectionDone;
     public string? DetectedLspExe => _detectedLspExe;
 
-    public LspCoordinator(
-        EditorManager editorManager,
-        SidePanel sidePanel,
-        Window mainWindow,
-        ConcurrentQueue<Action> pendingUiActions)
+    public LspCoordinator(AppContext ctx)
     {
-        _editorManager = editorManager;
-        _sidePanel = sidePanel;
-        _pendingUiActions = pendingUiActions;
+        _ctx = ctx;
 
-        _portalManager = new LspPortalManager(editorManager, pendingUiActions);
-        _portalManager.SetMainWindow(mainWindow);
-        _navManager = new LspNavigationManager(editorManager, pendingUiActions, _portalManager);
+        _portalManager = new LspPortalManager(ctx.EditorManager, ctx.PendingUiActions);
+        _portalManager.SetMainWindow(ctx.MainWindow);
+        _navManager = new LspNavigationManager(ctx.EditorManager, ctx.PendingUiActions, _portalManager);
 
         // Wire cross-manager callbacks
         _portalManager.NavigateToLocation = _navManager.NavigateToLocation;
@@ -96,10 +88,10 @@ internal class LspCoordinator : IAsyncDisposable
                 _lsp.DiagnosticsReceived += OnLspDiagnostics;
                 ws.LogService.LogInfo("LSP server started: " + lspServer.Exe);
 
-                foreach (var (filePath, content) in _editorManager.GetOpenDocuments())
+                foreach (var (filePath, content) in _ctx.EditorManager.GetOpenDocuments())
                     await _lsp.DidOpenAsync(filePath, content);
 
-                RefreshSymbolsForFile(_editorManager.CurrentFilePath);
+                RefreshSymbolsForFile(_ctx.EditorManager.CurrentFilePath);
             }
             else
             {
@@ -155,24 +147,24 @@ internal class LspCoordinator : IAsyncDisposable
             Severity: d.Severity == 1 ? "error" : "warning",
             Message: d.Message)).ToList();
 
-        _pendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, mapped));
+        _ctx.PendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, mapped));
     }
 
     // ── Hover ──────────────────────────────────────────────────────────
 
     public async Task ShowHoverAsync()
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null)
+        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null)
         {
             _portalManager.ShowTransientTooltip("Language server not running.");
             return;
         }
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
+        var editor = _ctx.EditorManager.CurrentEditor;
+        var path = _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
         var result = await _lsp.HoverAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             if (result == null || string.IsNullOrWhiteSpace(result.Contents))
             {
@@ -224,14 +216,14 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task ShowSignatureHelpAsync(bool silent = false)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
+        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null) return;
 
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
+        var editor = _ctx.EditorManager.CurrentEditor;
+        var path = _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
         var sig = await _lsp.SignatureHelpAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             if (sig == null || sig.Signatures.Count == 0)
             {
@@ -270,13 +262,13 @@ internal class LspCoordinator : IAsyncDisposable
     {
         try
         {
-            if (_lsp == null || _editorManager.CurrentEditor == null)
+            if (_lsp == null || _ctx.EditorManager.CurrentEditor == null)
             {
                 _portalManager.ShowTransientTooltip("LSP not running.");
                 return;
             }
-            var editor = _editorManager.CurrentEditor;
-            var path = _editorManager.CurrentFilePath;
+            var editor = _ctx.EditorManager.CurrentEditor;
+            var path = _ctx.EditorManager.CurrentFilePath;
             if (path == null) return;
 
             string currentName = ExtractWordAtCursor(editor);
@@ -290,7 +282,7 @@ internal class LspCoordinator : IAsyncDisposable
             if (newName == null) return;
 
             var workspaceEdit = await _lsp.RenameAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1, newName);
-            _pendingUiActions.Enqueue(() =>
+            _ctx.PendingUiActions.Enqueue(() =>
             {
                 if (workspaceEdit?.Changes == null || workspaceEdit.Changes.Count == 0)
                 {
@@ -306,7 +298,7 @@ internal class LspCoordinator : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _pendingUiActions.Enqueue(() => ws.NotificationStateService.ShowNotification(
+            _ctx.PendingUiActions.Enqueue(() => ws.NotificationStateService.ShowNotification(
                 "Rename Error", ex.Message, SharpConsoleUI.Core.NotificationSeverity.Danger));
         }
     }
@@ -315,16 +307,16 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task ShowCodeActionsAsync(ConsoleWindowSystem ws)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
+        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null) return;
+        var editor = _ctx.EditorManager.CurrentEditor;
+        var path = _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
         int line = editor.CurrentLine - 1;
         int col = editor.CurrentColumn - 1;
 
         var actions = await _lsp.CodeActionAsync(path, line, col, line, col);
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
             if (actions.Count == 0)
             {
@@ -340,9 +332,9 @@ internal class LspCoordinator : IAsyncDisposable
 
     public async Task FormatDocumentAsync()
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var editor = _editorManager.CurrentEditor;
-        var path = _editorManager.CurrentFilePath;
+        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null) return;
+        var editor = _ctx.EditorManager.CurrentEditor;
+        var path = _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
         var edits = await _lsp.FormattingAsync(path);
@@ -351,7 +343,7 @@ internal class LspCoordinator : IAsyncDisposable
         var lines = editor.Content.Split('\n').ToList();
         ApplyTextEditsToLines(lines, edits);
         var formatted = string.Join('\n', lines);
-        _pendingUiActions.Enqueue(() => editor.Content = formatted);
+        _ctx.PendingUiActions.Enqueue(() => editor.Content = formatted);
     }
 
     // ── Symbols ──────────────────────────────────────────────────────────
@@ -360,14 +352,14 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (filePath == null)
         {
-            _sidePanel.ClearSymbols();
+            _ctx.SidePanel.ClearSymbols();
             return;
         }
-        if (_lsp == null || !_sidePanel.TabControl.Visible)
+        if (_lsp == null || !_ctx.SidePanel.TabControl.Visible)
             return;
         if (!filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
         {
-            _sidePanel.ClearSymbols();
+            _ctx.SidePanel.ClearSymbols();
             return;
         }
         _ = RefreshSymbolsAsync(filePath);
@@ -379,7 +371,7 @@ internal class LspCoordinator : IAsyncDisposable
         _symbolRefreshDebounce?.Dispose();
         _symbolRefreshDebounce = new Timer(_ =>
         {
-            _pendingUiActions.Enqueue(() => RefreshSymbolsForFile(filePath));
+            _ctx.PendingUiActions.Enqueue(() => RefreshSymbolsForFile(filePath));
         }, null, SymbolRefreshMs, Timeout.Infinite);
     }
 
@@ -389,19 +381,19 @@ internal class LspCoordinator : IAsyncDisposable
         try
         {
             var symbols = await _lsp.DocumentSymbolAsync(filePath);
-            _pendingUiActions.Enqueue(() => _sidePanel.UpdateSymbols(filePath, symbols));
+            _ctx.PendingUiActions.Enqueue(() => _ctx.SidePanel.UpdateSymbols(filePath, symbols));
         }
         catch (Exception ex)
         {
             LogError("RefreshSymbolsAsync", ex);
-            _pendingUiActions.Enqueue(() => _sidePanel.ClearSymbols());
+            _ctx.PendingUiActions.Enqueue(() => _ctx.SidePanel.ClearSymbols());
         }
     }
 
     public async Task ShowDocumentSymbolsAsync(string? currentFilePath)
     {
-        if (_lsp == null || _editorManager.CurrentEditor == null) return;
-        var path = currentFilePath ?? _editorManager.CurrentFilePath;
+        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null) return;
+        var path = currentFilePath ?? _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
         var symbols = await _lsp.DocumentSymbolAsync(path);
@@ -453,7 +445,7 @@ internal class LspCoordinator : IAsyncDisposable
         if (!filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
         if (_semanticHighlighters.ContainsKey(filePath)) return;
 
-        var editor = _editorManager.GetEditorByPath(filePath);
+        var editor = _ctx.EditorManager.GetEditorByPath(filePath);
         if (editor == null) return;
 
         var currentHighlighter = editor.SyntaxHighlighter;
@@ -473,7 +465,7 @@ internal class LspCoordinator : IAsyncDisposable
 
         _semanticTokenDebounce?.Dispose();
         _semanticTokenDebounce = new Timer(_ =>
-            _pendingUiActions.Enqueue(() => _ = RefreshSemanticTokensAsync(filePath)),
+            _ctx.PendingUiActions.Enqueue(() => _ = RefreshSemanticTokensAsync(filePath)),
             null, immediate ? 0 : SemanticTokenRefreshMs, Timeout.Infinite);
     }
 
@@ -485,7 +477,7 @@ internal class LspCoordinator : IAsyncDisposable
 
         var isFirst = attempt == 0;
         if (isFirst && Interlocked.Increment(ref _busyCount) == 1)
-            _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(true));
+            _ctx.PendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(true));
 
         try
         {
@@ -495,10 +487,10 @@ internal class LspCoordinator : IAsyncDisposable
             if (tokens.Count > 0 && _semanticHighlighters.TryGetValue(filePath, out var highlighter))
             {
                 var legend = _lsp.TokenLegend;
-                _pendingUiActions.Enqueue(() =>
+                _ctx.PendingUiActions.Enqueue(() =>
                 {
                     highlighter.UpdateTokens(tokens, legend);
-                    var editor = _editorManager.GetEditorByPath(filePath);
+                    var editor = _ctx.EditorManager.GetEditorByPath(filePath);
                     if (editor != null)
                         editor.SyntaxHighlighter = editor.SyntaxHighlighter;
                 });
@@ -516,7 +508,7 @@ internal class LspCoordinator : IAsyncDisposable
         }
 
         if (isFirst && Interlocked.Decrement(ref _busyCount) == 0)
-            _pendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(false));
+            _ctx.PendingUiActions.Enqueue(() => LspBusyChanged?.Invoke(false));
     }
 
     public void RemoveSemanticHighlighter(string filePath)
@@ -528,7 +520,7 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (_lsp == null || _lsp.TokenLegend == null) return;
 
-        var files = _editorManager.GetOpenDocuments()
+        var files = _ctx.EditorManager.GetOpenDocuments()
             .Select(d => d.FilePath)
             .Where(f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -537,7 +529,7 @@ internal class LspCoordinator : IAsyncDisposable
         {
             // Set up the highlighter wrapper (no immediate refresh — we'll batch below)
             if (_semanticHighlighters.ContainsKey(filePath)) continue;
-            var editor = _editorManager.GetEditorByPath(filePath);
+            var editor = _ctx.EditorManager.GetEditorByPath(filePath);
             if (editor == null) continue;
             var currentHighlighter = editor.SyntaxHighlighter;
             if (currentHighlighter is SemanticHighlighter) continue;
@@ -562,7 +554,7 @@ internal class LspCoordinator : IAsyncDisposable
     {
         if (_lsp == null || !filePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return;
 
-        var editor = _editorManager.CurrentEditor;
+        var editor = _ctx.EditorManager.CurrentEditor;
         if (editor == null) return;
 
         int col = editor.CurrentColumn - 1;
@@ -580,7 +572,7 @@ internal class LspCoordinator : IAsyncDisposable
             _ = _lsp.FlushPendingChangeAsync();
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _pendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
+                _ => _ctx.PendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
                 null, DotTriggerMs, Timeout.Infinite);
         }
         else if (lastChar is '(' or ',')
@@ -588,7 +580,7 @@ internal class LspCoordinator : IAsyncDisposable
             _ = _lsp.FlushPendingChangeAsync();
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
-                _ => _pendingUiActions.Enqueue(() => _ = ShowSignatureHelpAsync(silent: true)),
+                _ => _ctx.PendingUiActions.Enqueue(() => _ = ShowSignatureHelpAsync(silent: true)),
                 null, SignatureTriggerMs, Timeout.Infinite);
         }
         else if (LspPortalManager.IsIdentifierChar(lastChar) && !HasCompletionPortal)
@@ -603,7 +595,7 @@ internal class LspCoordinator : IAsyncDisposable
             {
                 _dotTriggerDebounce?.Dispose();
                 _dotTriggerDebounce = new Timer(
-                    _ => _pendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
+                    _ => _ctx.PendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
                     null, WordCompletionMs, Timeout.Infinite);
             }
         }
@@ -660,12 +652,12 @@ internal class LspCoordinator : IAsyncDisposable
 
     private MultilineEditControl? GetEditorForFile(string filePath)
     {
-        foreach (var (fp, content) in _editorManager.GetOpenDocuments())
+        foreach (var (fp, content) in _ctx.EditorManager.GetOpenDocuments())
         {
             if (string.Equals(fp, filePath, StringComparison.OrdinalIgnoreCase))
             {
-                _editorManager.OpenFile(filePath);
-                return _editorManager.CurrentEditor;
+                _ctx.EditorManager.OpenFile(filePath);
+                return _ctx.EditorManager.CurrentEditor;
             }
         }
         return null;

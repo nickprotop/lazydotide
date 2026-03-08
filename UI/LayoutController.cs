@@ -9,17 +9,11 @@ namespace DotNetIDE;
 
 internal class LayoutController
 {
-    private readonly ConsoleWindowSystem _ws;
-    private readonly ProjectService _projectService;
-    private readonly EditorManager _editorManager;
-    private readonly SidePanel _sidePanel;
+    private readonly AppContext _ctx;
     private readonly LspCoordinator _lspCoord;
     private readonly DebugCoordinator _debugCoord;
-    private readonly IdeConfig _config;
 
     // Layout controls
-    private readonly Window _mainWindow;
-    private readonly Window _outputWindow;
     private readonly ColumnContainer? _explorerCol;
     private readonly SplitterControl? _explorerSplitter;
     private readonly ColumnContainer? _sidePanelCol;
@@ -50,15 +44,9 @@ internal class LayoutController
     private const int MinOutputHeight = 4;
 
     public LayoutController(
-        ConsoleWindowSystem ws,
-        ProjectService projectService,
-        EditorManager editorManager,
-        SidePanel sidePanel,
+        AppContext ctx,
         LspCoordinator lspCoord,
         DebugCoordinator debugCoord,
-        IdeConfig config,
-        Window mainWindow,
-        Window outputWindow,
         ColumnContainer? explorerCol,
         SplitterControl? explorerSplitter,
         ColumnContainer? sidePanelCol,
@@ -66,15 +54,9 @@ internal class LayoutController
         HorizontalGridControl? mainContent,
         MarkupControl? dashboard)
     {
-        _ws = ws;
-        _projectService = projectService;
-        _editorManager = editorManager;
-        _sidePanel = sidePanel;
+        _ctx = ctx;
         _lspCoord = lspCoord;
         _debugCoord = debugCoord;
-        _config = config;
-        _mainWindow = mainWindow;
-        _outputWindow = outputWindow;
         _explorerCol = explorerCol;
         _explorerSplitter = explorerSplitter;
         _sidePanelCol = sidePanelCol;
@@ -101,7 +83,7 @@ internal class LayoutController
 
     public void OnScreenResized(object? sender, SharpConsoleUI.Helpers.Size size)
     {
-        var desktop = _ws.DesktopDimensions;
+        var desktop = _ctx.WindowSystem.DesktopDimensions;
         ResizeCoupling = true;
         try
         {
@@ -109,13 +91,13 @@ internal class LayoutController
             {
                 int mainH = (int)(desktop.Height * SplitRatio);
                 int outH = desktop.Height - mainH;
-                _mainWindow?.SetSize(desktop.Width, mainH);
-                _outputWindow?.SetSize(desktop.Width, outH);
-                _outputWindow?.SetPosition(new Point(0, mainH));
+                _ctx.MainWindow?.SetSize(desktop.Width, mainH);
+                _ctx.OutputWindow?.SetSize(desktop.Width, outH);
+                _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
             }
             else
             {
-                _mainWindow?.SetSize(desktop.Width, desktop.Height);
+                _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
             }
         }
         finally { ResizeCoupling = false; }
@@ -123,18 +105,18 @@ internal class LayoutController
 
     public void OnMainWindowResized(object? sender, EventArgs e)
     {
-        if (ResizeCoupling || !OutputVisible || _mainWindow == null || _outputWindow == null) return;
+        if (ResizeCoupling || !OutputVisible || _ctx.MainWindow == null || _ctx.OutputWindow == null) return;
         ResizeCoupling = true;
         try
         {
-            var desktop = _ws.DesktopDimensions;
-            int newDivider = Math.Clamp(_mainWindow.Height,
+            var desktop = _ctx.WindowSystem.DesktopDimensions;
+            int newDivider = Math.Clamp(_ctx.MainWindow.Height,
                 MinMainHeight,
                 desktop.Height - MinOutputHeight);
             int newOutH = desktop.Height - newDivider;
-            _mainWindow.SetSize(desktop.Width, newDivider);
-            _outputWindow.SetPosition(new Point(0, newDivider));
-            _outputWindow.SetSize(desktop.Width, newOutH);
+            _ctx.MainWindow.SetSize(desktop.Width, newDivider);
+            _ctx.OutputWindow.SetPosition(new Point(0, newDivider));
+            _ctx.OutputWindow.SetSize(desktop.Width, newOutH);
             SplitRatio = newDivider / (double)desktop.Height;
         }
         finally { ResizeCoupling = false; }
@@ -142,17 +124,17 @@ internal class LayoutController
 
     public void OnOutputWindowResized(object? sender, EventArgs e)
     {
-        if (ResizeCoupling || !OutputVisible || _mainWindow == null || _outputWindow == null) return;
+        if (ResizeCoupling || !OutputVisible || _ctx.MainWindow == null || _ctx.OutputWindow == null) return;
         ResizeCoupling = true;
         try
         {
-            var desktop = _ws.DesktopDimensions;
-            int newDivider = Math.Clamp(_outputWindow.Top,
+            var desktop = _ctx.WindowSystem.DesktopDimensions;
+            int newDivider = Math.Clamp(_ctx.OutputWindow.Top,
                 MinMainHeight,
                 desktop.Height - MinOutputHeight);
-            _mainWindow.SetSize(desktop.Width, newDivider);
-            _outputWindow.SetPosition(new Point(0, newDivider));
-            _outputWindow.SetSize(desktop.Width, desktop.Height - newDivider);
+            _ctx.MainWindow.SetSize(desktop.Width, newDivider);
+            _ctx.OutputWindow.SetPosition(new Point(0, newDivider));
+            _ctx.OutputWindow.SetSize(desktop.Width, desktop.Height - newDivider);
             SplitRatio = newDivider / (double)desktop.Height;
         }
         finally { ResizeCoupling = false; }
@@ -165,14 +147,14 @@ internal class LayoutController
             _explorerCol.Visible = ExplorerVisible;
         if (_explorerSplitter != null)
             _explorerSplitter.Visible = ExplorerVisible;
-        _mainWindow?.ForceRebuildLayout();
-        _mainWindow?.Invalidate(true);
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ToggleOutput()
     {
         OutputVisible = !OutputVisible;
-        var desktop = _ws.DesktopDimensions;
+        var desktop = _ctx.WindowSystem.DesktopDimensions;
         ResizeCoupling = true;
         try
         {
@@ -180,14 +162,14 @@ internal class LayoutController
             {
                 int mainH = (int)(desktop.Height * SplitRatio);
                 int outH = desktop.Height - mainH;
-                _mainWindow?.SetSize(desktop.Width, mainH);
-                _outputWindow?.SetSize(desktop.Width, outH);
-                _outputWindow?.SetPosition(new Point(0, mainH));
+                _ctx.MainWindow?.SetSize(desktop.Width, mainH);
+                _ctx.OutputWindow?.SetSize(desktop.Width, outH);
+                _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
             }
             else
             {
-                _mainWindow?.SetSize(desktop.Width, desktop.Height);
-                _outputWindow?.SetPosition(new Point(0, desktop.Height + 100));
+                _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
+                _ctx.OutputWindow?.SetPosition(new Point(0, desktop.Height + 100));
             }
         }
         finally { ResizeCoupling = false; }
@@ -200,10 +182,10 @@ internal class LayoutController
             SidePanelVisible = true;
             if (_sidePanelCol != null) _sidePanelCol.Visible = true;
             if (_sidePanelSplitter != null) _sidePanelSplitter.Visible = true;
-            _mainWindow?.ForceRebuildLayout();
-            _mainWindow?.Invalidate(true);
+            _ctx.MainWindow?.ForceRebuildLayout();
+            _ctx.MainWindow?.Invalidate(true);
         }
-        _sidePanel.SwitchToGitTab();
+        _ctx.SidePanel.SwitchToGitTab();
     }
 
     public void ToggleSidePanel()
@@ -213,12 +195,12 @@ internal class LayoutController
             _sidePanelCol.Visible = SidePanelVisible;
         if (_sidePanelSplitter != null)
             _sidePanelSplitter.Visible = SidePanelVisible;
-        _mainWindow?.ForceRebuildLayout();
-        _mainWindow?.Invalidate(true);
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
         if (SidePanelVisible)
         {
-            _sidePanel.SwitchToSymbolsTab();
-            _lspCoord.RefreshSymbolsForFile(_editorManager.CurrentFilePath);
+            _ctx.SidePanel.SwitchToSymbolsTab();
+            _lspCoord.RefreshSymbolsForFile(_ctx.EditorManager.CurrentFilePath);
         }
     }
 
@@ -226,7 +208,7 @@ internal class LayoutController
     {
         if (!SidePanelVisible)
             ToggleSidePanel();
-        _sidePanel.SwitchToSymbolsTab();
+        _ctx.SidePanel.SwitchToSymbolsTab();
     }
 
     public void OpenSidePanelShell()
@@ -236,36 +218,36 @@ internal class LayoutController
             ToggleSidePanel();
 
         var terminal = Controls.Terminal()
-            .WithWorkingDirectory(_projectService.RootPath)
+            .WithWorkingDirectory(_ctx.ProjectService.RootPath)
             .Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment = VerticalAlignment.Fill;
 
         _sidePanelShellCount++;
         string tabName = _sidePanelShellCount == 1 ? "Shell" : $"Shell {_sidePanelShellCount}";
-        _sidePanel.TabControl.AddTab(tabName, terminal, isClosable: true);
-        _sidePanel.TabControl.ActiveTabIndex = _sidePanel.TabControl.TabCount - 1;
+        _ctx.SidePanel.TabControl.AddTab(tabName, terminal, isClosable: true);
+        _ctx.SidePanel.TabControl.ActiveTabIndex = _ctx.SidePanel.TabControl.TabCount - 1;
         InvalidateSidePanel();
-        _mainWindow?.FocusControl(terminal);
+        _ctx.MainWindow?.FocusControl(terminal);
     }
 
     public void InvalidateSidePanel()
     {
         _mainContent?.Invalidate();
-        _mainWindow?.ForceRebuildLayout();
-        _mainWindow?.Invalidate(true);
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void SetWrapMode(WrapMode mode)
     {
-        _editorManager.WrapMode = mode;
+        _ctx.EditorManager.WrapMode = mode;
     }
 
     public void ShowFindReplace()
     {
         if (_findReplaceOpen) return;
         _findReplaceOpen = true;
-        _ = FindReplaceDialog.ShowAsync(_ws, _editorManager)
+        _ = FindReplaceDialog.ShowAsync(_ctx.WindowSystem, _ctx.EditorManager)
             .ContinueWith(_ => _findReplaceOpen = false);
     }
 
@@ -273,22 +255,22 @@ internal class LayoutController
     {
         if (_aboutOpen) return;
         _aboutOpen = true;
-        _aboutRefresh = AboutDialog.Show(_ws, () => new AboutInfo(
+        _aboutRefresh = AboutDialog.Show(_ctx.WindowSystem, () => new AboutInfo(
             LspStarted: _lspCoord.LspStarted,
             LspDetectionDone: _lspCoord.LspDetectionDone,
             DetectedLspExe: _lspCoord.DetectedLspExe,
             DapDetected: _debugCoord.HasDebugger,
             DapDetectionDone: _debugCoord.DapDetectionDone,
             DetectedDapExe: _debugCoord.DetectedDapExe,
-            Tools: _config.Tools,
-            ProjectPath: _projectService.RootPath,
+            Tools: _ctx.Config.Tools,
+            ProjectPath: _ctx.ProjectService.RootPath,
             OnInstallDebugger: _debugCoord.HasDebugger ? null : () => InstallDebugger()),
             () => { _aboutOpen = false; _aboutRefresh = null; });
     }
 
     public void InstallDebugger()
     {
-        _ = InstallDebuggerModal.ShowAsync(_ws).ContinueWith(t =>
+        _ = InstallDebuggerModal.ShowAsync(_ctx.WindowSystem).ContinueWith(t =>
         {
             if (t.Result)
             {
@@ -306,8 +288,8 @@ internal class LayoutController
 
     private List<string> GetDashboardLines()
     {
-        var projectName = new DirectoryInfo(_projectService.RootPath).Name;
-        var rootPath = _projectService.RootPath;
+        var projectName = new DirectoryInfo(_ctx.ProjectService.RootPath).Name;
+        var rootPath = _ctx.ProjectService.RootPath;
 
         List<string> lspLines;
         if (!_lspCoord.LspDetectionDone)
@@ -341,9 +323,9 @@ internal class LayoutController
                 "[yellow]           Install: [/][italic]Help › Install netcoredbg  (auto-download)[/]",
             };
 
-        string toolsLine = _config.Tools.Count == 0
+        string toolsLine = _ctx.Config.Tools.Count == 0
             ? "[dim]  Tools    0 loaded  →  Tools › Edit Config[/]"
-            : $"[dim]  Tools    [/][green]{_config.Tools.Count} loaded[/][dim]  ({string.Join(", ", _config.Tools.Select(t => t.Name))})[/]";
+            : $"[dim]  Tools    [/][green]{_ctx.Config.Tools.Count} loaded[/][dim]  ({string.Join(", ", _ctx.Config.Tools.Select(t => t.Name))})[/]";
 
         var lines = new List<string>
         {
@@ -374,22 +356,22 @@ internal class LayoutController
     public void ApplyRestoredSplitRatio(double splitRatio)
     {
         SplitRatio = splitRatio;
-        var desktop = _ws.DesktopDimensions;
+        var desktop = _ctx.WindowSystem.DesktopDimensions;
         int mainH = (int)(desktop.Height * SplitRatio);
         int outH = desktop.Height - mainH;
         ResizeCoupling = true;
         try
         {
-            _mainWindow?.SetSize(desktop.Width, mainH);
-            _outputWindow?.SetSize(desktop.Width, outH);
-            _outputWindow?.SetPosition(new Point(0, mainH));
+            _ctx.MainWindow?.SetSize(desktop.Width, mainH);
+            _ctx.OutputWindow?.SetSize(desktop.Width, outH);
+            _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
         }
         finally { ResizeCoupling = false; }
     }
 
     public void ForceRebuildLayout()
     {
-        _mainWindow?.ForceRebuildLayout();
-        _mainWindow?.Invalidate(true);
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
     }
 }

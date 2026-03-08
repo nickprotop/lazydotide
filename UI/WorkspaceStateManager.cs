@@ -4,23 +4,13 @@ namespace DotNetIDE;
 
 internal class WorkspaceStateManager
 {
-    private readonly WorkspaceService _workspaceService;
-    private readonly EditorManager _editorManager;
-    private readonly ExplorerPanel _explorer;
-    private readonly OutputPanel _outputPanel;
+    private readonly AppContext _ctx;
 
     public DebugCoordinator? DebugCoordinator { get; set; }
 
-    public WorkspaceStateManager(
-        WorkspaceService workspaceService,
-        EditorManager editorManager,
-        ExplorerPanel explorer,
-        OutputPanel outputPanel)
+    public WorkspaceStateManager(AppContext ctx)
     {
-        _workspaceService = workspaceService;
-        _editorManager = editorManager;
-        _explorer = explorer;
-        _outputPanel = outputPanel;
+        _ctx = ctx;
     }
 
     /// <summary>
@@ -29,7 +19,7 @@ internal class WorkspaceStateManager
     /// </summary>
     public void CaptureWorkspaceState(LayoutSnapshot layout)
     {
-        var state = _workspaceService.State;
+        var state = _ctx.WorkspaceService.State;
 
         // Layout visibility
         state.ExplorerVisible = layout.ExplorerVisible;
@@ -40,20 +30,20 @@ internal class WorkspaceStateManager
         state.SidePanelColumnWidth = layout.SidePanelColumnWidth;
 
         // Wrap mode
-        state.WrapMode = _editorManager.WrapMode.ToString();
+        state.WrapMode = _ctx.EditorManager.WrapMode.ToString();
 
         // Open files
         state.OpenFiles.Clear();
-        int tabCount = _editorManager.TabControl.TabCount;
-        int activeIdx = _editorManager.TabControl.ActiveTabIndex;
+        int tabCount = _ctx.EditorManager.TabControl.TabCount;
+        int activeIdx = _ctx.EditorManager.TabControl.ActiveTabIndex;
         for (int i = 0; i < tabCount; i++)
         {
-            var filePath = _editorManager.GetTabFilePath(i);
+            var filePath = _ctx.EditorManager.GetTabFilePath(i);
             if (filePath == null) continue;
-            var cursor = _editorManager.GetTabCursor(i);
+            var cursor = _ctx.EditorManager.GetTabCursor(i);
             state.OpenFiles.Add(new WorkspaceFile
             {
-                Path = _workspaceService.ToRelativePath(filePath),
+                Path = _ctx.WorkspaceService.ToRelativePath(filePath),
                 CursorLine = cursor?.Line ?? 1,
                 CursorColumn = cursor?.Column ?? 1,
                 IsActive = i == activeIdx
@@ -62,19 +52,19 @@ internal class WorkspaceStateManager
 
         // Explorer expanded paths
         state.ExpandedPaths.Clear();
-        CollectExpandedPaths(_explorer.Tree.RootNodes, state.ExpandedPaths);
+        CollectExpandedPaths(_ctx.Explorer.Tree.RootNodes, state.ExpandedPaths);
 
         // Explorer selected path
         state.SelectedExplorerPath = null;
-        var selectedPath = _explorer.GetSelectedPath();
+        var selectedPath = _ctx.Explorer.GetSelectedPath();
         if (selectedPath != null)
-            state.SelectedExplorerPath = _workspaceService.ToRelativePath(selectedPath);
+            state.SelectedExplorerPath = _ctx.WorkspaceService.ToRelativePath(selectedPath);
 
         // Output tab
-        state.ActiveOutputTab = _outputPanel.TabControl.ActiveTabIndex;
+        state.ActiveOutputTab = _ctx.OutputPanel.TabControl.ActiveTabIndex;
 
         // Breakpoints
-        DebugCoordinator?.SaveBreakpoints(state, _workspaceService);
+        DebugCoordinator?.SaveBreakpoints(state, _ctx.WorkspaceService);
     }
 
     /// <summary>
@@ -86,7 +76,7 @@ internal class WorkspaceStateManager
         bool currentOutputVisible,
         bool currentSidePanelVisible)
     {
-        var state = _workspaceService.State;
+        var state = _ctx.WorkspaceService.State;
         var snapshot = new LayoutSnapshot();
 
         // Determine which toggles are needed
@@ -100,19 +90,19 @@ internal class WorkspaceStateManager
         snapshot.WrapMode = state.WrapMode;
 
         // Load breakpoints BEFORE opening files so RegisterGutter can apply them
-        DebugCoordinator?.LoadBreakpoints(state, _workspaceService);
+        DebugCoordinator?.LoadBreakpoints(state, _ctx.WorkspaceService);
 
         // Open files
         int activeTabIndex = -1;
         for (int i = 0; i < state.OpenFiles.Count; i++)
         {
             var entry = state.OpenFiles[i];
-            var absolutePath = _workspaceService.ToAbsolutePath(entry.Path);
+            var absolutePath = _ctx.WorkspaceService.ToAbsolutePath(entry.Path);
             if (!File.Exists(absolutePath)) continue;
 
-            _editorManager.OpenFile(absolutePath);
+            _ctx.EditorManager.OpenFile(absolutePath);
 
-            var editor = _editorManager.CurrentEditor;
+            var editor = _ctx.EditorManager.CurrentEditor;
             if (editor != null && (entry.CursorLine > 1 || entry.CursorColumn > 1))
             {
                 editor.SetLogicalCursorPosition(new System.Drawing.Point(
@@ -120,40 +110,40 @@ internal class WorkspaceStateManager
             }
 
             if (entry.IsActive)
-                activeTabIndex = _editorManager.TabControl.ActiveTabIndex;
+                activeTabIndex = _ctx.EditorManager.TabControl.ActiveTabIndex;
         }
 
         if (activeTabIndex >= 0)
-            _editorManager.TabControl.ActiveTabIndex = activeTabIndex;
+            _ctx.EditorManager.TabControl.ActiveTabIndex = activeTabIndex;
 
         // Explorer expanded paths
         foreach (var relativePath in state.ExpandedPaths)
         {
-            var absolutePath = _workspaceService.ToAbsolutePath(relativePath);
-            var node = _explorer.Tree.FindNodeByTag(absolutePath);
+            var absolutePath = _ctx.WorkspaceService.ToAbsolutePath(relativePath);
+            var node = _ctx.Explorer.Tree.FindNodeByTag(absolutePath);
             if (node != null) node.IsExpanded = true;
         }
 
         // Explorer selected path
         if (state.SelectedExplorerPath != null)
         {
-            var absolutePath = _workspaceService.ToAbsolutePath(state.SelectedExplorerPath);
-            var node = _explorer.Tree.FindNodeByTag(absolutePath);
-            if (node != null) _explorer.Tree.SelectNode(node);
+            var absolutePath = _ctx.WorkspaceService.ToAbsolutePath(state.SelectedExplorerPath);
+            var node = _ctx.Explorer.Tree.FindNodeByTag(absolutePath);
+            if (node != null) _ctx.Explorer.Tree.SelectNode(node);
         }
 
         // Output tab
         if (state.ActiveOutputTab >= 0
-            && state.ActiveOutputTab < _outputPanel.TabControl.TabCount)
+            && state.ActiveOutputTab < _ctx.OutputPanel.TabControl.TabCount)
         {
-            _outputPanel.TabControl.ActiveTabIndex = state.ActiveOutputTab;
+            _ctx.OutputPanel.TabControl.ActiveTabIndex = state.ActiveOutputTab;
         }
 
         return snapshot;
     }
 
-    public void Load() => _workspaceService.Load();
-    public void Save() => _workspaceService.Save();
+    public void Load() => _ctx.WorkspaceService.Load();
+    public void Save() => _ctx.WorkspaceService.Save();
 
     private void CollectExpandedPaths(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, List<string> paths)
     {
@@ -161,7 +151,7 @@ internal class WorkspaceStateManager
         {
             if (node.IsExpanded && node.Tag is string fullPath)
             {
-                paths.Add(_workspaceService.ToRelativePath(fullPath));
+                paths.Add(_ctx.WorkspaceService.ToRelativePath(fullPath));
             }
             if (node.Children.Count > 0)
                 CollectExpandedPaths(node.Children, paths);

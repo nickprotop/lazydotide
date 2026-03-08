@@ -9,15 +9,7 @@ namespace DotNetIDE;
 
 internal class BuildCoordinator
 {
-    private readonly BuildService _buildService;
-    private readonly ProjectService _projectService;
-    private readonly EditorManager _editorManager;
-    private readonly OutputPanel _outputPanel;
-    private readonly IdeConfig _config;
-    private readonly ConcurrentQueue<string> _buildLines;
-    private readonly ConcurrentQueue<string> _testLines;
-    private readonly ConcurrentQueue<Action> _pendingUiActions;
-    private readonly CancellationToken _ct;
+    private readonly AppContext _ctx;
 
     private int _lazyNuGetTabIndex = -1;
     private int _shellTabCount;
@@ -31,99 +23,73 @@ internal class BuildCoordinator
     /// <summary>Called when the output panel needs to become visible.</summary>
     public Action? OutputRequired;
 
-    private readonly ConsoleWindowSystem _ws;
-    private readonly Window _outputWindow;
-    private readonly SidePanel _sidePanel;
 
     // Public accessors needed by other components
     public bool HasLazyNuGet => _hasLazyNuGet;
     public int OutputShellCount { get => _outputShellCount; set => _outputShellCount = value; }
 
-    public BuildCoordinator(
-        BuildService buildService,
-        ProjectService projectService,
-        EditorManager editorManager,
-        OutputPanel outputPanel,
-        IdeConfig config,
-        ConsoleWindowSystem ws,
-        Window outputWindow,
-        SidePanel sidePanel,
-        ConcurrentQueue<string> buildLines,
-        ConcurrentQueue<string> testLines,
-        ConcurrentQueue<Action> pendingUiActions,
-        CancellationToken ct)
+    public BuildCoordinator(AppContext ctx)
     {
-        _buildService = buildService;
-        _projectService = projectService;
-        _editorManager = editorManager;
-        _outputPanel = outputPanel;
-        _config = config;
-        _ws = ws;
-        _outputWindow = outputWindow;
-        _sidePanel = sidePanel;
-        _buildLines = buildLines;
-        _testLines = testLines;
-        _pendingUiActions = pendingUiActions;
-        _ct = ct;
+        _ctx = ctx;
         _hasLazyNuGet = DetectLazyNuGet() != null;
     }
 
     public async Task BuildProjectAsync()
     {
-        var target = _projectService.FindBuildTarget();
+        var target = _ctx.ProjectService.FindBuildTarget();
         if (target == null) return;
 
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.SwitchToBuildTab();
+        _ctx.OutputPanel.ClearBuildOutput();
+        _ctx.OutputPanel.SwitchToBuildTab();
 
-        var result = await _buildService.BuildAsync(
+        var result = await _ctx.BuildService.BuildAsync(
             target,
-            line => _buildLines.Enqueue(line),
-            _ct);
+            line => _ctx.BuildLines.Enqueue(line),
+            _ctx.CancellationToken);
 
-        _pendingUiActions.Enqueue(() =>
+        _ctx.PendingUiActions.Enqueue(() =>
         {
-            _outputPanel.PopulateProblems(result.Diagnostics);
+            _ctx.OutputPanel.PopulateProblems(result.Diagnostics);
             DiagnosticsUpdated?.Invoke(this, result.Diagnostics);
         });
     }
 
     public async Task TestProjectAsync()
     {
-        var target = _projectService.FindBuildTarget();
+        var target = _ctx.ProjectService.FindBuildTarget();
         if (target == null) return;
 
-        _outputPanel.ClearTestOutput();
-        _outputPanel.SwitchToTestTab();
+        _ctx.OutputPanel.ClearTestOutput();
+        _ctx.OutputPanel.SwitchToTestTab();
 
-        var result = await _buildService.TestAsync(
+        var result = await _ctx.BuildService.TestAsync(
             target,
-            line => _testLines.Enqueue(line),
-            _ct);
+            line => _ctx.TestLines.Enqueue(line),
+            _ctx.CancellationToken);
 
-        _pendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, result.Diagnostics));
+        _ctx.PendingUiActions.Enqueue(() => DiagnosticsUpdated?.Invoke(this, result.Diagnostics));
     }
 
     public async Task CleanProjectAsync()
     {
-        var target = _projectService.FindBuildTarget();
+        var target = _ctx.ProjectService.FindBuildTarget();
         if (target == null) return;
 
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.SwitchToBuildTab();
+        _ctx.OutputPanel.ClearBuildOutput();
+        _ctx.OutputPanel.SwitchToBuildTab();
 
-        await _buildService.RunAsync(
+        await _ctx.BuildService.RunAsync(
             "dotnet", ["clean", target, "--nologo"],
-            line => _buildLines.Enqueue(line),
-            _ct);
+            line => _ctx.BuildLines.Enqueue(line),
+            _ctx.CancellationToken);
     }
 
     public void RunProject(LaunchProfileEntry? profile = null)
     {
-        var target = _projectService.FindRunTarget();
+        var target = _ctx.ProjectService.FindRunTarget();
         if (target == null)
         {
-            _ws?.LogService.LogInfo("No runnable project found");
+            _ctx.WindowSystem?.LogService.LogInfo("No runnable project found");
             return;
         }
 
@@ -138,35 +104,35 @@ internal class BuildCoordinator
 
         var builder = Controls.Terminal("dotnet")
             .WithArgs(runArgs.ToArray())
-            .WithWorkingDirectory(profile?.WorkingDirectory ?? _projectService.RootPath);
+            .WithWorkingDirectory(profile?.WorkingDirectory ?? _ctx.ProjectService.RootPath);
 
         var terminal = builder.Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment = VerticalAlignment.Fill;
 
         var tabName = "Run: " + Path.GetFileNameWithoutExtension(target);
-        _editorManager.OpenControlTab(tabName, terminal, isClosable: true, autoCloseOnExit: false);
+        _ctx.EditorManager.OpenControlTab(tabName, terminal, isClosable: true, autoCloseOnExit: false);
     }
 
     public void OpenShell()
     {
         if (!(IdeConstants.IsDesktopOs)) return;
-        if (_outputWindow == null) return;
+        if (_ctx.OutputWindow == null) return;
 
         var terminal = Controls.Terminal()
-            .WithWorkingDirectory(_projectService.RootPath)
+            .WithWorkingDirectory(_ctx.ProjectService.RootPath)
             .Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment   = VerticalAlignment.Fill;
 
         _outputShellCount++;
         string tabName = _outputShellCount == 1 ? "Shell" : $"Shell {_outputShellCount}";
-        _outputPanel.TabControl.AddTab(tabName, terminal, isClosable: true);
-        _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
+        _ctx.OutputPanel.TabControl.AddTab(tabName, terminal, isClosable: true);
+        _ctx.OutputPanel.TabControl.ActiveTabIndex = _ctx.OutputPanel.TabControl.TabCount - 1;
 
         OutputRequired?.Invoke();
-        _ws.SetActiveWindow(_outputWindow);
-        _outputWindow.FocusControl(terminal);
+        _ctx.WindowSystem.SetActiveWindow(_ctx.OutputWindow);
+        _ctx.OutputWindow.FocusControl(terminal);
     }
 
     public static string? DetectLazyNuGet()
@@ -194,16 +160,16 @@ internal class BuildCoordinator
         if (!(IdeConstants.IsDesktopOs)) return;
 
         if (_lazyNuGetTabIndex >= 0 &&
-            _lazyNuGetTabIndex < _editorManager.TabControl.TabCount)
+            _lazyNuGetTabIndex < _ctx.EditorManager.TabControl.TabCount)
         {
-            _editorManager.TabControl.ActiveTabIndex = _lazyNuGetTabIndex;
+            _ctx.EditorManager.TabControl.ActiveTabIndex = _lazyNuGetTabIndex;
             return;
         }
 
         string? exe = DetectLazyNuGet();
         if (exe == null)
         {
-            _ws?.NotificationStateService.ShowNotification(
+            _ctx.WindowSystem?.NotificationStateService.ShowNotification(
                 "LazyNuGet Not Found",
                 "lazynuget not found in PATH. Install: dotnet tool install -g lazynuget",
                 SharpConsoleUI.Core.NotificationSeverity.Warning);
@@ -211,12 +177,12 @@ internal class BuildCoordinator
         }
 
         var terminal = Controls.Terminal(exe)
-            .WithWorkingDirectory(_projectService.RootPath)
+            .WithWorkingDirectory(_ctx.ProjectService.RootPath)
             .Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment   = VerticalAlignment.Fill;
 
-        _lazyNuGetTabIndex = _editorManager.OpenControlTab("LazyNuGet", terminal, isClosable: true);
+        _lazyNuGetTabIndex = _ctx.EditorManager.OpenControlTab("LazyNuGet", terminal, isClosable: true);
         terminal.ProcessExited += (_, _) => _lazyNuGetTabIndex = -1;
     }
 
@@ -226,24 +192,24 @@ internal class BuildCoordinator
         if (!(IdeConstants.IsDesktopOs)) return;
 
         var terminal = Controls.Terminal(shellExe)
-            .WithWorkingDirectory(_projectService.RootPath)
+            .WithWorkingDirectory(_ctx.ProjectService.RootPath)
             .Build();
         terminal.HorizontalAlignment = HorizontalAlignment.Stretch;
         terminal.VerticalAlignment   = VerticalAlignment.Fill;
 
         _shellTabCount++;
         string tabName = _shellTabCount == 1 ? "Shell" : $"Shell {_shellTabCount}";
-        _editorManager.OpenControlTab(tabName, terminal, isClosable: true);
+        _ctx.EditorManager.OpenControlTab(tabName, terminal, isClosable: true);
     }
 
     private TerminalControl? CreateToolTerminal(int toolIndex)
     {
         if (!IdeConstants.IsDesktopOs) return null;
-        if (toolIndex < 0 || toolIndex >= _config.Tools.Count) return null;
+        if (toolIndex < 0 || toolIndex >= _ctx.Config.Tools.Count) return null;
 
-        var tool = _config.Tools[toolIndex];
+        var tool = _ctx.Config.Tools[toolIndex];
         string workDir = string.IsNullOrEmpty(tool.WorkingDir)
-            ? _projectService.RootPath
+            ? _ctx.ProjectService.RootPath
             : tool.WorkingDir;
 
         var builder = Controls.Terminal(tool.Command).WithWorkingDirectory(workDir);
@@ -259,17 +225,17 @@ internal class BuildCoordinator
     public void OpenConfigToolTab(int toolIndex)
     {
         if (_toolTabIndices.TryGetValue(toolIndex, out int existingTab) &&
-            existingTab >= 0 && existingTab < _editorManager.TabControl.TabCount)
+            existingTab >= 0 && existingTab < _ctx.EditorManager.TabControl.TabCount)
         {
-            _editorManager.TabControl.ActiveTabIndex = existingTab;
+            _ctx.EditorManager.TabControl.ActiveTabIndex = existingTab;
             return;
         }
 
         var terminal = CreateToolTerminal(toolIndex);
         if (terminal == null) return;
 
-        var tool = _config.Tools[toolIndex];
-        int tabIdx = _editorManager.OpenControlTab(tool.Name, terminal, isClosable: true);
+        var tool = _ctx.Config.Tools[toolIndex];
+        int tabIdx = _ctx.EditorManager.OpenControlTab(tool.Name, terminal, isClosable: true);
         _toolTabIndices[toolIndex] = tabIdx;
         if (IdeConstants.IsDesktopOs) // Redundant guard for CA1416 — CreateToolTerminal already checks this
             terminal.ProcessExited += (_, _) => _toolTabIndices.Remove(toolIndex);
@@ -280,48 +246,48 @@ internal class BuildCoordinator
         var terminal = CreateToolTerminal(toolIndex);
         if (terminal == null) return;
 
-        var tool = _config.Tools[toolIndex];
-        _outputPanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
-        _outputPanel.TabControl.ActiveTabIndex = _outputPanel.TabControl.TabCount - 1;
+        var tool = _ctx.Config.Tools[toolIndex];
+        _ctx.OutputPanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
+        _ctx.OutputPanel.TabControl.ActiveTabIndex = _ctx.OutputPanel.TabControl.TabCount - 1;
 
-        if (_outputWindow != null)
+        if (_ctx.OutputWindow != null)
         {
             OutputRequired?.Invoke();
-            _ws.SetActiveWindow(_outputWindow);
-            _outputWindow.FocusControl(terminal);
+            _ctx.WindowSystem.SetActiveWindow(_ctx.OutputWindow);
+            _ctx.OutputWindow.FocusControl(terminal);
         }
     }
 
     public void OpenConfigToolInSidePanel(int toolIndex, Action toggleSidePanel, Action invalidateSidePanel)
     {
-        if (_sidePanel == null) return;
+        if (_ctx.SidePanel == null) return;
 
         var terminal = CreateToolTerminal(toolIndex);
         if (terminal == null) return;
 
-        var tool = _config.Tools[toolIndex];
+        var tool = _ctx.Config.Tools[toolIndex];
         toggleSidePanel();
-        _sidePanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
-        _sidePanel.TabControl.ActiveTabIndex = _sidePanel.TabControl.TabCount - 1;
+        _ctx.SidePanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
+        _ctx.SidePanel.TabControl.ActiveTabIndex = _ctx.SidePanel.TabControl.TabCount - 1;
         invalidateSidePanel();
     }
 
     public void OpenConfigFile()
     {
         ConfigService.EnsureDefaultConfig();
-        _editorManager.OpenFile(ConfigService.GetConfigPath());
+        _ctx.EditorManager.OpenFile(ConfigService.GetConfigPath());
     }
 
     public void ShowNuGetDialog()
     {
-        _ = NuGetDialog.ShowAsync(_ws).ContinueWith(t =>
+        _ = NuGetDialog.ShowAsync(_ctx.WindowSystem).ContinueWith(t =>
         {
-            _pendingUiActions.Enqueue(() =>
+            _ctx.PendingUiActions.Enqueue(() =>
             {
                 var (packageName, version) = t.Result;
                 if (string.IsNullOrEmpty(packageName)) return;
 
-                var target = _projectService.FindBuildTarget();
+                var target = _ctx.ProjectService.FindBuildTarget();
                 if (target == null || !target.EndsWith(".csproj")) return;
 
                 var cmdArgs = version != null
@@ -335,14 +301,14 @@ internal class BuildCoordinator
 
     public async Task RunNuGetAsync(string args)
     {
-        _outputPanel.ClearBuildOutput();
-        _outputPanel.SwitchToBuildTab();
+        _ctx.OutputPanel.ClearBuildOutput();
+        _ctx.OutputPanel.SwitchToBuildTab();
 
-        await _buildService.RunAsync(
+        await _ctx.BuildService.RunAsync(
             "dotnet", args.Split(' ', StringSplitOptions.RemoveEmptyEntries),
-            line => _buildLines.Enqueue(line),
-            _ct);
+            line => _ctx.BuildLines.Enqueue(line),
+            _ctx.CancellationToken);
     }
 
-    public void CancelBuild() => _buildService.Cancel();
+    public void CancelBuild() => _ctx.BuildService.Cancel();
 }

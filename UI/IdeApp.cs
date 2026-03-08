@@ -138,16 +138,31 @@ public class IdeApp : IDisposable
         InitBottomStatus();  // Must be before CreateLayout so DesktopDimensions accounts for the bar
         CreateLayout();
 
-        // Create extracted handlers (after CreateLayout so UI components exist)
-        _gitOps = new GitCoordinator(
-            _gitService, _projectService, _buildService, _editorManager!, _outputPanel!,
-            _sidePanel!, _explorer!, _ws, _fileWatcher!,
-            _buildLines, _pendingUiActions, _cts.Token);
+        // Create shared context (after CreateLayout so UI components exist)
+        var appCtx = new AppContext
+        {
+            WindowSystem = _ws,
+            ProjectService = _projectService,
+            BuildService = _buildService,
+            GitService = _gitService,
+            EditorManager = _editorManager!,
+            Explorer = _explorer!,
+            OutputPanel = _outputPanel!,
+            SidePanel = _sidePanel!,
+            Config = _config,
+            MainWindow = _mainWindow!,
+            OutputWindow = _outputWindow!,
+            FileWatcher = _fileWatcher!,
+            Pipeline = _pipeline!,
+            WorkspaceService = new WorkspaceService(projectPath),
+            PendingUiActions = _pendingUiActions,
+            BuildLines = _buildLines,
+            TestLines = _testLines,
+            CancellationToken = _cts.Token,
+        };
 
-        _buildOps = new BuildCoordinator(
-            _buildService, _projectService, _editorManager!, _outputPanel!,
-            _config, _ws, _outputWindow!, _sidePanel!,
-            _buildLines, _testLines, _pendingUiActions, _cts.Token);
+        _gitOps = new GitCoordinator(appCtx);
+        _buildOps = new BuildCoordinator(appCtx);
 
         // Open the shell tab at startup so it's ready immediately
         if (IdeConstants.IsDesktopOs)
@@ -156,18 +171,16 @@ public class IdeApp : IDisposable
             _buildOps.OutputShellCount = 1;
         }
 
-        _lspCoord = new LspCoordinator(_editorManager!, _sidePanel!, _mainWindow!, _pendingUiActions);
+        _lspCoord = new LspCoordinator(appCtx);
+        _debugCoord = new DebugCoordinator(appCtx);
 
-        _debugCoord = new DebugCoordinator(_editorManager!, _sidePanel!, _outputPanel!, _projectService, _mainWindow!, _pendingUiActions, _ws);
-
-        _layout = new LayoutController(_ws, _projectService, _editorManager!, _sidePanel!, _lspCoord, _debugCoord, _config,
-            _mainWindow!, _outputWindow!, _explorerCol, _explorerSplitter,
+        _layout = new LayoutController(appCtx, _lspCoord, _debugCoord,
+            _explorerCol, _explorerSplitter,
             _sidePanelCol, _sidePanelSplitter, _mainContent, _dashboard);
         _layout.UpdateDashboard();
         WireHandlerEvents();
 
-        _menuBar = new MenuBarBuilder(_ws, _editorManager!, _explorer!, _sidePanel!,
-            _buildService, _config, _pipeline!, _gitOps!, _buildOps!, _lspCoord, _debugCoord!, _layout, _mainWindow!);
+        _menuBar = new MenuBarBuilder(appCtx, _gitOps, _buildOps, _lspCoord, _debugCoord, _layout);
         var fileOps = new FileOperationDelegates(
             HandleNewFileAsync, HandleNewFolderAsync,
             HandleRenameAsync, HandleDeleteAsync,
@@ -185,13 +198,10 @@ public class IdeApp : IDisposable
         AddMenuBar();
         AddToolbar();
 
-        _contextMenu = new ContextMenuBuilder(
-            _gitService, _projectService, _editorManager!, _explorer!, _sidePanel!,
-            _gitOps!, _lspCoord, _mainWindow!, _ws);
+        _contextMenu = new ContextMenuBuilder(appCtx, _gitOps, _lspCoord);
         _contextMenu.FileOps = fileOps;
 
-        _workspaceState = new WorkspaceStateManager(
-            new WorkspaceService(projectPath), _editorManager!, _explorer!, _outputPanel!);
+        _workspaceState = new WorkspaceStateManager(appCtx);
         _workspaceState.DebugCoordinator = _debugCoord;
         _workspaceState.Load();
         RestoreWorkspaceState();

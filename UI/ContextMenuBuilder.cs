@@ -7,11 +7,7 @@ namespace DotNetIDE;
 
 internal class ContextMenuBuilder
 {
-    private readonly GitService _gitService;
-    private readonly ProjectService _projectService;
-    private readonly EditorManager _editorManager;
-    private readonly ExplorerPanel _explorer;
-    private readonly SidePanel _sidePanel;
+    private readonly AppContext _ctx;
     private readonly GitCoordinator _gitOps;
     private readonly LspCoordinator _lspCoord;
 
@@ -19,31 +15,16 @@ internal class ContextMenuBuilder
     private LayoutNode? _contextMenuPortalNode;
     private IWindowControl? _contextMenuOwner;
 
-    private readonly Window _mainWindow;
-    private readonly ConsoleWindowSystem _ws;
-
     public FileOperationDelegates? FileOps { get; set; }
 
     public ContextMenuBuilder(
-        GitService gitService,
-        ProjectService projectService,
-        EditorManager editorManager,
-        ExplorerPanel explorer,
-        SidePanel sidePanel,
+        AppContext ctx,
         GitCoordinator gitOps,
-        LspCoordinator lspCoord,
-        Window mainWindow,
-        ConsoleWindowSystem ws)
+        LspCoordinator lspCoord)
     {
-        _gitService = gitService;
-        _projectService = projectService;
-        _editorManager = editorManager;
-        _explorer = explorer;
-        _sidePanel = sidePanel;
+        _ctx = ctx;
         _gitOps = gitOps;
         _lspCoord = lspCoord;
-        _mainWindow = mainWindow;
-        _ws = ws;
     }
 
     public bool ProcessPreviewKey(KeyPressedEventArgs e)
@@ -59,9 +40,9 @@ internal class ContextMenuBuilder
 
     public void DismissContextMenu()
     {
-        if (_contextMenuPortalNode != null && _mainWindow != null && _contextMenuOwner != null)
+        if (_contextMenuPortalNode != null && _ctx.MainWindow != null && _contextMenuOwner != null)
         {
-            _mainWindow.RemovePortal(_contextMenuOwner, _contextMenuPortalNode);
+            _ctx.MainWindow.RemovePortal(_contextMenuOwner, _contextMenuPortalNode);
             _contextMenuPortalNode = null;
             _contextMenuPortal = null;
             _contextMenuOwner = null;
@@ -71,18 +52,18 @@ internal class ContextMenuBuilder
     public void ShowContextMenu(List<ContextMenuItem> items, int anchorX, int anchorY, IWindowControl? owner = null)
     {
         DismissContextMenu();
-        if (_mainWindow == null || items.Count == 0) return;
+        if (_ctx.MainWindow == null || items.Count == 0) return;
 
         // Use provided owner or fall back to current editor or explorer
-        var portalOwner = owner ?? _editorManager.CurrentEditor ?? _explorer.Control;
+        var portalOwner = owner ?? _ctx.EditorManager.CurrentEditor ?? _ctx.Explorer.Control;
         if (portalOwner == null) return;
 
         var portal = new ContextMenuPortal(items, anchorX, anchorY,
-            _mainWindow.Width, _mainWindow.Height);
-        portal.Container = _mainWindow;
+            _ctx.MainWindow.Width, _ctx.MainWindow.Height);
+        portal.Container = _ctx.MainWindow;
         _contextMenuPortal = portal;
         _contextMenuOwner = portalOwner;
-        _contextMenuPortalNode = _mainWindow.CreatePortal(portalOwner, portal);
+        _contextMenuPortalNode = _ctx.MainWindow.CreatePortal(portalOwner, portal);
 
         portal.ItemSelected += (_, item) =>
         {
@@ -111,7 +92,7 @@ internal class ContextMenuBuilder
         {
             case GitContextMenuTarget.StagedFile:
                 items.Add(new("Unstage", null, () => _ = _gitOps.GitUnstageFileAsync(e.FilePath!)));
-                items.Add(new("Open File", null, () => _editorManager.OpenFile(e.FilePath!)));
+                items.Add(new("Open File", null, () => _ctx.EditorManager.OpenFile(e.FilePath!)));
                 items.Add(new("Diff", null, () => _ = _gitOps.GitShowDiffAsync(e.FilePath!)));
                 items.Add(new("-"));
                 items.Add(new("File Log", null, () => _ = _gitOps.GitShowFileLogAsync(e.FilePath!)));
@@ -119,7 +100,7 @@ internal class ContextMenuBuilder
                 break;
             case GitContextMenuTarget.UnstagedFile:
                 items.Add(new("Stage", null, () => _ = _gitOps.GitStageFileAsync(e.FilePath!)));
-                items.Add(new("Open File", null, () => _editorManager.OpenFile(e.FilePath!)));
+                items.Add(new("Open File", null, () => _ctx.EditorManager.OpenFile(e.FilePath!)));
                 items.Add(new("Diff", null, () => _ = _gitOps.GitShowDiffAsync(e.FilePath!)));
                 items.Add(new("-"));
                 items.Add(new("Discard Changes", null, () => _ = _gitOps.GitDiscardFileAsync(e.FilePath!)));
@@ -132,7 +113,7 @@ internal class ContextMenuBuilder
                 items.Add(new("Show Full Log", null, () => _ = _gitOps.GitShowLogAsync()));
                 break;
         }
-        ShowContextMenu(items, e.ScreenX, e.ScreenY, _sidePanel.TabControl);
+        ShowContextMenu(items, e.ScreenX, e.ScreenY, _ctx.SidePanel.TabControl);
     }
 
     public void ShowGitMoreMenu()
@@ -153,7 +134,7 @@ internal class ContextMenuBuilder
             new("Diff All", null, () => _ = _gitOps.GitShowDiffAllAsync()),
             new("Full Log", null, () => _ = _gitOps.GitShowLogAsync()),
         };
-        var sp = _sidePanel.TabControl;
+        var sp = _ctx.SidePanel.TabControl;
         ShowContextMenu(items, sp.ActualX + 2, sp.ActualY + 3, sp);
     }
 
@@ -181,9 +162,9 @@ internal class ContextMenuBuilder
         // Git section — query file status
         if (!e.IsDirectory)
         {
-            var isStaged = await _gitService.IsStagedAsync(_projectService.RootPath, path);
-            var hasChanges = await _gitService.HasWorkingChangesAsync(_projectService.RootPath, path);
-            var gitStatus = await _gitService.GetFileStatusAsync(_projectService.RootPath, path);
+            var isStaged = await _ctx.GitService.IsStagedAsync(_ctx.ProjectService.RootPath, path);
+            var hasChanges = await _ctx.GitService.HasWorkingChangesAsync(_ctx.ProjectService.RootPath, path);
+            var gitStatus = await _ctx.GitService.GetFileStatusAsync(_ctx.ProjectService.RootPath, path);
 
             if (isStaged || hasChanges || gitStatus != null)
             {
@@ -208,7 +189,7 @@ internal class ContextMenuBuilder
             }
 
             // Gitignore
-            var inGitignore = await _gitService.IsInGitignoreAsync(_projectService.RootPath, path);
+            var inGitignore = await _ctx.GitService.IsInGitignoreAsync(_ctx.ProjectService.RootPath, path);
             if (inGitignore)
                 items.Add(new ContextMenuItem("Git: Remove from .gitignore", null, () => _ = _gitOps.GitRemoveFromGitignoreAsync(path)));
             else
@@ -222,7 +203,7 @@ internal class ContextMenuBuilder
             items.Add(new ContextMenuItem("Git: Unstage Folder", null, () => _ = _gitOps.GitUnstageFileAsync(path)));
 
             // Gitignore
-            var inGitignore = await _gitService.IsInGitignoreAsync(_projectService.RootPath, path);
+            var inGitignore = await _ctx.GitService.IsInGitignoreAsync(_ctx.ProjectService.RootPath, path);
             if (inGitignore)
                 items.Add(new ContextMenuItem("Git: Remove from .gitignore", null, () => _ = _gitOps.GitRemoveFromGitignoreAsync(path)));
             else
@@ -242,7 +223,7 @@ internal class ContextMenuBuilder
                 () => _ = FileOps?.RefreshExplorerAndGitAsync?.Invoke() ?? Task.CompletedTask));
         }
 
-        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _explorer.Control);
+        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _ctx.Explorer.Control);
     }
 
     public void HandleTabContextMenu(object? sender, (string FilePath, System.Drawing.Point ScreenPosition) e)
@@ -253,28 +234,28 @@ internal class ContextMenuBuilder
     private async Task BuildTabContextMenuAsync((string FilePath, System.Drawing.Point ScreenPosition) e)
     {
         var filePath = e.FilePath;
-        var tabIndex = _editorManager.GetTabIndexForPath(filePath);
+        var tabIndex = _ctx.EditorManager.GetTabIndexForPath(filePath);
 
         var items = new List<ContextMenuItem>
         {
             new("Close", "Ctrl+W", () =>
             {
-                if (tabIndex >= 0) _editorManager.CloseTabAt(tabIndex);
+                if (tabIndex >= 0) _ctx.EditorManager.CloseTabAt(tabIndex);
             }),
-            new("Close Others", null, () => _editorManager.CloseOthers(filePath)),
-            new("Close All", null, () => _editorManager.CloseAll()),
+            new("Close Others", null, () => _ctx.EditorManager.CloseOthers(filePath)),
+            new("Close All", null, () => _ctx.EditorManager.CloseAll()),
             new("-"),
             new("Save", "Ctrl+S", () =>
             {
-                if (tabIndex >= 0) _editorManager.SaveTabAt(tabIndex);
+                if (tabIndex >= 0) _ctx.EditorManager.SaveTabAt(tabIndex);
             }),
         };
 
         // Git section for the tab's file
         if (!filePath.StartsWith(IdeConstants.ReadOnlyTabPrefix))
         {
-            var isStaged = await _gitService.IsStagedAsync(_projectService.RootPath, filePath);
-            var hasChanges = await _gitService.HasWorkingChangesAsync(_projectService.RootPath, filePath);
+            var isStaged = await _ctx.GitService.IsStagedAsync(_ctx.ProjectService.RootPath, filePath);
+            var hasChanges = await _ctx.GitService.HasWorkingChangesAsync(_ctx.ProjectService.RootPath, filePath);
 
             if (isStaged || hasChanges)
             {
@@ -293,12 +274,12 @@ internal class ContextMenuBuilder
         items.Add(new ContextMenuItem("Copy Path", null, () => ClipboardHelper.SetText(filePath)));
         items.Add(new ContextMenuItem("Copy Relative Path", null, () => CopyRelativePath(filePath)));
 
-        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _editorManager.TabControl);
+        ShowContextMenu(items, e.ScreenPosition.X, e.ScreenPosition.Y, _ctx.EditorManager.TabControl);
     }
 
     public void HandleEditorContextMenu(object? sender, (string? FilePath, System.Drawing.Point ScreenPosition) e)
     {
-        var editor = _editorManager.CurrentEditor;
+        var editor = _ctx.EditorManager.CurrentEditor;
         if (editor == null) return;
 
         bool hasLsp = _lspCoord.HasLsp;
@@ -313,7 +294,7 @@ internal class ContextMenuBuilder
             new("-"),
             new("Go to Definition", "F12", () => _ = _lspCoord.ShowGoToDefinitionAsync(), Enabled: hasLsp),
             new("Find References", "Shift+F12", () => _ = _lspCoord.ShowFindReferencesAsync(), Enabled: hasLsp),
-            new("Rename Symbol", "Ctrl+F2", () => _ = _lspCoord.ShowRenameAsync(_ws!), Enabled: hasLsp),
+            new("Rename Symbol", "Ctrl+F2", () => _ = _lspCoord.ShowRenameAsync(_ctx.WindowSystem!), Enabled: hasLsp),
             new("Hover Info", "Ctrl+K", () => _ = _lspCoord.ShowHoverAsync(), Enabled: hasLsp),
         };
 
@@ -331,7 +312,7 @@ internal class ContextMenuBuilder
 
     private void CopyRelativePath(string fullPath)
     {
-        var root = _projectService.RootPath;
+        var root = _ctx.ProjectService.RootPath;
         if (fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
         {
             var relative = fullPath[root.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
