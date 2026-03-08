@@ -3,8 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -180,8 +179,8 @@ public class DeleteConfirmDialog : DialogBase<bool>
             .Build());
 
         var message = isDir
-            ? $"Delete folder [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/] and all contents?"
-            : $"Delete [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/]?";
+            ? $"Delete folder [{ColorScheme.WarningMarkup}]{MarkupParser.Escape(name)}[/] and all contents?"
+            : $"Delete [{ColorScheme.WarningMarkup}]{MarkupParser.Escape(name)}[/]?";
 
         Modal.AddControl(Controls.Markup()
             .AddLine($"[{ColorScheme.SecondaryMarkup}]{message}[/]")

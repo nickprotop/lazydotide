@@ -1,5 +1,5 @@
-using Spectre.Console;
 
+using SharpConsoleUI;
 namespace DotNetIDE;
 
 public static class ColorScheme

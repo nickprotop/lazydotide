@@ -3,9 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -40,7 +38,7 @@ public class GitCommitDialog : DialogBase<string?>
         if (!string.IsNullOrEmpty(_statusSummary))
         {
             Modal.AddControl(Controls.Markup()
-                .AddLine($"[{ColorScheme.MutedMarkup}]{Markup.Escape(_statusSummary)}[/]")
+                .AddLine($"[{ColorScheme.MutedMarkup}]{MarkupParser.Escape(_statusSummary)}[/]")
                 .WithAlignment(HorizontalAlignment.Left)
                 .Build());
         }
@@ -159,8 +157,8 @@ public class GitBranchPickerDialog : DialogBase<string?>
         foreach (var branch in _branches)
         {
             var label = branch == _currentBranch
-                ? $"[cyan1]\u2713 {Markup.Escape(branch)}[/]"
-                : $"  {Markup.Escape(branch)}";
+                ? $"[cyan1]\u2713 {MarkupParser.Escape(branch)}[/]"
+                : $"  {MarkupParser.Escape(branch)}";
             var item = new ListItem(label) { Tag = branch };
             _list.AddItem(item);
         }
@@ -296,7 +294,7 @@ public class GitDiscardConfirmDialog : DialogBase<bool>
         else
         {
             var name = Path.GetFileName(_path);
-            message = $"Discard changes in [{ColorScheme.WarningMarkup}]{Markup.Escape(name)}[/]?";
+            message = $"Discard changes in [{ColorScheme.WarningMarkup}]{MarkupParser.Escape(name)}[/]?";
         }
 
         Modal.AddControl(Controls.Markup()

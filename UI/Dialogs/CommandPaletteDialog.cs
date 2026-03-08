@@ -4,10 +4,7 @@ using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Drawing;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
 using Rectangle = System.Drawing.Rectangle;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 

@@ -2,8 +2,6 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
 

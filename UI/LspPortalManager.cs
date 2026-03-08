@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -271,7 +271,7 @@ internal class LspPortalManager
         _tooltipAutoDismiss?.Dispose();
         _tooltipAutoDismiss = null;
 
-        ShowTooltipPortal(new List<string> { Markup.Escape(message) });
+        ShowTooltipPortal(new List<string> { MarkupParser.Escape(message) });
 
         int gen = ++_tooltipAutoDismissGeneration;
         _tooltipAutoDismiss = new Timer(_ =>

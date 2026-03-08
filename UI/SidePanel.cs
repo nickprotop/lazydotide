@@ -4,10 +4,9 @@ using SharpConsoleUI.Controls;
 using SharpConsoleUI.Controls.Terminal;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 using TreeNode = SharpConsoleUI.Controls.TreeNode;
+using Color = SharpConsoleUI.Color;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -216,7 +215,7 @@ internal class SidePanel
 
         foreach (var f in files)
         {
-            var item = new ListItem($"  {Markup.Escape(f.RelativePath)}")
+            var item = new ListItem($"  {MarkupParser.Escape(f.RelativePath)}")
             {
                 Icon = GetStatusChar(f.Status),
                 IconColor = GetStatusColor(f.Status),
@@ -233,7 +232,7 @@ internal class SidePanel
         {
             foreach (var entry in recentLog.Take(20))
             {
-                var label = $"  [grey50]{Markup.Escape(entry.ShortSha)}[/] {Markup.Escape(entry.MessageShort)}";
+                var label = $"  [grey50]{MarkupParser.Escape(entry.ShortSha)}[/] {MarkupParser.Escape(entry.MessageShort)}";
                 _logList.AddItem(new ListItem(label) { Tag = entry });
             }
         }
@@ -251,7 +250,7 @@ internal class SidePanel
 
         _gitPanel.AddControl(new MarkupControl(new List<string>
         {
-            $"[cyan1]Branch: {Markup.Escape(branchDisplay)}[/]"
+            $"[cyan1]Branch: {MarkupParser.Escape(branchDisplay)}[/]"
         }));
 
         _gitPanel.AddControl(_gitToolbar);

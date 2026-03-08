@@ -2,8 +2,7 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -34,7 +33,7 @@ public class ConfirmSaveDialog : DialogBase<DialogResult>
             .Build());
 
         Modal.AddControl(Controls.Markup()
-            .AddLine($"[{ColorScheme.SecondaryMarkup}]Save changes to [{ColorScheme.WarningMarkup}]{Markup.Escape(_fileName)}[/][{ColorScheme.SecondaryMarkup}]?[/]")
+            .AddLine($"[{ColorScheme.SecondaryMarkup}]Save changes to [{ColorScheme.WarningMarkup}]{MarkupParser.Escape(_fileName)}[/][{ColorScheme.SecondaryMarkup}]?[/]")
             .WithAlignment(HorizontalAlignment.Center)
             .WithMargin(1, 1, 1, 1)
             .Build());

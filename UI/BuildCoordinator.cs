@@ -4,8 +4,6 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Controls.Terminal;
 using SharpConsoleUI.Layout;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 
 namespace DotNetIDE;
 

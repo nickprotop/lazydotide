@@ -3,10 +3,9 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 using TreeNode = SharpConsoleUI.Controls.TreeNode;
+using Color = SharpConsoleUI.Color;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -43,7 +42,7 @@ public class VariableInspectorDialog : DialogBase<bool>
     {
         // Name
         Modal.AddControl(Controls.Markup()
-            .AddLine($"[bold]Name:[/]  [{ColorScheme.PrimaryMarkup}]{Markup.Escape(_name)}[/]")
+            .AddLine($"[bold]Name:[/]  [{ColorScheme.PrimaryMarkup}]{MarkupParser.Escape(_name)}[/]")
             .WithMargin(1, 1, 0, 0)
             .Build());
 
@@ -51,7 +50,7 @@ public class VariableInspectorDialog : DialogBase<bool>
         if (_type != null)
         {
             Modal.AddControl(Controls.Markup()
-                .AddLine($"[bold]Type:[/]  [dim]{Markup.Escape(_type)}[/]")
+                .AddLine($"[bold]Type:[/]  [dim]{MarkupParser.Escape(_type)}[/]")
                 .WithMargin(1, 0, 0, 0)
                 .Build());
         }
@@ -64,7 +63,7 @@ public class VariableInspectorDialog : DialogBase<bool>
             .Build());
 
         // Scrollable value panel
-        var valueMarkup = new MarkupControl(new List<string> { Markup.Escape(_value) })
+        var valueMarkup = new MarkupControl(new List<string> { MarkupParser.Escape(_value) })
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Top
@@ -204,18 +203,18 @@ public class VariableInspectorDialog : DialogBase<bool>
 
     private static string FormatVariable(DapVariable v)
     {
-        var escapedName = Markup.Escape(v.Name);
-        var escapedValue = Markup.Escape(v.Value);
+        var escapedName = MarkupParser.Escape(v.Name);
+        var escapedValue = MarkupParser.Escape(v.Value);
 
         if (v.VariablesReference > 0)
         {
-            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var typeStr = v.Type != null ? $" [dim]({MarkupParser.Escape(v.Type)})[/]" : "";
             var preview = escapedValue.Length > 30 ? escapedValue[..30] + "..." : escapedValue;
             return $"[cyan1]{escapedName}[/]{typeStr} = {preview}";
         }
         else
         {
-            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var typeStr = v.Type != null ? $" [dim]({MarkupParser.Escape(v.Type)})[/]" : "";
             return $"[cyan1]{escapedName}[/] = {escapedValue}{typeStr}";
         }
     }

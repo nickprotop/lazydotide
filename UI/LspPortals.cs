@@ -5,9 +5,8 @@ using SharpConsoleUI.Drivers;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using Color = Spectre.Console.Color;
 using Rectangle = System.Drawing.Rectangle;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -49,7 +48,7 @@ internal class LspTooltipPortalContent : PortalContentBase
 
         // Measure using StripSpectreLength — lines are already Spectre markup
         int contentW = markupLines.Count > 0
-            ? markupLines.Max(l => AnsiConsoleHelper.StripSpectreLength(l)) + 4  // +2 border + 2 padding
+            ? markupLines.Max(l => MarkupParser.StripLength(l)) + 4  // +2 border + 2 padding
             : 20;
         int popupW = Math.Min(TooltipMaxWidth, contentW);
 
@@ -60,7 +59,7 @@ internal class LspTooltipPortalContent : PortalContentBase
         int wrappedLines = 0;
         foreach (var line in markupLines)
         {
-            int lineW = AnsiConsoleHelper.StripSpectreLength(line);
+            int lineW = MarkupParser.StripLength(line);
             wrappedLines += (innerW > 0 && lineW > innerW)
                 ? (int)Math.Ceiling((double)lineW / innerW)
                 : 1;
@@ -171,9 +170,9 @@ internal class LspCompletionPortalContent : PortalContentBase
     private static ListItem BuildListItem(CompletionItem item)
     {
         string icon = GetKindIcon(item.Kind);
-        string text = icon + " " + Markup.Escape(item.Label);
+        string text = icon + " " + MarkupParser.Escape(item.Label);
         if (item.Detail != null)
-            text += "  [dim]" + Markup.Escape(item.Detail) + "[/]";
+            text += "  [dim]" + MarkupParser.Escape(item.Detail) + "[/]";
         return new ListItem(text) { Tag = item };
     }
 
@@ -216,7 +215,7 @@ internal class LspCompletionPortalContent : PortalContentBase
             string icon  = GetKindIcon(i.Kind);
             string label = icon + " " + i.Label;
             if (i.Detail != null) label += "  " + i.Detail;
-            return AnsiConsoleHelper.StripSpectreLength(label);
+            return MarkupParser.StripLength(label);
         });
         int popupW = Math.Min(CompletionMaxWidth, maxLabel + 4);  // +2 border + 2 padding
 
@@ -315,7 +314,7 @@ internal class LspLocationListPortalContent : PortalContentBase
     private static ListItem BuildListItem(LspLocationEntry entry)
     {
         var fileName = Path.GetFileName(entry.FilePath);
-        var text = $"[cyan]{Markup.Escape(fileName)}[/]:[dim]{entry.Line}[/] {Markup.Escape(entry.DisplayText)}";
+        var text = $"[cyan]{MarkupParser.Escape(fileName)}[/]:[dim]{entry.Line}[/] {MarkupParser.Escape(entry.DisplayText)}";
         return new ListItem(text) { Tag = entry };
     }
 

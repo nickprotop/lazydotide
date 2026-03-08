@@ -3,9 +3,7 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -315,9 +313,9 @@ internal class LayoutController
         if (!_lspCoord.LspDetectionDone)
             lspLines = new List<string> { "[dim]  LSP      ○ detecting…[/]" };
         else if (_lspCoord.LspStarted)
-            lspLines = new List<string> { $"[dim]  LSP      [/][green]● {Markup.Escape(_lspCoord.DetectedLspExe!)}[/]" };
+            lspLines = new List<string> { $"[dim]  LSP      [/][green]● {MarkupParser.Escape(_lspCoord.DetectedLspExe!)}[/]" };
         else if (_lspCoord.DetectedLspExe != null)
-            lspLines = new List<string> { $"[dim]  LSP      ○ {Markup.Escape(_lspCoord.DetectedLspExe)} (failed to start)[/]" };
+            lspLines = new List<string> { $"[dim]  LSP      ○ {MarkupParser.Escape(_lspCoord.DetectedLspExe)} (failed to start)[/]" };
         else
             lspLines = new List<string>
             {
@@ -326,7 +324,7 @@ internal class LayoutController
                 "[dim]                    Rename · Code Actions · Signature Help[/]",
                 "[yellow]           Install: [/][italic]dotnet tool install -g csharp-ls[/]",
                 "[dim]           Alt:     [/][dim italic]OmniSharp  (omnisharp.net)[/]",
-                $"[dim]           Config:  [/][dim italic]{Markup.Escape(ConfigService.GetConfigPath())}[/]",
+                $"[dim]           Config:  [/][dim italic]{MarkupParser.Escape(ConfigService.GetConfigPath())}[/]",
             };
 
         // Debugger status
@@ -334,7 +332,7 @@ internal class LayoutController
         if (!_debugCoord.DapDetectionDone)
             dapLines = new List<string> { "[dim]  Debugger ○ detecting…[/]" };
         else if (_debugCoord.HasDebugger)
-            dapLines = new List<string> { $"[dim]  Debugger [/][green]● {Markup.Escape(_debugCoord.DetectedDapExe!)}[/]" };
+            dapLines = new List<string> { $"[dim]  Debugger [/][green]● {MarkupParser.Escape(_debugCoord.DetectedDapExe!)}[/]" };
         else
             dapLines = new List<string>
             {
@@ -350,8 +348,8 @@ internal class LayoutController
         var lines = new List<string>
         {
             "",
-            $"[bold]  lazydotide[/]  [dim]{Markup.Escape(projectName)}[/]",
-            $"[dim]  {Markup.Escape(rootPath)}[/]",
+            $"[bold]  lazydotide[/]  [dim]{MarkupParser.Escape(projectName)}[/]",
+            $"[dim]  {MarkupParser.Escape(rootPath)}[/]",
             "",
             "[dim]  ────────────────────────────[/]",
         };

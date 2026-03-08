@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
-using Spectre.Console;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -83,14 +83,14 @@ internal class GitCoordinator
 
             if (string.IsNullOrEmpty(status))
             {
-                bar.AddSegment($"[green] git:{Markup.Escape(displayBranch)}[/]",
+                bar.AddSegment($"[green] git:{MarkupParser.Escape(displayBranch)}[/]",
                                $" git:{displayBranch}");
             }
             else
             {
-                bar.AddSegment($"[yellow] git:{Markup.Escape(displayBranch)}[/]",
+                bar.AddSegment($"[yellow] git:{MarkupParser.Escape(displayBranch)}[/]",
                                $" git:{displayBranch}")
-                   .AddSegment($"[dim]  {Markup.Escape(status)}[/]",
+                   .AddSegment($"[dim]  {MarkupParser.Escape(status)}[/]",
                                $"  {status}");
             }
         }

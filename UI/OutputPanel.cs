@@ -3,9 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Controls.Terminal;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -129,15 +127,15 @@ public class OutputPanel
     {
         string markup;
         if (line.Contains(": error ", StringComparison.OrdinalIgnoreCase))
-            markup = $"[red]{Markup.Escape(line)}[/]";
+            markup = $"[red]{MarkupParser.Escape(line)}[/]";
         else if (line.Contains(": warning ", StringComparison.OrdinalIgnoreCase))
-            markup = $"[yellow]{Markup.Escape(line)}[/]";
+            markup = $"[yellow]{MarkupParser.Escape(line)}[/]";
         else if (line.StartsWith("Build succeeded", StringComparison.OrdinalIgnoreCase))
-            markup = $"[green]{Markup.Escape(line)}[/]";
+            markup = $"[green]{MarkupParser.Escape(line)}[/]";
         else if (line.StartsWith("Build FAILED", StringComparison.OrdinalIgnoreCase))
-            markup = $"[bold red]{Markup.Escape(line)}[/]";
+            markup = $"[bold red]{MarkupParser.Escape(line)}[/]";
         else
-            markup = $"[grey]{Markup.Escape(line)}[/]";
+            markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
         _buildPanel.AddControl(new MarkupControl(new List<string> { markup }));
         _buildPanel.ScrollToBottom();
@@ -148,12 +146,12 @@ public class OutputPanel
         string markup;
         if (line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("FAILED", StringComparison.OrdinalIgnoreCase))
-            markup = $"[red]{Markup.Escape(line)}[/]";
+            markup = $"[red]{MarkupParser.Escape(line)}[/]";
         else if (line.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
                  line.Contains("PASSED", StringComparison.OrdinalIgnoreCase))
-            markup = $"[green]{Markup.Escape(line)}[/]";
+            markup = $"[green]{MarkupParser.Escape(line)}[/]";
         else
-            markup = $"[grey]{Markup.Escape(line)}[/]";
+            markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
         _testPanel.AddControl(new MarkupControl(new List<string> { markup }));
         _testPanel.ScrollToBottom();
@@ -174,11 +172,11 @@ public class OutputPanel
         string markup;
         if (line.StartsWith("error", StringComparison.OrdinalIgnoreCase) ||
             line.StartsWith("fatal", StringComparison.OrdinalIgnoreCase))
-            markup = $"[red]{Markup.Escape(line)}[/]";
+            markup = $"[red]{MarkupParser.Escape(line)}[/]";
         else if (line.StartsWith("warning", StringComparison.OrdinalIgnoreCase))
-            markup = $"[yellow]{Markup.Escape(line)}[/]";
+            markup = $"[yellow]{MarkupParser.Escape(line)}[/]";
         else
-            markup = $"[grey]{Markup.Escape(line)}[/]";
+            markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
         _gitPanel.AddControl(new MarkupControl(new List<string> { markup }));
         _gitPanel.ScrollToBottom();
@@ -233,7 +231,7 @@ public class OutputPanel
         {
             var fileName = Path.GetFileName(diag.FilePath);
             var icon = diag.Severity == "error" ? "[red]E[/]" : "[yellow]W[/]";
-            var text = $"{icon} {Markup.Escape(fileName)}({diag.Line},{diag.Column}): {Markup.Escape(diag.Message)}";
+            var text = $"{icon} {MarkupParser.Escape(fileName)}({diag.Line},{diag.Column}): {MarkupParser.Escape(diag.Message)}";
             var item = new ListItem(text) { Tag = diag };
             _problemsList.AddItem(item);
         }
@@ -250,7 +248,7 @@ public class OutputPanel
             { "[yellow]── Markdown Warnings ──[/]" }));
         foreach (var w in warnings)
             _buildPanel.AddControl(new MarkupControl(new List<string>
-                { $"[yellow]▲ {Markup.Escape(w)}[/]" }));
+                { $"[yellow]▲ {MarkupParser.Escape(w)}[/]" }));
         _buildPanel.ScrollToBottom();
         SwitchToBuildTab();
     }
@@ -277,7 +275,7 @@ public class OutputPanel
         var lineText = result.LineText.Length > 120
             ? result.LineText[..120] + "…"
             : result.LineText;
-        var text = $"[dim]{Markup.Escape(relPath)}:{result.Line}[/]  {Markup.Escape(lineText.TrimStart())}";
+        var text = $"[dim]{MarkupParser.Escape(relPath)}:{result.Line}[/]  {MarkupParser.Escape(lineText.TrimStart())}";
         _searchResults.AddItem(new ListItem(text) { Tag = result });
     }
 

@@ -1,6 +1,6 @@
+using SharpConsoleUI;
 using System.Text.RegularExpressions;
 using SharpConsoleUI.Controls;
-using Spectre.Console;
 
 namespace DotNetIDE;
 

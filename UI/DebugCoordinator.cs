@@ -4,10 +4,9 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 using TreeNode = SharpConsoleUI.Controls.TreeNode;
+using Color = SharpConsoleUI.Color;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -354,8 +353,8 @@ internal class DebugCoordinator : IAsyncDisposable
         _pendingUiActions.Enqueue(() =>
         {
             UpdateToolbarState();
-            AppendDebugConsole($"[yellow]Paused: {Markup.Escape(e.Reason)}[/]" +
-                (e.Description != null ? $" — {Markup.Escape(e.Description)}" : ""));
+            AppendDebugConsole($"[yellow]Paused: {MarkupParser.Escape(e.Reason)}[/]" +
+                (e.Description != null ? $" — {MarkupParser.Escape(e.Description)}" : ""));
         });
 
         // Fetch stack trace and variables
@@ -431,7 +430,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private void OnOutput(object? sender, (string Category, string Text) e)
     {
-        var escaped = Markup.Escape(e.Text.TrimEnd('\n', '\r'));
+        var escaped = MarkupParser.Escape(e.Text.TrimEnd('\n', '\r'));
         if (string.IsNullOrEmpty(escaped)) return;
 
         var formatted = e.Category switch
@@ -703,20 +702,20 @@ internal class DebugCoordinator : IAsyncDisposable
 
     private static string FormatVariableNode(DapVariable v)
     {
-        var escapedName = Markup.Escape(v.Name);
-        var escapedValue = Markup.Escape(v.Value);
+        var escapedName = MarkupParser.Escape(v.Name);
+        var escapedValue = MarkupParser.Escape(v.Value);
 
         if (v.VariablesReference > 0)
         {
             // Expandable object: name (Type) = shortPreview
-            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var typeStr = v.Type != null ? $" [dim]({MarkupParser.Escape(v.Type)})[/]" : "";
             var preview = escapedValue.Length > 20 ? escapedValue[..20] + "..." : escapedValue;
             return $"[cyan1]{escapedName}[/]{typeStr} = {preview}";
         }
         else
         {
             // Leaf: name = truncatedValue (Type)
-            var typeStr = v.Type != null ? $" [dim]({Markup.Escape(v.Type)})[/]" : "";
+            var typeStr = v.Type != null ? $" [dim]({MarkupParser.Escape(v.Type)})[/]" : "";
             var display = escapedValue.Length > 30 ? escapedValue[..30] + "..." : escapedValue;
             return $"[cyan1]{escapedName}[/] = {display}{typeStr}";
         }
@@ -738,7 +737,7 @@ internal class DebugCoordinator : IAsyncDisposable
 
         foreach (var (scope, vars) in scopeData)
         {
-            var scopeNode = _variablesTree.AddRootNode($"[bold]{Markup.Escape(scope.Name)}[/]");
+            var scopeNode = _variablesTree.AddRootNode($"[bold]{MarkupParser.Escape(scope.Name)}[/]");
             var scopePath = scopeNode.Text;
             foreach (var v in vars)
             {
@@ -925,7 +924,7 @@ internal class DebugCoordinator : IAsyncDisposable
         foreach (var f in frames)
         {
             var location = f.Source?.Name != null ? $"{f.Source.Name}:{f.Line}" : "";
-            var item = new ListItem($"{Markup.Escape(f.Name)}  [dim]{Markup.Escape(location)}[/]")
+            var item = new ListItem($"{MarkupParser.Escape(f.Name)}  [dim]{MarkupParser.Escape(location)}[/]")
             {
                 Tag = f
             };

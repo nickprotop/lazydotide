@@ -3,9 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -129,10 +127,10 @@ public class InstallDebuggerModal : DialogBase<bool>
             lock (_logLines)
             {
                 var timestamp = DateTime.Now.ToString("HH:mm:ss");
-                _logLines.Add($"[{ColorScheme.MutedMarkup}][{timestamp}][/] {Markup.Escape(msg)}");
+                _logLines.Add($"[{ColorScheme.MutedMarkup}][{timestamp}][/] {MarkupParser.Escape(msg)}");
                 if (_logLines.Count > 500) _logLines.RemoveRange(0, _logLines.Count - 500);
                 _logContent.SetContent(_logLines);
-                _statusLabel.SetContent(new List<string> { $"[{ColorScheme.SecondaryMarkup}]{Markup.Escape(msg)}[/]" });
+                _statusLabel.SetContent(new List<string> { $"[{ColorScheme.SecondaryMarkup}]{MarkupParser.Escape(msg)}[/]" });
             }
         });
 
@@ -155,7 +153,7 @@ public class InstallDebuggerModal : DialogBase<bool>
             _statusLabel.SetContent(new List<string> { $"[{ColorScheme.ErrorMarkup}]\u2717 Installation failed[/]" });
             lock (_logLines)
             {
-                _logLines.Add($"[{ColorScheme.ErrorMarkup}]{Markup.Escape(ex.Message)}[/]");
+                _logLines.Add($"[{ColorScheme.ErrorMarkup}]{MarkupParser.Escape(ex.Message)}[/]");
                 _logContent.SetContent(_logLines);
             }
         }

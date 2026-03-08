@@ -4,9 +4,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -119,7 +117,7 @@ public class EditorManager
             var binaryPanel = new ScrollablePanelControl { HorizontalAlignment = HorizontalAlignment.Stretch };
             binaryPanel.AddControl(new MarkupControl(new List<string>
             {
-                $"[yellow]Binary file: {Markup.Escape(Path.GetFileName(path))}[/]",
+                $"[yellow]Binary file: {MarkupParser.Escape(Path.GetFileName(path))}[/]",
                 "[dim]Cannot display binary content in text editor.[/]"
             }));
             content = binaryPanel;
@@ -136,7 +134,7 @@ public class EditorManager
         {
             var errorPanel = new ScrollablePanelControl { HorizontalAlignment = HorizontalAlignment.Stretch };
             errorPanel.AddControl(new MarkupControl(new List<string>
-                { $"[red]Error reading file: {Markup.Escape(ex.Message)}[/]" }));
+                { $"[red]Error reading file: {MarkupParser.Escape(ex.Message)}[/]" }));
             AddTab(path, errorPanel, editor: null, isDirty: false);
             return;
         }

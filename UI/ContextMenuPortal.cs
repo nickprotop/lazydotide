@@ -5,8 +5,7 @@ using SharpConsoleUI.Drawing;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using Color = Spectre.Console.Color;
+using Color = SharpConsoleUI.Color;
 using Rectangle = System.Drawing.Rectangle;
 
 namespace DotNetIDE;

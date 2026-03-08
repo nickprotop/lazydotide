@@ -3,9 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -189,15 +187,15 @@ public static class AboutDialog
                 lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb detecting\u2026[/]");
                 break;
             case { LspStarted: true, DetectedLspExe: var exe }:
-                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][{ColorScheme.SuccessMarkup}]\u25cf {Markup.Escape(exe!)} (running)[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][{ColorScheme.SuccessMarkup}]\u25cf {MarkupParser.Escape(exe!)} (running)[/]");
                 break;
             case { DetectedLspExe: var exe } when exe != null:
-                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb {Markup.Escape(exe)} (failed to start)[/]");
+                lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb {MarkupParser.Escape(exe)} (failed to start)[/]");
                 break;
             default:
                 lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb not detected[/]");
                 lspLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]dotnet tool install -g csharp-ls[/]");
-                lspLines.Add($"[dim]               Config:   {Markup.Escape(ConfigService.GetConfigPath())}[/]");
+                lspLines.Add($"[dim]               Config:   {MarkupParser.Escape(ConfigService.GetConfigPath())}[/]");
                 break;
         }
 
@@ -208,7 +206,7 @@ public static class AboutDialog
                 dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][dim]\u25cb detecting\u2026[/]");
                 break;
             case { DapDetected: true, DetectedDapExe: var dapExe }:
-                dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][{ColorScheme.SuccessMarkup}]\u25cf {Markup.Escape(dapExe!)}[/]");
+                dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][{ColorScheme.SuccessMarkup}]\u25cf {MarkupParser.Escape(dapExe!)}[/]");
                 break;
             default:
                 dapLines.Add($"  [{ColorScheme.MutedMarkup}]Debugger      [/][dim]\u25cb not detected[/]");
@@ -245,10 +243,10 @@ public static class AboutDialog
         result.AddRange(dapLines);
         result.AddRange(new[]
         {
-            $"  [{ColorScheme.MutedMarkup}].NET Runtime [/]{Markup.Escape(Environment.Version.ToString())}",
-            $"  [{ColorScheme.MutedMarkup}]OS           [/]{Markup.Escape(Environment.OSVersion.VersionString)}",
-            $"  [{ColorScheme.MutedMarkup}]Architecture [/]{Markup.Escape(arch)}",
-            $"  [{ColorScheme.MutedMarkup}]Clipboard    [/]{Markup.Escape(clipBackend)}",
+            $"  [{ColorScheme.MutedMarkup}].NET Runtime [/]{MarkupParser.Escape(Environment.Version.ToString())}",
+            $"  [{ColorScheme.MutedMarkup}]OS           [/]{MarkupParser.Escape(Environment.OSVersion.VersionString)}",
+            $"  [{ColorScheme.MutedMarkup}]Architecture [/]{MarkupParser.Escape(arch)}",
+            $"  [{ColorScheme.MutedMarkup}]Clipboard    [/]{MarkupParser.Escape(clipBackend)}",
         });
         if (ClipboardHelper.Backend == ClipboardBackend.InternalFallback)
         {
@@ -261,8 +259,8 @@ public static class AboutDialog
         }
         result.AddRange(new[]
         {
-            $"  [{ColorScheme.MutedMarkup}]Project      [/][dim]{Markup.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
-            $"  [{ColorScheme.MutedMarkup}]Path         [/][dim]{Markup.Escape(info.ProjectPath)}[/]",
+            $"  [{ColorScheme.MutedMarkup}]Project      [/][dim]{MarkupParser.Escape(Path.GetFileName(info.ProjectPath.TrimEnd(Path.DirectorySeparatorChar)))}[/]",
+            $"  [{ColorScheme.MutedMarkup}]Path         [/][dim]{MarkupParser.Escape(info.ProjectPath)}[/]",
         });
         return result;
     }
@@ -299,13 +297,13 @@ public static class AboutDialog
             lines.Add("");
             foreach (var tool in info.Tools)
             {
-                lines.Add($"  [{ColorScheme.InfoMarkup}]\u00b7[/] [bold]{Markup.Escape(tool.Name)}[/]");
-                lines.Add($"    [{ColorScheme.MutedMarkup}]cmd [/]{Markup.Escape(tool.Command)}" +
+                lines.Add($"  [{ColorScheme.InfoMarkup}]\u00b7[/] [bold]{MarkupParser.Escape(tool.Name)}[/]");
+                lines.Add($"    [{ColorScheme.MutedMarkup}]cmd [/]{MarkupParser.Escape(tool.Command)}" +
                           (tool.Args is { Length: > 0 }
-                              ? $" [{ColorScheme.MutedMarkup}]{Markup.Escape(string.Join(" ", tool.Args))}[/]"
+                              ? $" [{ColorScheme.MutedMarkup}]{MarkupParser.Escape(string.Join(" ", tool.Args))}[/]"
                               : ""));
                 if (tool.WorkingDir != null)
-                    lines.Add($"    [{ColorScheme.MutedMarkup}]dir [/][dim]{Markup.Escape(tool.WorkingDir)}[/]");
+                    lines.Add($"    [{ColorScheme.MutedMarkup}]dir [/][dim]{MarkupParser.Escape(tool.WorkingDir)}[/]");
                 lines.Add("");
             }
         }

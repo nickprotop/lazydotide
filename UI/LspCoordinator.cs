@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
-using Spectre.Console;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -248,12 +248,12 @@ internal class LspCoordinator : IAsyncDisposable
                 var paramLabel = activeSig.Parameters[sig.ActiveParameter].Label;
                 int idx = sigLabel.IndexOf(paramLabel, StringComparison.Ordinal);
                 line1 = idx >= 0
-                    ? Markup.Escape(sigLabel[..idx]) + $"[bold yellow]{Markup.Escape(paramLabel)}[/]" + Markup.Escape(sigLabel[(idx + paramLabel.Length)..])
-                    : Markup.Escape(sigLabel);
+                    ? MarkupParser.Escape(sigLabel[..idx]) + $"[bold yellow]{MarkupParser.Escape(paramLabel)}[/]" + MarkupParser.Escape(sigLabel[(idx + paramLabel.Length)..])
+                    : MarkupParser.Escape(sigLabel);
             }
             else
             {
-                line1 = Markup.Escape(sigLabel);
+                line1 = MarkupParser.Escape(sigLabel);
             }
 
             var lines = new List<string> { line1 };

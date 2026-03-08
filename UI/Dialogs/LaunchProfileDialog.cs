@@ -2,9 +2,7 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -73,7 +71,7 @@ public class LaunchProfileDialog : DialogBase<LaunchProfileEntry?>
         };
         foreach (var profile in _profiles)
         {
-            _profileList.AddItem(new ListItem(Markup.Escape(profile.Name)) { Tag = profile });
+            _profileList.AddItem(new ListItem(MarkupParser.Escape(profile.Name)) { Tag = profile });
         }
         _profileList.SelectedItemChanged += (_, _) => PopulateFromSelected();
         _profileList.Margin = new Margin(2, 2, 0, 0);

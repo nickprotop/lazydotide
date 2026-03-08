@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using Spectre.Console;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -85,7 +85,7 @@ internal static class LspMarkdownHelper
     /// break Spectre's markup parser.
     /// </summary>
     private static string EscapeBrackets(string text)
-        => Markup.Escape(text).Replace("]", "]]");
+        => MarkupParser.Escape(text).Replace("]", "]]");
 
     /// <summary>
     /// Applies basic C# syntax highlighting to a single line, returning Spectre markup.

@@ -3,7 +3,6 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Layout;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace DotNetIDE;
 

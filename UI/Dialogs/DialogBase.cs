@@ -1,6 +1,5 @@
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
-using Spectre.Console;
 
 namespace DotNetIDE;
 

@@ -7,9 +7,7 @@ using SharpConsoleUI.Configuration;
 using SharpConsoleUI.Drivers;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
+using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
 
@@ -616,7 +614,7 @@ public class IdeApp : IDisposable
 
         _editorManager.SyntaxChanged += (_, name) =>
         {
-            _syntaxStatus?.SetContent(new List<string> { $"[dim]{Markup.Escape(name)}[/]" });
+            _syntaxStatus?.SetContent(new List<string> { $"[dim]{MarkupParser.Escape(name)}[/]" });
         };
 
         _outputPanel!.DiagnosticNavigateRequested += (_, diag) =>

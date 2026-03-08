@@ -3,11 +3,8 @@ using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Events;
 using SharpConsoleUI.Layout;
-using Spectre.Console;
-using Color = Spectre.Console.Color;
-using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
-using VerticalAlignment = SharpConsoleUI.Layout.VerticalAlignment;
 using TreeNode = SharpConsoleUI.Controls.TreeNode;
+using Color = SharpConsoleUI.Color;
 
 namespace DotNetIDE;
 
