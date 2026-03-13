@@ -50,6 +50,6 @@ public class GitDiffGutterRenderer : IGutterRenderer
             }
         }
 
-        ctx.Buffer.SetCell(ctx.X, ctx.Y, ch, fg, ctx.BackgroundColor);
+        ctx.Buffer.SetNarrowCell(ctx.X, ctx.Y, ch, fg, ctx.BackgroundColor);
     }
 }

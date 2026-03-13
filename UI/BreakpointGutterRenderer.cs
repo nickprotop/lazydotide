@@ -40,7 +40,7 @@ public class BreakpointGutterRenderer : IGutterRenderer
             bpChar = '●';
             bpFg = Color.Red;
         }
-        ctx.Buffer.SetCell(ctx.X, ctx.Y, bpChar, bpFg, ctx.BackgroundColor);
+        ctx.Buffer.SetNarrowCell(ctx.X, ctx.Y, bpChar, bpFg, ctx.BackgroundColor);
 
         // Column 1: stopped indicator
         char stChar = ' ';
@@ -50,6 +50,6 @@ public class BreakpointGutterRenderer : IGutterRenderer
             stChar = '▶';
             stFg = Color.Yellow;
         }
-        ctx.Buffer.SetCell(ctx.X + 1, ctx.Y, stChar, stFg, ctx.BackgroundColor);
+        ctx.Buffer.SetNarrowCell(ctx.X + 1, ctx.Y, stChar, stFg, ctx.BackgroundColor);
     }
 }
