@@ -25,8 +25,7 @@ internal class LayoutController
     public bool ExplorerVisible { get; set; } = true;
     public bool OutputVisible { get; set; } = true;
     public bool SidePanelVisible { get; set; }
-    public double SplitRatio { get; set; } = 0.68;
-    public bool ResizeCoupling { get; set; }
+    public int OutputPanelHeight { get; set; } = 12;
 
     // About dialog state
     private bool _aboutOpen;
@@ -63,6 +62,9 @@ internal class LayoutController
         _sidePanelSplitter = sidePanelSplitter;
         _mainContent = mainContent;
         _dashboard = dashboard;
+
+        // Wire splitter moved event to track output panel height
+        _ctx.OutputSplitter.SplitterMoved += OnSplitterMoved;
     }
 
     public int ExplorerColumnWidth =>
@@ -84,60 +86,12 @@ internal class LayoutController
     public void OnScreenResized(object? sender, SharpConsoleUI.Helpers.Size size)
     {
         var desktop = _ctx.WindowSystem.DesktopDimensions;
-        ResizeCoupling = true;
-        try
-        {
-            if (OutputVisible)
-            {
-                int mainH = (int)(desktop.Height * SplitRatio);
-                int outH = desktop.Height - mainH;
-                _ctx.MainWindow?.SetSize(desktop.Width, mainH);
-                _ctx.OutputWindow?.SetSize(desktop.Width, outH);
-                _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
-            }
-            else
-            {
-                _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
-            }
-        }
-        finally { ResizeCoupling = false; }
+        _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
     }
 
-    public void OnMainWindowResized(object? sender, EventArgs e)
+    private void OnSplitterMoved(object? sender, HorizontalSplitterMovedEventArgs e)
     {
-        if (ResizeCoupling || !OutputVisible || _ctx.MainWindow == null || _ctx.OutputWindow == null) return;
-        ResizeCoupling = true;
-        try
-        {
-            var desktop = _ctx.WindowSystem.DesktopDimensions;
-            int newDivider = Math.Clamp(_ctx.MainWindow.Height,
-                MinMainHeight,
-                desktop.Height - MinOutputHeight);
-            int newOutH = desktop.Height - newDivider;
-            _ctx.MainWindow.SetSize(desktop.Width, newDivider);
-            _ctx.OutputWindow.SetPosition(new Point(0, newDivider));
-            _ctx.OutputWindow.SetSize(desktop.Width, newOutH);
-            SplitRatio = newDivider / (double)desktop.Height;
-        }
-        finally { ResizeCoupling = false; }
-    }
-
-    public void OnOutputWindowResized(object? sender, EventArgs e)
-    {
-        if (ResizeCoupling || !OutputVisible || _ctx.MainWindow == null || _ctx.OutputWindow == null) return;
-        ResizeCoupling = true;
-        try
-        {
-            var desktop = _ctx.WindowSystem.DesktopDimensions;
-            int newDivider = Math.Clamp(_ctx.OutputWindow.Top,
-                MinMainHeight,
-                desktop.Height - MinOutputHeight);
-            _ctx.MainWindow.SetSize(desktop.Width, newDivider);
-            _ctx.OutputWindow.SetPosition(new Point(0, newDivider));
-            _ctx.OutputWindow.SetSize(desktop.Width, desktop.Height - newDivider);
-            SplitRatio = newDivider / (double)desktop.Height;
-        }
-        finally { ResizeCoupling = false; }
+        OutputPanelHeight = e.BelowControlHeight;
     }
 
     public void ToggleExplorer()
@@ -154,25 +108,10 @@ internal class LayoutController
     public void ToggleOutput()
     {
         OutputVisible = !OutputVisible;
-        var desktop = _ctx.WindowSystem.DesktopDimensions;
-        ResizeCoupling = true;
-        try
-        {
-            if (OutputVisible)
-            {
-                int mainH = (int)(desktop.Height * SplitRatio);
-                int outH = desktop.Height - mainH;
-                _ctx.MainWindow?.SetSize(desktop.Width, mainH);
-                _ctx.OutputWindow?.SetSize(desktop.Width, outH);
-                _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
-            }
-            else
-            {
-                _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
-                _ctx.OutputWindow?.SetPosition(new Point(0, desktop.Height + 100));
-            }
-        }
-        finally { ResizeCoupling = false; }
+        _ctx.OutputSplitter.Visible = OutputVisible;
+        _ctx.OutputPanel.TabControl.Visible = OutputVisible;
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ShowSourceControl()
@@ -353,20 +292,12 @@ internal class LayoutController
         return lines;
     }
 
-    public void ApplyRestoredSplitRatio(double splitRatio)
+    public void ApplyRestoredOutputHeight(int height)
     {
-        SplitRatio = splitRatio;
-        var desktop = _ctx.WindowSystem.DesktopDimensions;
-        int mainH = (int)(desktop.Height * SplitRatio);
-        int outH = desktop.Height - mainH;
-        ResizeCoupling = true;
-        try
-        {
-            _ctx.MainWindow?.SetSize(desktop.Width, mainH);
-            _ctx.OutputWindow?.SetSize(desktop.Width, outH);
-            _ctx.OutputWindow?.SetPosition(new Point(0, mainH));
-        }
-        finally { ResizeCoupling = false; }
+        OutputPanelHeight = height;
+        _ctx.OutputPanel.TabControl.Height = height;
+        _ctx.MainWindow?.ForceRebuildLayout();
+        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ForceRebuildLayout()

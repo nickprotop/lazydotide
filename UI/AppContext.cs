@@ -17,7 +17,7 @@ internal class AppContext
     public required SidePanel SidePanel { get; init; }
     public required IdeConfig Config { get; init; }
     public required Window MainWindow { get; init; }
-    public required Window OutputWindow { get; init; }
+    public required SharpConsoleUI.Controls.HorizontalSplitterControl OutputSplitter { get; init; }
     public required GitService GitService { get; init; }
     public required FileWatcher FileWatcher { get; init; }
     public required FileMiddlewarePipeline Pipeline { get; init; }

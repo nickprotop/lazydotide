@@ -25,7 +25,7 @@ internal class WorkspaceStateManager
         state.ExplorerVisible = layout.ExplorerVisible;
         state.OutputVisible = layout.OutputVisible;
         state.SidePanelVisible = layout.SidePanelVisible;
-        state.SplitRatio = layout.SplitRatio;
+        state.OutputPanelHeight = layout.OutputPanelHeight;
         state.ExplorerColumnWidth = layout.ExplorerColumnWidth;
         state.SidePanelColumnWidth = layout.SidePanelColumnWidth;
 
@@ -86,8 +86,18 @@ internal class WorkspaceStateManager
 
         snapshot.ExplorerColumnWidth = state.ExplorerColumnWidth;
         snapshot.SidePanelColumnWidth = state.SidePanelColumnWidth;
-        snapshot.SplitRatio = state.SplitRatio;
         snapshot.WrapMode = state.WrapMode;
+
+        // Compute output panel height: prefer OutputPanelHeight, fall back to SplitRatio
+        if (state.OutputPanelHeight > 0)
+        {
+            snapshot.OutputPanelHeight = state.OutputPanelHeight;
+        }
+        else if (state.SplitRatio > 0.1 && state.SplitRatio < 0.95)
+        {
+            var desktop = _ctx.WindowSystem.DesktopDimensions;
+            snapshot.OutputPanelHeight = desktop.Height - (int)(desktop.Height * state.SplitRatio);
+        }
 
         // Load breakpoints BEFORE opening files so RegisterGutter can apply them
         DebugCoordinator?.LoadBreakpoints(state, _ctx.WorkspaceService);
@@ -168,7 +178,7 @@ internal class LayoutSnapshot
     public bool ExplorerVisible { get; set; }
     public bool OutputVisible { get; set; }
     public bool SidePanelVisible { get; set; }
-    public double SplitRatio { get; set; }
+    public int OutputPanelHeight { get; set; }
     public int ExplorerColumnWidth { get; set; }
     public int SidePanelColumnWidth { get; set; }
 

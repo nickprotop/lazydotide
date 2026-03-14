@@ -117,7 +117,6 @@ internal class BuildCoordinator
     public void OpenShell()
     {
         if (!(IdeConstants.IsDesktopOs)) return;
-        if (_ctx.OutputWindow == null) return;
 
         var terminal = Controls.Terminal()
             .WithWorkingDirectory(_ctx.ProjectService.RootPath)
@@ -131,8 +130,7 @@ internal class BuildCoordinator
         _ctx.OutputPanel.TabControl.ActiveTabIndex = _ctx.OutputPanel.TabControl.TabCount - 1;
 
         OutputRequired?.Invoke();
-        _ctx.WindowSystem.SetActiveWindow(_ctx.OutputWindow);
-        _ctx.OutputWindow.FocusControl(terminal);
+        _ctx.MainWindow.FocusControl(terminal);
     }
 
     public static string? DetectLazyNuGet()
@@ -250,12 +248,8 @@ internal class BuildCoordinator
         _ctx.OutputPanel.TabControl.AddTab(tool.Name, terminal, isClosable: true);
         _ctx.OutputPanel.TabControl.ActiveTabIndex = _ctx.OutputPanel.TabControl.TabCount - 1;
 
-        if (_ctx.OutputWindow != null)
-        {
-            OutputRequired?.Invoke();
-            _ctx.WindowSystem.SetActiveWindow(_ctx.OutputWindow);
-            _ctx.OutputWindow.FocusControl(terminal);
-        }
+        OutputRequired?.Invoke();
+        _ctx.MainWindow.FocusControl(terminal);
     }
 
     public void OpenConfigToolInSidePanel(int toolIndex, Action toggleSidePanel, Action invalidateSidePanel)

@@ -21,7 +21,7 @@ public class IdeApp : IDisposable
     private readonly GitService _gitService;
 
     private Window? _mainWindow;
-    private Window? _outputWindow;
+    private HorizontalSplitterControl? _outputSplitter;
     private ExplorerPanel? _explorer;
     private EditorManager? _editorManager;
     private OutputPanel? _outputPanel;
@@ -151,7 +151,7 @@ public class IdeApp : IDisposable
             SidePanel = _sidePanel!,
             Config = _config,
             MainWindow = _mainWindow!,
-            OutputWindow = _outputWindow!,
+            OutputSplitter = _outputSplitter!,
             FileWatcher = _fileWatcher!,
             Pipeline = _pipeline!,
             WorkspaceService = new WorkspaceService(projectPath),
@@ -314,8 +314,6 @@ public class IdeApp : IDisposable
         _config = ConfigService.Load();
 
         var desktop = _ws.DesktopDimensions;
-        int mainH = (int)(desktop.Height * 0.68);
-        int outH = desktop.Height - mainH;
 
         _explorer = new ExplorerPanel(_ws, _projectService);
 
@@ -337,11 +335,9 @@ public class IdeApp : IDisposable
         _outputPanel = new OutputPanel(_ws);
         _sidePanel = new SidePanel();
 
-        BuildMainWindow(desktop.Width, mainH);
-        BuildOutputWindow(desktop.Width, outH, mainH);
+        BuildMainWindow(desktop.Width, desktop.Height);
 
         _ws.AddWindow(_mainWindow!);
-        _ws.AddWindow(_outputWindow!);
         _ws.SetActiveWindow(_mainWindow!);
 
         _fileWatcher = new FileWatcher();
@@ -358,7 +354,6 @@ public class IdeApp : IDisposable
             .HideTitleButtons()
             .WithSize(width, height)
             .AtPosition(0, 0)
-            .WithResizeDirections(ResizeBorderDirections.Bottom)
             .Movable(false)
             .Minimizable(false)
             .Maximizable(false)
@@ -370,6 +365,12 @@ public class IdeApp : IDisposable
         AddToolbar();
         _mainWindow.AddControl(new RuleControl { StickyPosition = StickyPosition.Top });
         AddMainContentArea();
+        _outputSplitter = Controls.HorizontalSplitter()
+            .WithMinHeights(8, 4)
+            .Build();
+        _mainWindow.AddControl(_outputSplitter);
+        _outputPanel!.TabControl.Height = 12;
+        _mainWindow.AddControl(_outputPanel!.TabControl);
         _mainWindow.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
         AddStatusBar();
     }
@@ -482,23 +483,6 @@ public class IdeApp : IDisposable
         _statusLeft?.SetContent(new List<string> { bar.Render() });
     }
 
-    private void BuildOutputWindow(int width, int height, int topOffset)
-    {
-        _outputWindow = new WindowBuilder(_ws)
-            .HideTitle()
-            .WithBorderStyle(BorderStyle.Single)
-            .HideTitleButtons()
-            .Closable(false)
-            .WithSize(width, height)
-            .AtPosition(0, topOffset)
-            .WithResizeDirections(ResizeBorderDirections.Top)
-            .Movable(false)
-            .Minimizable(false)
-            .Maximizable(false)
-            .Build();
-
-        _outputWindow.AddControl(_outputPanel!.TabControl);
-    }
 
     // ──────────────────────────────────────────────────────────────
     private void OnDocumentSaved(string savedPath)
@@ -631,27 +615,18 @@ public class IdeApp : IDisposable
         {
             _editorManager?.OpenFile(diag.FilePath);
             _editorManager?.GoToLine(diag.Line);
-            // Activate the main window and focus the editor so it receives keyboard input
-            if (_mainWindow != null)
-            {
-                _ws.SetActiveWindow(_mainWindow);
-                var editor = _editorManager?.CurrentEditor;
-                if (editor != null)
-                    _mainWindow.FocusControl(editor);
-            }
+            var editor = _editorManager?.CurrentEditor;
+            if (editor != null)
+                _mainWindow?.FocusControl(editor);
         };
 
         _outputPanel.SearchNavigateRequested += (_, result) =>
         {
             _editorManager?.OpenFile(result.FilePath);
             _editorManager?.GoToLine(result.Line);
-            if (_mainWindow != null)
-            {
-                _ws.SetActiveWindow(_mainWindow);
-                var editor = _editorManager?.CurrentEditor;
-                if (editor != null)
-                    _mainWindow.FocusControl(editor);
-            }
+            var editor = _editorManager?.CurrentEditor;
+            if (editor != null)
+                _mainWindow?.FocusControl(editor);
         };
 
         _outputPanel.SearchRequested += (_, args) =>
@@ -717,8 +692,6 @@ public class IdeApp : IDisposable
 
         _mainWindow!.PreviewKeyPressed += OnMainWindowPreviewKey;
         _mainWindow!.KeyPressed        += OnMainWindowKeyPressed;
-        _mainWindow!.OnResize          += (s, e) => _layout?.OnMainWindowResized(s, e);
-        _outputWindow!.OnResize        += (s, e) => _layout?.OnOutputWindowResized(s, e);
         _ws.ConsoleDriver.KeyPressed   += OnGlobalDriverKeyPressed;
 
         // Rebuild menu when tabs change (for dynamic View > Editor Tabs / Side Panel submenus)
@@ -1215,7 +1188,7 @@ public class IdeApp : IDisposable
             ExplorerVisible = _layout.ExplorerVisible,
             OutputVisible = _layout.OutputVisible,
             SidePanelVisible = _layout.SidePanelVisible,
-            SplitRatio = _layout.SplitRatio,
+            OutputPanelHeight = _layout.OutputPanelHeight,
             ExplorerColumnWidth = _layout.ExplorerColumnWidth,
             SidePanelColumnWidth = _layout.SidePanelColumnWidth,
         });
@@ -1236,14 +1209,13 @@ public class IdeApp : IDisposable
         if (snapshot.SidePanelColumnWidth > 0)
             _layout.SetSidePanelColumnWidth(snapshot.SidePanelColumnWidth);
 
-        if (snapshot.SplitRatio > 0.1 && snapshot.SplitRatio < 0.95)
-            _layout.ApplyRestoredSplitRatio(snapshot.SplitRatio);
+        if (snapshot.OutputPanelHeight > 0)
+            _layout.ApplyRestoredOutputHeight(snapshot.OutputPanelHeight);
 
         if (_editorManager != null && Enum.TryParse<WrapMode>(snapshot.WrapMode, out var wm))
             _editorManager.WrapMode = wm;
 
         _layout.ForceRebuildLayout();
-        _ws.SetActiveWindow(_mainWindow!);
     }
 
 

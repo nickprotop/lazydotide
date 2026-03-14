@@ -17,6 +17,7 @@ public class WorkspaceState
     public bool OutputVisible { get; set; } = true;
     public bool SidePanelVisible { get; set; }
     public double SplitRatio { get; set; } = 0.68;
+    public int OutputPanelHeight { get; set; }
     public int ExplorerColumnWidth { get; set; } = 26;
     public int SidePanelColumnWidth { get; set; } = 30;
     public string WrapMode { get; set; } = "NoWrap";
