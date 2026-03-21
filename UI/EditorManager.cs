@@ -151,10 +151,6 @@ public class EditorManager
         var tabIndex = _tabControl.TabCount - 1;
         _openFiles[path] = tabIndex;
 
-        // Now that the editor has a Container, sync FocusedBackgroundColor to match view-mode bg
-        if (editor != null)
-            editor.FocusedBackgroundColor = editor.BackgroundColor;
-
         _tabData[tabIndex] = new EditorTabData(FilePath: path, Editor: editor, IsDirty: isDirty, DiffGutter: diffGutter, BpGutter: bpGutter);
 
         _tabControl.ActiveTabIndex = tabIndex;
@@ -183,6 +179,9 @@ public class EditorManager
             .WithEscapeExitsEditMode(false)
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
+            .WithBackgroundColor(SharpConsoleUI.Color.Black)
+            .WithFocusedColors(SharpConsoleUI.Color.White, SharpConsoleUI.Color.Black)
+            .WithCurrentLineHighlightColor(SharpConsoleUI.Color.Grey15)
             .WithContent(content);
         var highlighter = _pipeline.GetHighlighter(path);
         if (highlighter != null)
@@ -590,6 +589,9 @@ public class EditorManager
             .NoWrap()
             .WithAlignment(HorizontalAlignment.Stretch)
             .WithVerticalAlignment(VerticalAlignment.Fill)
+            .WithBackgroundColor(SharpConsoleUI.Color.Black)
+            .WithFocusedColors(SharpConsoleUI.Color.White, SharpConsoleUI.Color.Black)
+            .WithCurrentLineHighlightColor(SharpConsoleUI.Color.Grey15)
             .WithContent(content);
         if (syntaxHighlighter != null)
             builder.WithSyntaxHighlighter(syntaxHighlighter);
@@ -600,9 +602,6 @@ public class EditorManager
         var tabIndex = _tabControl.TabCount - 1;
         _openFiles[pseudoPath] = tabIndex;
         _tabData[tabIndex] = new EditorTabData(FilePath: pseudoPath, Editor: editor, IsDirty: false);
-
-        // Sync focused bg to match view-mode bg (same as regular editor tabs)
-        editor.FocusedBackgroundColor = editor.BackgroundColor;
 
         _tabControl.ActiveTabIndex = tabIndex;
 
