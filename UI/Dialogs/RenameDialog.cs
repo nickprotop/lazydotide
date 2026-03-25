@@ -49,7 +49,7 @@ public class RenameDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _input.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_input);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)

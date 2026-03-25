@@ -2,6 +2,7 @@ using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Controls.Terminal;
+using SharpConsoleUI.Extensions;
 using SharpConsoleUI.Layout;
 using SharpConsoleUI.Parsing;
 
@@ -264,7 +265,7 @@ public class OutputPanel
     public void SwitchToSearchTab()
     {
         _tabControl.ActiveTabIndex = _searchTabIndex;
-        _searchInput.SetFocus(true, SharpConsoleUI.Controls.FocusReason.Keyboard);
+        _searchInput.GetParentWindow()?.FocusManager.SetFocus(_searchInput, SharpConsoleUI.Controls.FocusReason.Keyboard);
     }
 
     public void ClearSearchResults() => _searchResults.ClearItems();

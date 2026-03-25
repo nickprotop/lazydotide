@@ -52,7 +52,7 @@ public class NewFileDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _input.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_input);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
@@ -127,7 +127,7 @@ public class FileRenameDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _input.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_input);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)

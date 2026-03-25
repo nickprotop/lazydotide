@@ -3,6 +3,7 @@ using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Core;
 using SharpConsoleUI.Drawing;
+using SharpConsoleUI.Extensions;
 using SharpConsoleUI.Layout;
 using Rectangle = System.Drawing.Rectangle;
 
@@ -121,7 +122,7 @@ public class CommandPalettePortal : PortalContentContainer
         {
             if (_searchInput.HasFocus && _commandList.Items.Count > 0)
             {
-                _commandList.SetFocus(true, FocusReason.Keyboard);
+                _commandList.GetParentWindow()?.FocusManager.SetFocus(_commandList, FocusReason.Keyboard);
                 return true;
             }
             if (_commandList.HasFocus)
@@ -135,13 +136,13 @@ public class CommandPalettePortal : PortalContentContainer
 
         if (key.Key == ConsoleKey.DownArrow && _searchInput.HasFocus && _commandList.Items.Count > 0)
         {
-            _commandList.SetFocus(true, FocusReason.Keyboard);
+            _commandList.GetParentWindow()?.FocusManager.SetFocus(_commandList, FocusReason.Keyboard);
             return true;
         }
 
         if (key.Key == ConsoleKey.UpArrow && _commandList.HasFocus && _commandList.SelectedIndex <= 0)
         {
-            _searchInput.SetFocus(true, FocusReason.Keyboard);
+            _searchInput.GetParentWindow()?.FocusManager.SetFocus(_searchInput, FocusReason.Keyboard);
             return true;
         }
 

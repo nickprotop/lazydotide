@@ -93,7 +93,7 @@ public class GitCommitDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _editor.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_editor);
     }
 
     private void DoCommit()
@@ -183,7 +183,7 @@ public class GitBranchPickerDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _list.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_list);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
@@ -243,7 +243,7 @@ public class GitNewBranchDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _input.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_input);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
@@ -398,7 +398,7 @@ public class GitStashDialog : DialogBase<string?>
 
     protected override void SetInitialFocus()
     {
-        _input.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_input);
     }
 
     protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)

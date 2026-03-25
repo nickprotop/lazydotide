@@ -79,7 +79,7 @@ internal class ContextMenuPortal : PortalContentContainer
                 _menuItemMap[mi] = item;
         }
 
-        _menu.HasFocus = true;
+        PortalFocusedControl = _menu;
 
         _menu.ItemSelected += (_, mi) =>
         {

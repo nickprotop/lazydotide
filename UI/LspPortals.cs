@@ -200,14 +200,14 @@ internal class LspCompletionPortalContent : PortalContentBase
             AutoAdjustWidth          = false,
         };
 
-        // Mark the list as focused so the selected row uses HighlightBackground.
-        // (Without focus the selected row falls back to unfocused/grey theme colours.)
-        _list.HasFocus = true;
-
         foreach (var item in items)
             _list.AddItem(BuildListItem(item));
 
         if (items.Count > 0) _list.SelectedIndex = 0;
+
+        // Mark the list as portal-focused so the selected row uses HighlightBackground
+        // instead of unfocused theme colours.
+        PortalFocusedControl = _list;
 
         // Width: icon + space + label + "  " + detail — cap at 60
         int maxLabel = items.Take(CompletionMaxItems).Max(i =>
@@ -341,10 +341,10 @@ internal class LspLocationListPortalContent : PortalContentBase
             HoverHighlightsItems     = false,
             AutoAdjustWidth          = false,
         };
-        _list.HasFocus = true;
-
         foreach (var entry in entries)
             _list.AddItem(BuildListItem(entry));
+
+        PortalFocusedControl = _list;
 
         if (entries.Count > 0) _list.SelectedIndex = 0;
 

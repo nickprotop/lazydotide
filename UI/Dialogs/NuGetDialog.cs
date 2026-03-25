@@ -86,6 +86,6 @@ public class NuGetDialog : DialogBase<(string? PackageName, string? Version)>
 
     protected override void SetInitialFocus()
     {
-        _namePrompt.SetFocus(true, FocusReason.Programmatic);
+        Modal.FocusControl(_namePrompt);
     }
 }
