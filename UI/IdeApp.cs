@@ -739,6 +739,20 @@ public class IdeApp : IDisposable
         // Delegate all LSP portal key handling to LspCoordinator
         if (_lspCoord != null && _lspCoord.ProcessPreviewKey(e))
             return;
+
+        // Editor focus/edit mode management (no portals open at this point).
+        // MultilineEditControl.GotFocus doesn't fire (ConsoleEx bug), so we
+        // handle edit mode transitions here via PreviewKey.
+        if (_mainWindow!.FocusManager.FocusedControl is MultilineEditControl editor)
+        {
+            if (e.KeyInfo.Key == ConsoleKey.Escape && editor.IsEditing)
+            {
+                // Escape: exit edit mode → Tab/Shift+Tab propagate for focus navigation.
+                // Enter re-enters edit mode (built-in MultilineEditControl behavior).
+                editor.IsEditing = false;
+                e.Handled = true;
+            }
+        }
     }
 
     private void OnMainWindowKeyPressed(object? sender, KeyPressedEventArgs e)
