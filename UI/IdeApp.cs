@@ -50,6 +50,7 @@ public class IdeApp : IDisposable
 
     // System bottom status bar
     private readonly IdeStatusBar _bottomBar = new();
+    private readonly SharpConsoleUI.Panel.StatusTextElement _bottomStatusElement = new("");
 
     // Thread-safe queues for streaming build/test output
     private readonly ConcurrentQueue<string> _buildLines = new();
@@ -130,7 +131,8 @@ public class IdeApp : IDisposable
         _ws = new ConsoleWindowSystem(
             new NetConsoleDriver(RenderMode.Buffer),
             options: new ConsoleWindowSystemOptions(
-                StatusBarOptions: new StatusBarOptions(ShowTaskBar: false)));
+                ShowTopPanel: false,
+                BottomPanelConfig: panel => panel.Left(_bottomStatusElement)));
         _projectService = new ProjectService(projectPath);
         _buildService = new BuildService();
         _gitService = new GitService();
@@ -716,8 +718,7 @@ public class IdeApp : IDisposable
             .AddHint("Ctrl+S", "Save",  () => _editorManager?.SaveCurrent())
             .AddHint("Ctrl+W", "Close", CloseCurrentTab);
 
-        _ws.StatusBarStateService.BottomStatus = _bottomBar.Render();
-        _ws.StatusBarStateService.BottomStatusClickHandler = x => _bottomBar.HandleClick(x);
+        _bottomStatusElement.Text = _bottomBar.Render();
     }
 
     // Resize handlers delegated to LayoutController
