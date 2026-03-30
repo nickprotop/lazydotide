@@ -132,6 +132,7 @@ public class IdeApp : IDisposable
             new NetConsoleDriver(RenderMode.Buffer),
             options: new ConsoleWindowSystemOptions(
                 ShowTopPanel: false,
+                ShowBottomPanel: false,
                 BottomPanelConfig: panel => panel.Left(_bottomStatusElement)));
         _projectService = new ProjectService(projectPath);
         _buildService = new BuildService();
@@ -359,6 +360,7 @@ public class IdeApp : IDisposable
             .Movable(false)
             .Minimizable(false)
             .Maximizable(false)
+            .Resizable(false)
             .WithAsyncWindowThread(MainWindowThreadAsync)
             .Build();
 
