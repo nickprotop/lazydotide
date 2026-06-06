@@ -390,53 +390,6 @@ internal class LspCoordinator : IAsyncDisposable
         }
     }
 
-    public async Task ShowDocumentSymbolsAsync(string? currentFilePath)
-    {
-        if (_lsp == null || _ctx.EditorManager.CurrentEditor == null) return;
-        var path = currentFilePath ?? _ctx.EditorManager.CurrentFilePath;
-        if (path == null) return;
-
-        var symbols = await _lsp.DocumentSymbolAsync(path);
-        if (symbols.Count == 0)
-        {
-            _portalManager.ShowTransientTooltip("No symbols found in document.");
-            return;
-        }
-
-        var flat = new List<(string Display, DocumentSymbol Symbol, int Depth)>();
-        void Flatten(List<DocumentSymbol> syms, int depth)
-        {
-            foreach (var s in syms)
-            {
-                flat.Add((s.Name, s, depth));
-                if (s.Children != null)
-                    Flatten(s.Children, depth + 1);
-            }
-        }
-        Flatten(symbols, 0);
-
-        var tempRegistry = new CommandRegistry();
-        foreach (var (display, sym, depth) in flat)
-        {
-            var indent = new string(' ', depth * 2);
-            var kindName = LspSymbolHelper.GetSymbolKindName(sym.Kind);
-            var s = sym;
-            tempRegistry.Register(new IdeCommand
-            {
-                Id = $"sym.{sym.SelectionRange.Start.Line}.{sym.Name}",
-                Category = kindName,
-                Label = $"{indent}{sym.Name}",
-                Keybinding = $"Ln {sym.SelectionRange.Start.Line + 1}",
-                Execute = () => _navManager.NavigateToLocation(new LspLocationEntry(
-                    path!, s.SelectionRange.Start.Line + 1,
-                    s.SelectionRange.Start.Character + 1, s.Name)),
-                Priority = 100 - sym.SelectionRange.Start.Line
-            });
-        }
-
-        _portalManager.ShowCommandPalettePortal(tempRegistry);
-    }
-
     // ── Semantic Tokens ──────────────────────────────────────────────────
 
     public void SetupSemanticHighlighter(string filePath)

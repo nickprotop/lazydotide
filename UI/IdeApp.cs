@@ -133,7 +133,8 @@ public class IdeApp : IDisposable
             options: new ConsoleWindowSystemOptions(
                 ShowTopPanel: false,
                 ShowBottomPanel: false,
-                BottomPanelConfig: panel => panel.Left(_bottomStatusElement)));
+                BottomPanelConfig: panel => panel.Left(_bottomStatusElement),
+                InstallSynchronizationContext: true));
         _projectService = new ProjectService(projectPath);
         _buildService = new BuildService();
         _gitService = new GitService();

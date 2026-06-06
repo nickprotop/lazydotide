@@ -214,8 +214,11 @@ internal class LayoutController
             if (t.Result)
             {
                 _debugCoord.ReDetectDap();
-                UpdateDashboard();
-                _aboutRefresh?.Invoke();
+                _ctx.PendingUiActions.Enqueue(() =>
+                {
+                    UpdateDashboard();
+                    _aboutRefresh?.Invoke();
+                });
             }
         }, TaskScheduler.Default);
     }
