@@ -4,6 +4,7 @@ using Markdig.Syntax.Inlines;
 using MdTable = Markdig.Extensions.Tables.Table;
 using MdTableRow = Markdig.Extensions.Tables.TableRow;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Highlighting;
 
 namespace DotNetIDE;
 

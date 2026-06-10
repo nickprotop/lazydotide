@@ -1,4 +1,5 @@
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Highlighting;
 
 namespace DotNetIDE;
 

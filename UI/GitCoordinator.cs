@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Parsing;
+using SharpConsoleUI.Highlighting;
 
 namespace DotNetIDE;
 
