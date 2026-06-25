@@ -543,7 +543,7 @@ public class IdeApp : IDisposable
         };
 
         // Driver / file watcher
-        _ws.ConsoleDriver.ScreenResized += (s, e) => _layout?.OnScreenResized(s, e);
+        _ws.WindowResized += (s, e) => _layout?.OnScreenResized(s, e);
         _fileWatcher!.FileChanged      += (_, path) => _pendingUiActions.Enqueue(() => HandleExternalFileChanged(path));
         _fileWatcher.StructureChanged  += (_, _)    => _pendingUiActions.Enqueue(() => _ = _gitOps!.RefreshExplorerAndGitAsync());
         _fileWatcher.GitChanged        += (_, _)    => _pendingUiActions.Enqueue(() => _ = _gitOps!.RefreshGitStatusAsync());

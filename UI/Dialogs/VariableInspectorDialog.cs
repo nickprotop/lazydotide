@@ -153,7 +153,6 @@ public class VariableInspectorDialog : DialogBase<bool>
                 if (parentNode?.Tag is MemberTag oldTag)
                     parentNode.Tag = oldTag with { ChildrenLoaded = true };
 
-                _membersTree?.Container?.Invalidate(true);
             }
             catch { }
         });

@@ -891,7 +891,6 @@ internal class DebugCoordinator : IAsyncDisposable
                     node.Tag = tag with { ChildrenLoaded = true };
 
                     // Force tree to pick up the new children
-                    _variablesTree?.Container?.Invalidate(true);
                 });
             }
             catch (Exception ex) { Log($"Variable expand: {ex.Message}"); }

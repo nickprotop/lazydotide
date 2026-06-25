@@ -132,14 +132,40 @@ internal class LspCompletionPortalContent : PortalContentBase
     {
         if (_list.SelectedIndex < _list.Items.Count - 1)
             _list.SelectedIndex++;
-        Invalidate();
     }
 
     public void SelectPrev()
     {
         if (_list.SelectedIndex > 0)
             _list.SelectedIndex--;
-        Invalidate();
+    }
+
+    /// <summary>Moves the selection down by one visible page (PageDown), clamped to the last item.</summary>
+    public void SelectPageDown()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = Math.Min(_list.Items.Count - 1, _list.SelectedIndex + CompletionVisibleItems);
+    }
+
+    /// <summary>Moves the selection up by one visible page (PageUp), clamped to the first item.</summary>
+    public void SelectPageUp()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = Math.Max(0, _list.SelectedIndex - CompletionVisibleItems);
+    }
+
+    /// <summary>Jumps the selection to the first item (Home).</summary>
+    public void SelectFirst()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = 0;
+    }
+
+    /// <summary>Jumps the selection to the last item (End).</summary>
+    public void SelectLast()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = _list.Items.Count - 1;
     }
 
     /// <summary>Updates the visible item list based on a prefix filter (case-insensitive).</summary>
@@ -153,7 +179,6 @@ internal class LspCompletionPortalContent : PortalContentBase
                 .ToList();
         _list.Items = _filteredItems.Select(BuildListItem).ToList();
         if (_filteredItems.Count > 0) _list.SelectedIndex = 0;
-        Invalidate();
     }
 
     public static string GetKindIcon(int kind) => kind switch
@@ -205,6 +230,10 @@ internal class LspCompletionPortalContent : PortalContentBase
 
         if (items.Count > 0) _list.SelectedIndex = 0;
 
+        // Host the list as the portal's Content: the base measures/paints it through
+        // the DOM and wires its Container → self-invalidation (child → portal → window).
+        Content = _list;
+
         // Mark the list as portal-focused so the selected row uses HighlightBackground
         // instead of unfocused theme colours.
         PortalFocusedControl = _list;
@@ -241,13 +270,11 @@ internal class LspCompletionPortalContent : PortalContentBase
         // Coordinates are already adjusted for border offset by the base class.
         if (args.HasFlag(MouseFlags.Button1Clicked))
         {
-            ((IMouseAwareControl)_list).ProcessMouseEvent(args);
+            ProcessHostedMouseEvent(args);
 
             var clicked = GetSelected();
             if (clicked != null)
                 ItemAccepted?.Invoke(this, clicked);
-            else
-                Invalidate();  // no item → just redraw the new selection
 
             return true;
         }
@@ -255,12 +282,11 @@ internal class LspCompletionPortalContent : PortalContentBase
         return false;
     }
 
+    // Content is hosted via the base class, so this is never called (the base paints
+    // the hosted Content child directly). Kept only because PaintPortalContent is abstract.
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
-    {
-        // Bounds are already the inner area (border drawn by base class)
-        ((IDOMPaintable)_list).PaintDOM(buffer, bounds, clipRect, Fg, Bg);
-    }
+    { }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -301,14 +327,40 @@ internal class LspLocationListPortalContent : PortalContentBase
     {
         if (_list.SelectedIndex < _list.Items.Count - 1)
             _list.SelectedIndex++;
-        Invalidate();
     }
 
     public void SelectPrev()
     {
         if (_list.SelectedIndex > 0)
             _list.SelectedIndex--;
-        Invalidate();
+    }
+
+    /// <summary>Moves the selection down by one visible page (PageDown), clamped to the last item.</summary>
+    public void SelectPageDown()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = Math.Min(_list.Items.Count - 1, _list.SelectedIndex + LocationListVisibleItems);
+    }
+
+    /// <summary>Moves the selection up by one visible page (PageUp), clamped to the first item.</summary>
+    public void SelectPageUp()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = Math.Max(0, _list.SelectedIndex - LocationListVisibleItems);
+    }
+
+    /// <summary>Jumps the selection to the first item (Home).</summary>
+    public void SelectFirst()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = 0;
+    }
+
+    /// <summary>Jumps the selection to the last item (End).</summary>
+    public void SelectLast()
+    {
+        if (_list.Items.Count == 0) return;
+        _list.SelectedIndex = _list.Items.Count - 1;
     }
 
     private static ListItem BuildListItem(LspLocationEntry entry)
@@ -344,6 +396,10 @@ internal class LspLocationListPortalContent : PortalContentBase
         foreach (var entry in entries)
             _list.AddItem(BuildListItem(entry));
 
+        // Host the list as the portal's Content: the base measures/paints it through
+        // the DOM and wires its Container → self-invalidation (child → portal → window).
+        Content = _list;
+
         PortalFocusedControl = _list;
 
         if (entries.Count > 0) _list.SelectedIndex = 0;
@@ -377,23 +433,20 @@ internal class LspLocationListPortalContent : PortalContentBase
         // Coordinates are already adjusted for border offset by the base class.
         if (args.HasFlag(MouseFlags.Button1Clicked))
         {
-            ((IMouseAwareControl)_list).ProcessMouseEvent(args);
+            ProcessHostedMouseEvent(args);
 
             var clicked = GetSelected();
             if (clicked != null)
                 ItemAccepted?.Invoke(this, clicked);
-            else
-                Invalidate();
             return true;
         }
 
         return false;
     }
 
+    // Content is hosted via the base class, so this is never called (the base paints
+    // the hosted Content child directly). Kept only because PaintPortalContent is abstract.
     protected override void PaintPortalContent(CharacterBuffer buffer, LayoutRect bounds,
         LayoutRect clipRect, Color defaultFg, Color defaultBg)
-    {
-        // Bounds are already the inner area (border drawn by base class)
-        ((IDOMPaintable)_list).PaintDOM(buffer, bounds, clipRect, Fg, Bg);
-    }
+    { }
 }

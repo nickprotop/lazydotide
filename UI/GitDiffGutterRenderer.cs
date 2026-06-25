@@ -11,12 +11,18 @@ public class GitDiffGutterRenderer : IGutterRenderer
 {
     private Dictionary<int, GitLineChangeType>? _markers;
 
+    /// <inheritdoc/>
+    public event EventHandler? Invalidated;
+
     /// <summary>
-    /// Updates the marker dictionary. Pass null or empty to hide the gutter column.
+    /// Updates the marker dictionary. Pass null or empty to hide the gutter column. Self-invalidates the
+    /// host editor; the editor derives the level (a visibility flip changes <see cref="GetWidth"/> → relayout,
+    /// otherwise paint-only) by re-querying the gutter width — this renderer just signals "I changed".
     /// </summary>
     public void UpdateMarkers(Dictionary<int, GitLineChangeType>? markers)
     {
         _markers = markers is { Count: > 0 } ? markers : null;
+        Invalidated?.Invoke(this, EventArgs.Empty);
     }
 
     /// <inheritdoc/>

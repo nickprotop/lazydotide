@@ -632,8 +632,7 @@ public class EditorManager
         if (!_tabData.TryGetValue(tabIndex, out var data)) return;
         if (data.DiffGutter == null) return;
 
-        data.DiffGutter.UpdateMarkers(markers);
-        data.Editor?.Container?.Invalidate(true);
+        data.DiffGutter.UpdateMarkers(markers); // self-invalidates the host editor
     }
 
     /// <summary>
@@ -668,8 +667,7 @@ public class EditorManager
         {
             if (!_tabData.TryGetValue(tabIndex, out var data)) continue;
             if (data.DiffGutter == null) continue;
-            data.DiffGutter.UpdateMarkers(markers);
-            data.Editor?.Container?.Invalidate(true);
+            data.DiffGutter.UpdateMarkers(markers); // self-invalidates the host editor
         }
     }
 }

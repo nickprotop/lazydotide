@@ -55,6 +55,24 @@ internal class LspPortalManager
 
     public void SetMainWindow(Window mainWindow) => _mainWindow = mainWindow;
 
+    /// <summary>
+    /// Returns the editor cursor's TRUE window-content cell (col,row) for anchoring a portal.
+    /// Prefers the framework's <see cref="Window.GetCursorContentPosition"/>, which walks the full
+    /// layout hierarchy (TabControl chrome, scroll offsets) and reports the cursor exactly where it is
+    /// painted, in the SAME content-relative coordinate space the portal is arranged in (so the popup
+    /// lands flush below the caret — using the window-relative cursor would double-count the frame
+    /// inset and push the popup a row too low). Falls back to <see cref="EditorManager.GetCursorBounds"/>
+    /// only when no painted cursor is available (cursor scrolled out of view / control not laid out).
+    /// </summary>
+    private (int X, int Y) CursorScreenCell(MultilineEditControl editor)
+    {
+        var cursorContent = _mainWindow?.GetCursorContentPosition(editor);
+        if (cursorContent is { } cc)
+            return (cc.X, cc.Y);
+        var fallback = _editorManager.GetCursorBounds();
+        return (fallback.X, fallback.Y);
+    }
+
     // ── Completion Portal ──────────────────────────────────────────────
 
     public async Task ShowCompletionAsync(LspClient lsp, bool silent = false)
@@ -98,8 +116,12 @@ internal class LspPortalManager
             _completionTriggerColumn = wordStart0 + 1;
             _completionTriggerLine = editor.CurrentLine;
 
-            var screenCol = Math.Max(0, editor.ActualX + editor.GutterWidth + (wordStart0 - editor.HorizontalScrollOffset));
-            var screenRow = editor.ActualY + Math.Max(0, editor.CurrentLine - 1 - editor.VerticalScrollOffset);
+            // Anchor the popup at the editor cursor's TRUE window-screen position (CursorScreenCell walks
+            // the layout hierarchy + window inset), then offset left to the START of the word being
+            // completed so the popup aligns with the completion text, not the caret mid-word.
+            var (cursorX, cursorY) = CursorScreenCell(editor);
+            int screenCol = Math.Max(0, cursorX - (editor.CurrentColumn - 1 - wordStart0));
+            int screenRow = cursorY;
 
             var portal = new LspCompletionPortalContent(
                 items, screenCol, screenRow,
@@ -137,9 +159,9 @@ internal class LspPortalManager
         var items = actions.Select(a => new CompletionItem(a.Title, a.Kind, null, 1)).ToList();
 
         DismissCompletionPortal();
-        var cursor = _editorManager.GetCursorBounds();
+        var (cursorX, cursorY) = CursorScreenCell(editor);
         var portal = new LspCompletionPortalContent(
-            items, cursor.X, cursor.Y,
+            items, cursorX, cursorY,
             _mainWindow!.Width, _mainWindow.Height);
 
         portal.Container = _mainWindow;
@@ -256,8 +278,8 @@ internal class LspPortalManager
         ++_tooltipAutoDismissGeneration;
         var editor = _editorManager.CurrentEditor;
         if (editor == null || _mainWindow == null) return;
-        var cursor = _editorManager.GetCursorBounds();
-        var portal = new LspTooltipPortalContent(lines, cursor.X, cursor.Y,
+        var (cursorX, cursorY) = CursorScreenCell(editor);
+        var portal = new LspTooltipPortalContent(lines, cursorX, cursorY,
             _mainWindow.Width, _mainWindow.Height, preferAbove);
         portal.Container = _mainWindow;
         portal.Clicked += (_, _) => DismissTooltipPortal();
@@ -289,9 +311,9 @@ internal class LspPortalManager
         DismissLocationPortal();
         var editor = _editorManager.CurrentEditor;
         if (editor == null || _mainWindow == null) return;
-        var cursor = _editorManager.GetCursorBounds();
+        var (cursorX, cursorY) = CursorScreenCell(editor);
         var portal = new LspLocationListPortalContent(
-            entries, cursor.X, cursor.Y,
+            entries, cursorX, cursorY,
             _mainWindow.Width, _mainWindow.Height);
         portal.Container = _mainWindow;
         portal.DismissRequested += (_, _) => DismissLocationPortal();
@@ -358,14 +380,36 @@ internal class LspPortalManager
                 if (key == ConsoleKey.UpArrow)
                 {
                     _locationPortal.SelectPrev();
-                    _mainWindow?.Invalidate(false);
                     e.Handled = true;
                     return true;
                 }
                 if (key == ConsoleKey.DownArrow)
                 {
                     _locationPortal.SelectNext();
-                    _mainWindow?.Invalidate(false);
+                    e.Handled = true;
+                    return true;
+                }
+                if (key == ConsoleKey.PageUp)
+                {
+                    _locationPortal.SelectPageUp();
+                    e.Handled = true;
+                    return true;
+                }
+                if (key == ConsoleKey.PageDown)
+                {
+                    _locationPortal.SelectPageDown();
+                    e.Handled = true;
+                    return true;
+                }
+                if (key == ConsoleKey.Home)
+                {
+                    _locationPortal.SelectFirst();
+                    e.Handled = true;
+                    return true;
+                }
+                if (key == ConsoleKey.End)
+                {
+                    _locationPortal.SelectLast();
                     e.Handled = true;
                     return true;
                 }
@@ -394,14 +438,36 @@ internal class LspPortalManager
             if (key == ConsoleKey.UpArrow)
             {
                 _completionPortal.SelectPrev();
-                _mainWindow?.Invalidate(false);
                 e.Handled = true;
                 return true;
             }
             if (key == ConsoleKey.DownArrow)
             {
                 _completionPortal.SelectNext();
-                _mainWindow?.Invalidate(false);
+                e.Handled = true;
+                return true;
+            }
+            if (key == ConsoleKey.PageUp)
+            {
+                _completionPortal.SelectPageUp();
+                e.Handled = true;
+                return true;
+            }
+            if (key == ConsoleKey.PageDown)
+            {
+                _completionPortal.SelectPageDown();
+                e.Handled = true;
+                return true;
+            }
+            if (key == ConsoleKey.Home)
+            {
+                _completionPortal.SelectFirst();
+                e.Handled = true;
+                return true;
+            }
+            if (key == ConsoleKey.End)
+            {
+                _completionPortal.SelectLast();
                 e.Handled = true;
                 return true;
             }
@@ -481,12 +547,10 @@ internal class LspPortalManager
             }
         }
 
-        _completionPortal.SetFilter(filterText);
+        _completionPortal.SetFilter(filterText); // self-invalidates
 
         if (!_completionPortal.HasVisibleItems)
             DismissCompletionPortal();
-        else
-            _mainWindow?.Invalidate(false);
     }
 
     internal static bool IsIdentifierChar(char c) =>

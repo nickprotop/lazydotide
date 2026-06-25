@@ -102,7 +102,6 @@ internal class LayoutController
         if (_explorerSplitter != null)
             _explorerSplitter.Visible = ExplorerVisible;
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ToggleOutput()
@@ -111,7 +110,6 @@ internal class LayoutController
         _ctx.OutputSplitter.Visible = OutputVisible;
         _ctx.OutputPanel.TabControl.Visible = OutputVisible;
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ShowSourceControl()
@@ -122,7 +120,6 @@ internal class LayoutController
             if (_sidePanelCol != null) _sidePanelCol.Visible = true;
             if (_sidePanelSplitter != null) _sidePanelSplitter.Visible = true;
             _ctx.MainWindow?.ForceRebuildLayout();
-            _ctx.MainWindow?.Invalidate(true);
         }
         _ctx.SidePanel.SwitchToGitTab();
     }
@@ -135,7 +132,6 @@ internal class LayoutController
         if (_sidePanelSplitter != null)
             _sidePanelSplitter.Visible = SidePanelVisible;
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
         if (SidePanelVisible)
         {
             _ctx.SidePanel.SwitchToSymbolsTab();
@@ -172,9 +168,7 @@ internal class LayoutController
 
     public void InvalidateSidePanel()
     {
-        _mainContent?.Invalidate();
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void SetWrapMode(WrapMode mode)
@@ -300,12 +294,10 @@ internal class LayoutController
         OutputPanelHeight = height;
         _ctx.OutputPanel.TabControl.Height = height;
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
     }
 
     public void ForceRebuildLayout()
     {
         _ctx.MainWindow?.ForceRebuildLayout();
-        _ctx.MainWindow?.Invalidate(true);
     }
 }
