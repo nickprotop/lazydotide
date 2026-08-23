@@ -6,7 +6,7 @@ namespace DotNetIDE;
 public class CSharpFileMiddleware : IFileMiddleware
 {
     public string SyntaxName => "C#";
-    private static readonly CSharpSyntaxHighlighter Highlighter = new();
+    private static readonly ISyntaxHighlighter? Highlighter = SyntaxHighlighters.For("csharp");
 
     public bool Handles(string filePath) =>
         FileService.GetExtension(filePath) == ".cs";

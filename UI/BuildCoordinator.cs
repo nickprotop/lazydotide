@@ -51,6 +51,12 @@ internal class BuildCoordinator
         {
             _ctx.OutputPanel.PopulateProblems(result.Diagnostics);
             DiagnosticsUpdated?.Invoke(this, result.Diagnostics);
+
+            int errors = result.Diagnostics.Count(d => d.Severity == "error");
+            int warnings = result.Diagnostics.Count(d => d.Severity == "warning");
+            _ctx.OutputPanel.AppendOutputLine(errors > 0
+                ? $"Build failed — {errors} error(s), {warnings} warning(s)"
+                : $"Build succeeded — {warnings} warning(s)");
         });
     }
 
@@ -89,7 +95,7 @@ internal class BuildCoordinator
         var target = _ctx.ProjectService.FindRunTarget();
         if (target == null)
         {
-            _ctx.WindowSystem?.LogService.LogInfo("No runnable project found");
+            _ctx.OutputPanel.AppendOutputLine("No runnable project found");
             return;
         }
 

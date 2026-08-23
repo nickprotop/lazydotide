@@ -211,6 +211,11 @@ public class IdeApp : IDisposable
         RestoreWorkspaceState();
         InitializeCommands();
 
+        // Session header: what was opened, so the feed has a starting point.
+        var projName = new DirectoryInfo(_projectService.RootPath).Name;
+        _outputPanel!.AppendHeader($"lazydotide — {projName}");
+        _outputPanel.AppendOutputLine($"Workspace: {_projectService.RootPath}");
+
         // Async post-init: git status + optional LSP
         _ = PostInitAsync(projectPath);
     }
@@ -336,7 +341,7 @@ public class IdeApp : IDisposable
         _pipeline.Register(new DefaultFileMiddleware());
 
         _editorManager = new EditorManager(_ws, _pipeline);
-        _outputPanel = new OutputPanel(_ws);
+        _outputPanel = new OutputPanel(_ws, _pendingUiActions);
         _sidePanel = new SidePanel();
 
         BuildMainWindow(desktop.Width, desktop.Height);
@@ -898,6 +903,8 @@ public class IdeApp : IDisposable
         else
         {
             _editorManager.ReloadFile(path);
+            // Silent otherwise: the buffer changes under the user with no trace.
+            _outputPanel?.AppendOutputLine($"Reloaded from disk: {Path.GetFileName(path)}");
         }
     }
 
@@ -1222,10 +1229,8 @@ public class IdeApp : IDisposable
         if (snapshot.NeedToggleOutput) _layout.ToggleOutput();
         if (snapshot.NeedToggleSidePanel) _layout.ToggleSidePanel();
 
-        if (snapshot.ExplorerColumnWidth > 0)
-            _layout.SetExplorerColumnWidth(snapshot.ExplorerColumnWidth);
-        if (snapshot.SidePanelColumnWidth > 0)
-            _layout.SetSidePanelColumnWidth(snapshot.SidePanelColumnWidth);
+        // Apply both widths together so the columns cannot over-commit the grid.
+        _layout.RestoreColumnWidths(snapshot.ExplorerColumnWidth, snapshot.SidePanelColumnWidth);
 
         if (snapshot.OutputPanelHeight > 0)
             _layout.ApplyRestoredOutputHeight(snapshot.OutputPanelHeight);

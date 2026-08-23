@@ -11,7 +11,7 @@ namespace DotNetIDE;
 public class MarkdownFileMiddleware : IFileMiddleware
 {
     public string SyntaxName => "Markdown";
-    private static readonly MarkdownSyntaxHighlighter Highlighter = new();
+    private static readonly ISyntaxHighlighter? Highlighter = SyntaxHighlighters.For("markdown");
     private static readonly MarkdownPipeline Pipeline =
         new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 

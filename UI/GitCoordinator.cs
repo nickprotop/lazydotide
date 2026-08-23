@@ -209,14 +209,14 @@ internal class GitCoordinator
         if (string.IsNullOrEmpty(diff)) return;
 
         var fileName = Path.GetFileName(absolutePath);
-        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Diff: {fileName}", diff, new DiffSyntaxHighlighter()));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab($"Diff: {fileName}", diff, SyntaxHighlighters.For("diff")));
     }
 
     public async Task GitShowDiffAllAsync()
     {
         var diff = await _ctx.GitService.GetDiffAllAsync(_ctx.ProjectService.RootPath);
         if (string.IsNullOrEmpty(diff)) return;
-        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab("Diff: All Changes", diff, new DiffSyntaxHighlighter()));
+        _ctx.PendingUiActions.Enqueue(() => OpenReadOnlyTab("Diff: All Changes", diff, SyntaxHighlighters.For("diff")));
     }
 
     public async Task GitCommitAsync()

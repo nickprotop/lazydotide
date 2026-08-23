@@ -4,6 +4,7 @@ using SharpConsoleUI.Controls;
 using SharpConsoleUI.Controls.Terminal;
 using SharpConsoleUI.Extensions;
 using SharpConsoleUI.Layout;
+using SharpConsoleUI.Logging;
 using SharpConsoleUI.Parsing;
 
 namespace DotNetIDE;
@@ -12,11 +13,10 @@ public class OutputPanel
 {
     private readonly ConsoleWindowSystem _ws;
     private readonly TabControl _tabControl;
-    private readonly ScrollablePanelControl _buildPanel;
-    private readonly ScrollablePanelControl _testPanel;
-    private readonly ScrollablePanelControl _gitPanel;
     private readonly ListControl _problemsList;
-    private readonly LogViewerControl _logViewer;
+    private readonly ListControl _outputList;
+    private readonly LogService _appLog;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action>? _uiActions;
     private TerminalControl? _shellTerminal;
     private int _shellTabIndex = -1;
 
@@ -34,33 +34,13 @@ public class OutputPanel
 
     public TabControl TabControl => _tabControl;
 
-    public OutputPanel(ConsoleWindowSystem ws)
+    public OutputPanel(ConsoleWindowSystem ws, System.Collections.Concurrent.ConcurrentQueue<Action>? uiActions = null)
     {
         _ws = ws;
+        _uiActions = uiActions;
 
-        _buildPanel = new ScrollablePanelControl
-        {
-            AutoScroll = true,
-            ShowScrollbar = true,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
 
-        _testPanel = new ScrollablePanelControl
-        {
-            AutoScroll = true,
-            ShowScrollbar = true,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
 
-        _gitPanel = new ScrollablePanelControl
-        {
-            AutoScroll = true,
-            ShowScrollbar = true,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
 
         _problemsList = new ListControl
         {
@@ -69,11 +49,25 @@ public class OutputPanel
         };
         _problemsList.ItemActivated += OnProblemActivated;
 
-        _logViewer = new LogViewerControl(ws.LogService)
+        // A dedicated log service, NOT ws.LogService: the window system's logger
+        // carries SharpConsoleUI's own framework diagnostics (renderer, layout and
+        // input chatter), which would bury this application's few status messages.
+        // LogService defaults to MinimumLevel = Warning, which would silently drop
+        // every status message this panel exists to show.
+        _appLog = new LogService { MinimumLevel = LogLevel.Information };
+
+        _outputList = new ListControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
+
+        _appLog.LogAdded += OnAppLogAdded;
+        _appLog.LogsCleared += OnAppLogsCleared;
+
+        // Deliberately NOT wired to DiagnosticLog: that is a verbose protocol trace
+        // (~550 lines a session for LSP alone) and belongs in its files. This tab is
+        // for the handful of status messages a user should actually see.
 
         _tabControl = new TabControl
         {
@@ -81,10 +75,7 @@ public class OutputPanel
             VerticalAlignment = VerticalAlignment.Fill,
             HeaderStyle = TabHeaderStyle.Separator
         };
-        _tabControl.AddTab("Output", _logViewer);
-        _tabControl.AddTab("Build", _buildPanel);
-        _tabControl.AddTab("Test", _testPanel);
-        _tabControl.AddTab("Git Output", _gitPanel);
+        _tabControl.AddTab("Output", _outputList);
         _tabControl.AddTab("Problems", _problemsList);
 
         // Search tab — toolbar + results list inside a scrollable panel
@@ -124,6 +115,27 @@ public class OutputPanel
         _searchTabIndex = _tabControl.TabCount - 1;
     }
 
+    // ──────────────────────────────────────────────────────────────
+    // Unified output stream
+    //
+    // Build, test and git all append here rather than owning a tab each: the
+    // bottom panel is only a dozen rows, and one chronological feed reads better
+    // than five near-empty views. Nothing clears on a new run — a run appends a
+    // header and its lines below what came before, so earlier context survives.
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>Appends a pre-formatted markup line to the output stream.</summary>
+    private void AppendMarkup(string markup) =>
+        RunOnUi(() =>
+        {
+            _outputList.AddItem(markup);
+            _outputList.SelectedIndex = _outputList.Items.Count - 1;
+        });
+
+    /// <summary>Writes a section header, so runs stay visually separated.</summary>
+    public void AppendHeader(string title) =>
+        AppendMarkup($"[bold cyan1]── {MarkupParser.Escape(title)} ──[/]");
+
     public void AppendBuildLine(string line)
     {
         string markup;
@@ -138,34 +150,20 @@ public class OutputPanel
         else
             markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
-        _buildPanel.AddControl(new MarkupControl(new List<string> { markup }));
-        _buildPanel.ScrollToBottom();
+        AppendMarkup(markup);
     }
 
     public void AppendTestLine(string line)
     {
         string markup;
-        if (line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-            line.Contains("FAILED", StringComparison.OrdinalIgnoreCase))
+        if (line.Contains("failed", StringComparison.OrdinalIgnoreCase))
             markup = $"[red]{MarkupParser.Escape(line)}[/]";
-        else if (line.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
-                 line.Contains("PASSED", StringComparison.OrdinalIgnoreCase))
+        else if (line.Contains("passed", StringComparison.OrdinalIgnoreCase))
             markup = $"[green]{MarkupParser.Escape(line)}[/]";
         else
             markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
-        _testPanel.AddControl(new MarkupControl(new List<string> { markup }));
-        _testPanel.ScrollToBottom();
-    }
-
-    public void ClearBuildOutput()
-    {
-        _buildPanel.ClearContents();
-    }
-
-    public void ClearTestOutput()
-    {
-        _testPanel.ClearContents();
+        AppendMarkup(markup);
     }
 
     public void AppendGitLine(string line)
@@ -179,19 +177,52 @@ public class OutputPanel
         else
             markup = $"[grey]{MarkupParser.Escape(line)}[/]";
 
-        _gitPanel.AddControl(new MarkupControl(new List<string> { markup }));
-        _gitPanel.ScrollToBottom();
+        AppendMarkup(markup);
     }
 
-    public void ClearGitOutput()
+    // The stream is append-only: a new run must not erase earlier context, so
+    // these mark the start of a run instead of wiping the panel.
+    public void ClearBuildOutput() => AppendHeader("Build");
+    public void ClearTestOutput() => AppendHeader("Test");
+    public void ClearGitOutput() { }
+
+    /// <summary>The application's log service; messages written here appear in the Output tab.</summary>
+    public ILogService AppLog => _appLog;
+
+    /// <summary>Writes a line to the Output tab.</summary>
+    public void AppendOutputLine(string line) => _appLog.LogInfo(line);
+
+    public void ClearOutput() => _appLog.ClearLogs();
+
+    private void OnAppLogAdded(object? sender, LogEntry entry)
     {
-        _gitPanel.ClearContents();
+        // Log calls arrive from background work (LSP, DAP, git), so touch the
+        // control on the UI loop rather than the calling thread.
+        RunOnUi(() =>
+        {
+            // ToMarkup() already colours by level; ListControl parses markup.
+            _outputList.AddItem(entry.ToMarkup());
+
+            // Keep the newest entry in view. LogService bounds its own buffer, so
+            // the list length follows it rather than being trimmed here.
+            _outputList.SelectedIndex = _outputList.Items.Count - 1;
+        });
     }
 
-    public void SwitchToBuildTab() => _tabControl.ActiveTabIndex = 1;
-    public void SwitchToTestTab() => _tabControl.ActiveTabIndex = 2;
-    public void SwitchToGitTab() => _tabControl.ActiveTabIndex = 3;
-    public void SwitchToProblemsTab() => _tabControl.ActiveTabIndex = 4;
+    private void OnAppLogsCleared(object? sender, EventArgs e) => RunOnUi(_outputList.ClearItems);
+
+    private void RunOnUi(Action action)
+    {
+        if (_uiActions != null) _uiActions.Enqueue(action);
+        else action();
+    }
+
+    // Build/test/git all stream into the single Output tab now.
+    public void SwitchToOutputTab() => _tabControl.ActiveTabIndex = 0;
+    public void SwitchToBuildTab() => SwitchToOutputTab();
+    public void SwitchToTestTab() => SwitchToOutputTab();
+    public void SwitchToGitTab() => SwitchToOutputTab();
+    public void SwitchToProblemsTab() => _tabControl.ActiveTabIndex = 1;
 
     public TerminalControl? ShellTerminal => _shellTerminal;
     public bool IsShellTabActive => _shellTabIndex >= 0 && _tabControl.ActiveTabIndex == _shellTabIndex;
@@ -245,13 +276,10 @@ public class OutputPanel
 
     public void ShowWarnings(IReadOnlyList<string> warnings)
     {
-        _buildPanel.AddControl(new MarkupControl(new List<string>
-            { "[yellow]── Markdown Warnings ──[/]" }));
+        AppendHeader("Markdown Warnings");
         foreach (var w in warnings)
-            _buildPanel.AddControl(new MarkupControl(new List<string>
-                { $"[yellow]▲ {MarkupParser.Escape(w)}[/]" }));
-        _buildPanel.ScrollToBottom();
-        SwitchToBuildTab();
+            AppendMarkup($"[yellow]▲ {MarkupParser.Escape(w)}[/]");
+        SwitchToOutputTab();
     }
 
     private void OnProblemActivated(object? sender, ListItem item)

@@ -6,7 +6,7 @@ namespace DotNetIDE;
 public class JsonFileMiddleware : IFileMiddleware
 {
     public string SyntaxName => "JSON";
-    private static readonly JsonSyntaxHighlighter Highlighter = new();
+    private static readonly ISyntaxHighlighter? Highlighter = SyntaxHighlighters.For("json");
 
     public bool Handles(string filePath) =>
         FileService.GetExtension(filePath) == ".json";

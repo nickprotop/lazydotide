@@ -1,4 +1,5 @@
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Highlighting;
 
 namespace DotNetIDE;
 
@@ -41,5 +42,19 @@ public class FileMiddlewarePipeline
     }
 
     /// <summary>Returns the display name for the auto-detected syntax of a file.</summary>
-    public string GetSyntaxName(string filePath) => Pick(filePath).SyntaxName;
+    public string GetSyntaxName(string filePath)
+    {
+        var handler = Pick(filePath);
+
+        // The catch-all reports "Plain Text", but it still highlights anything a TextMate
+        // grammar covers — so name the language it actually resolved rather than misreporting.
+        if (handler is DefaultFileMiddleware)
+        {
+            var hint = DefaultFileMiddleware.LanguageHintFor(filePath);
+            if (SyntaxHighlighters.Has(hint))
+                return hint.ToLowerInvariant();
+        }
+
+        return handler.SyntaxName;
+    }
 }

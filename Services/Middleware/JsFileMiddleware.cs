@@ -6,7 +6,7 @@ namespace DotNetIDE;
 public class JsFileMiddleware : IFileMiddleware
 {
     public string SyntaxName => "JavaScript";
-    private static readonly JsSyntaxHighlighter Highlighter = new();
+    private static readonly ISyntaxHighlighter? Highlighter = SyntaxHighlighters.For("javascript");
 
     private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)
     {

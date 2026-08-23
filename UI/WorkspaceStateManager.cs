@@ -26,8 +26,12 @@ internal class WorkspaceStateManager
         state.OutputVisible = layout.OutputVisible;
         state.SidePanelVisible = layout.SidePanelVisible;
         state.OutputPanelHeight = layout.OutputPanelHeight;
-        state.ExplorerColumnWidth = layout.ExplorerColumnWidth;
-        state.SidePanelColumnWidth = layout.SidePanelColumnWidth;
+        // A hidden panel reports width 0 (it is not painted); keep the width
+        // already stored so it survives being toggled off and back on.
+        if (layout.ExplorerColumnWidth > 0)
+            state.ExplorerColumnWidth = layout.ExplorerColumnWidth;
+        if (layout.SidePanelColumnWidth > 0)
+            state.SidePanelColumnWidth = layout.SidePanelColumnWidth;
 
         // Wrap mode
         state.WrapMode = _ctx.EditorManager.WrapMode.ToString();

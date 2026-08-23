@@ -87,7 +87,7 @@ internal class LspCoordinator : IAsyncDisposable
             {
                 _lspStarted = true;
                 _lsp.DiagnosticsReceived += OnLspDiagnostics;
-                ws.LogService.LogInfo("LSP server started: " + lspServer.Exe);
+                _ctx.OutputPanel.AppendOutputLine("LSP server started: " + lspServer.Exe);
 
                 foreach (var (filePath, content) in _ctx.EditorManager.GetOpenDocuments())
                     await _lsp.DidOpenAsync(filePath, content);
@@ -98,7 +98,7 @@ internal class LspCoordinator : IAsyncDisposable
             {
                 await _lsp.DisposeAsync();
                 _lsp = null;
-                ws.LogService.LogInfo("LSP server unavailable — running without IntelliSense");
+                _ctx.OutputPanel.AppendOutputLine("LSP server unavailable — running without IntelliSense");
             }
         }
 
@@ -405,7 +405,7 @@ internal class LspCoordinator : IAsyncDisposable
         var currentHighlighter = editor.SyntaxHighlighter;
         if (currentHighlighter is SemanticHighlighter) return; // already wrapped
 
-        var semantic = new SemanticHighlighter(currentHighlighter ?? new CSharpSyntaxHighlighter());
+        var semantic = new SemanticHighlighter(currentHighlighter ?? SyntaxHighlighters.For("csharp")!);
         editor.SyntaxHighlighter = semantic;
         _semanticHighlighters[filePath] = semantic;
 
@@ -445,8 +445,10 @@ internal class LspCoordinator : IAsyncDisposable
                 {
                     highlighter.UpdateTokens(tokens, legend);
                     var editor = _ctx.EditorManager.GetEditorByPath(filePath);
-                    if (editor != null)
-                        editor.SyntaxHighlighter = editor.SyntaxHighlighter;
+                    // The highlighter instance is unchanged - only its LSP token overlay is - so
+                    // ask the editor to drop its cached tokens explicitly. (Re-assigning
+                    // SyntaxHighlighter to the same instance is a no-op and will not refresh.)
+                    editor?.RefreshSyntaxHighlighting();
                 });
             }
             else if (attempt < RetryDelaysMs.Length && _semanticHighlighters.ContainsKey(filePath))
@@ -487,7 +489,7 @@ internal class LspCoordinator : IAsyncDisposable
             if (editor == null) continue;
             var currentHighlighter = editor.SyntaxHighlighter;
             if (currentHighlighter is SemanticHighlighter) continue;
-            var semantic = new SemanticHighlighter(currentHighlighter ?? new CSharpSyntaxHighlighter());
+            var semantic = new SemanticHighlighter(currentHighlighter ?? SyntaxHighlighters.For("csharp")!);
             editor.SyntaxHighlighter = semantic;
             _semanticHighlighters[filePath] = semantic;
         }

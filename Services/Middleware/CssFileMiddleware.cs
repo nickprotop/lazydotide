@@ -6,7 +6,7 @@ namespace DotNetIDE;
 public class CssFileMiddleware : IFileMiddleware
 {
     public string SyntaxName => "CSS";
-    private static readonly CssSyntaxHighlighter Highlighter = new();
+    private static readonly ISyntaxHighlighter? Highlighter = SyntaxHighlighters.For("css");
 
     public bool Handles(string filePath) =>
         FileService.GetExtension(filePath) == ".css";

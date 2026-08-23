@@ -42,6 +42,10 @@ internal class LayoutController
     private const int MinMainHeight = 8;
     private const int MinOutputHeight = 4;
 
+    // Minimum usable width for a side column (columns).
+    private const int MinSideColumnWidth = 10;
+    private const int MinEditorWidth = 20;
+
     public LayoutController(
         AppContext ctx,
         LspCoordinator lspCoord,
@@ -65,28 +69,127 @@ internal class LayoutController
 
         // Wire splitter moved event to track output panel height
         _ctx.OutputSplitter.SplitterMoved += OnSplitterMoved;
+
+        // Track column widths from splitter drags (see ExplorerColumnWidth).
+        if (_explorerSplitter != null)
+            _explorerSplitter.SplitterMoved += OnExplorerSplitterMoved;
+        if (_sidePanelSplitter != null)
+            _sidePanelSplitter.SplitterMoved += OnSidePanelSplitterMoved;
     }
 
+    // Widths tracked from splitter drags. ColumnContainer.Width cannot be used:
+    // a drag stores a value derived from the combined space of both adjacent
+    // columns, so it can far exceed the column's real on-screen width. And
+    // ActualWidth is only set when a column is painted, which never happens for
+    // the side panel column, leaving it at 0. Tracking the drags ourselves is
+    // the only reliable source. 0 means "unknown" — keep the saved value.
+    private int _explorerWidth;
+    private int _sidePanelWidth;
+
     public int ExplorerColumnWidth =>
-        _explorerCol?.Width ?? _explorerCol?.ActualWidth ?? 26;
+        _explorerCol is { Visible: true }
+            ? (_explorerWidth > 0 ? _explorerWidth
+               : _explorerCol.ActualWidth > 0 ? _explorerCol.ActualWidth : 0)
+            : 0;
 
     public int SidePanelColumnWidth =>
-        _sidePanelCol?.Width ?? _sidePanelCol?.ActualWidth ?? 30;
+        _sidePanelCol is { Visible: true } && _sidePanelWidth > 0 ? _sidePanelWidth : 0;
+
+    private void OnExplorerSplitterMoved(object? sender, SplitterMovedEventArgs e)
+    {
+        // The explorer is this splitter's left column.
+        if (e.LeftColumnWidth > 0) _explorerWidth = e.LeftColumnWidth;
+    }
+
+    private void OnSidePanelSplitterMoved(object? sender, SplitterMovedEventArgs e)
+    {
+        // The side panel is this splitter's right column.
+        if (e.RightColumnWidth > 0) _sidePanelWidth = e.RightColumnWidth;
+    }
 
     public void SetExplorerColumnWidth(int width)
     {
-        if (_explorerCol != null) _explorerCol.Width = width;
+        if (_explorerCol == null) return;
+        int w = ClampSideColumnWidth(width);
+        _explorerCol.Width = w;
+        _explorerWidth = w;
     }
 
     public void SetSidePanelColumnWidth(int width)
     {
-        if (_sidePanelCol != null) _sidePanelCol.Width = width;
+        if (_sidePanelCol == null) return;
+        int w = ClampSideColumnWidth(width);
+        _sidePanelCol.Width = w;
+        _sidePanelWidth = w;
+    }
+
+    /// <summary>
+    /// Restores both side-column widths together, so the columns never
+    /// over-commit the grid. Setting one column's width alone leaves the centre
+    /// editor at its previous size: the widths then sum to more than the
+    /// desktop, the side panel is pushed off-screen, and splitter drags stop
+    /// working because they are computed from the over-committed widths.
+    /// </summary>
+    public void RestoreColumnWidths(int explorerWidth, int sidePanelWidth)
+    {
+        int desktopWidth = _ctx.WindowSystem.DesktopDimensions.Width;
+
+        int explorer = _explorerCol is { Visible: true } && explorerWidth > 0
+            ? ClampSideColumnWidth(explorerWidth) : 0;
+        int side = _sidePanelCol is { Visible: true } && sidePanelWidth > 0
+            ? ClampSideColumnWidth(sidePanelWidth) : 0;
+
+        // Shrink the side columns proportionally if they leave no room for the
+        // editor once the splitters are accounted for.
+        if (desktopWidth > 0)
+        {
+            int splitters = (_explorerSplitter is { Visible: true } ? 1 : 0)
+                          + (_sidePanelSplitter is { Visible: true } ? 1 : 0);
+            int budget = desktopWidth - splitters - MinEditorWidth;
+            if (budget > 0 && explorer + side > budget)
+            {
+                double scale = (double)budget / (explorer + side);
+                if (explorer > 0) explorer = Math.Max(MinSideColumnWidth, (int)(explorer * scale));
+                if (side > 0) side = Math.Max(MinSideColumnWidth, (int)(side * scale));
+            }
+        }
+
+        if (explorer > 0 && _explorerCol != null)
+        {
+            _explorerCol.Width = explorer;
+            _explorerWidth = explorer;
+        }
+        if (side > 0 && _sidePanelCol != null)
+        {
+            _sidePanelCol.Width = side;
+            _sidePanelWidth = side;
+        }
+
+        // The centre editor column is left flexible so it absorbs the remaining
+        // space; SplitterControl handles flex columns and clamps drags against
+        // the grid width, so it must not be pinned to an explicit width here.
+    }
+
+    // Enforces only a lower bound. The upper bound is handled by
+    // RestoreColumnWidths, which scales both side columns together so the
+    // editor always keeps MinEditorWidth; capping each column independently
+    // here would truncate legitimate widths (a panel wider than half the
+    // screen is a valid layout when the other column is narrow).
+    private int ClampSideColumnWidth(int width)
+    {
+        int desktopWidth = _ctx.WindowSystem.DesktopDimensions.Width;
+        if (desktopWidth <= 0) return Math.Max(width, MinSideColumnWidth);
+        int max = Math.Max(MinSideColumnWidth, desktopWidth - MinEditorWidth);
+        return Math.Clamp(width, MinSideColumnWidth, max);
     }
 
     public void OnScreenResized(object? sender, SharpConsoleUI.Helpers.Size size)
     {
         var desktop = _ctx.WindowSystem.DesktopDimensions;
         _ctx.MainWindow?.SetSize(desktop.Width, desktop.Height);
+        // Re-fit the fixed side columns: after a shrink they may no longer
+        // leave a usable editor between them.
+        RestoreColumnWidths(_explorerWidth, _sidePanelWidth);
     }
 
     private void OnSplitterMoved(object? sender, HorizontalSplitterMovedEventArgs e)
