@@ -42,6 +42,12 @@ htop running as a custom tool in an editor tab, demonstrating full interactive t
 
 ![Custom Tool — htop](screenshots/custom-tool-htop.png)
 
+## AI Agent in the Side Panel
+
+An AI coding agent running as a shell in the side panel, working on the project open in the editor — the agent, the IDE, and the framework underneath are all the same stack.
+
+![AI Agent in the Side Panel](screenshots/ai-agent-side-panel.png)
+
 ## NuGet Browser
 
 LazyNuGet integration showing package search, details, and version management.
