@@ -63,6 +63,10 @@ public class IdeApp : IDisposable
 
     // File system watcher
     private FileWatcher? _fileWatcher;
+
+    // False when launched on a folder with no .sln/project file nearby (e.g. $HOME):
+    // the IDE then avoids whole-tree work — recursive file watching and the LSP server.
+    private bool _isDotNetWorkspace;
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
 
@@ -136,6 +140,7 @@ public class IdeApp : IDisposable
                 BottomPanelConfig: panel => panel.Left(_bottomStatusElement),
                 InstallSynchronizationContext: true));
         _projectService = new ProjectService(projectPath);
+        _isDotNetWorkspace = _projectService.ContainsDotNetProject();
         _buildService = new BuildService();
         _gitService = new GitService();
 
@@ -215,6 +220,8 @@ public class IdeApp : IDisposable
         var projName = new DirectoryInfo(_projectService.RootPath).Name;
         _outputPanel!.AppendHeader($"lazydotide — {projName}");
         _outputPanel.AppendOutputLine($"Workspace: {_projectService.RootPath}");
+        if (!_isDotNetWorkspace)
+            _pendingUiActions.Enqueue(ShowNoProjectNotice);
 
         // Async post-init: git status + optional LSP
         _ = PostInitAsync(projectPath);
@@ -350,7 +357,7 @@ public class IdeApp : IDisposable
         _ws.SetActiveWindow(_mainWindow!);
 
         _fileWatcher = new FileWatcher();
-        _fileWatcher.Watch(_projectService.RootPath);
+        _fileWatcher.Watch(_projectService.RootPath, recursive: _isDotNetWorkspace);
 
         WireEvents();
     }
@@ -824,7 +831,17 @@ public class IdeApp : IDisposable
     {
         await _gitOps!.RefreshGitStatusAsync();
         _debugCoord!.DetectDap();
-        await _lspCoord!.InitLspAsync(projectPath, _config.Lsp, _ws);
+        await _lspCoord!.InitLspAsync(projectPath, _config.Lsp, _ws, startServer: _isDotNetWorkspace);
+    }
+
+    private void ShowNoProjectNotice()
+    {
+        _outputPanel?.AppendOutputLine(
+            "No .sln or project file found — LSP and recursive file watching are disabled. Use File → Open Folder to open a project.");
+        _ws.NotificationStateService.ShowNotification(
+            "No .NET Project Found",
+            $"{_projectService.RootPath} does not contain a solution or project file. Use File → Open Folder… to open one.",
+            SharpConsoleUI.Core.NotificationSeverity.Warning);
     }
 
     private void HandleF5()
@@ -923,13 +940,17 @@ public class IdeApp : IDisposable
         if (string.IsNullOrEmpty(selected)) return;
 
         _projectService.ChangeRootPath(selected);
+        _isDotNetWorkspace = _projectService.ContainsDotNetProject();
         _pendingUiActions.Enqueue(() => _editorManager?.CloseAll());
         _pendingUiActions.Enqueue(() => _explorer?.Refresh());
         _ = _gitOps!.RefreshGitStatusAsync();
-        _fileWatcher?.Watch(selected);
+        _fileWatcher?.Watch(selected, recursive: _isDotNetWorkspace);
+
+        if (!_isDotNetWorkspace)
+            _pendingUiActions.Enqueue(ShowNoProjectNotice);
 
         if (_lspCoord != null)
-            await _lspCoord.ReinitLspAsync(selected, _config.Lsp);
+            await _lspCoord.ReinitLspAsync(selected, _config.Lsp, startServer: _isDotNetWorkspace);
     }
 
 

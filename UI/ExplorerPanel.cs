@@ -18,6 +18,11 @@ public class ExplorerPanel
     private Func<string, bool>? _isPathIgnored;
     private string? _repoWorkingDir;
 
+    // Directory nodes whose children have been read from disk. Unloaded directories
+    // carry a single placeholder child so the tree still shows an expander.
+    private readonly HashSet<TreeNode> _loadedDirs = new();
+    private const string PlaceholderLabel = "[grey35]…[/]";
+
     public event EventHandler<string>? FileOpenRequested;
     public event EventHandler<string>? NewFileRequested;
     public event EventHandler<string>? NewFolderRequested;
@@ -50,6 +55,7 @@ public class ExplorerPanel
         _panel.AddControl(_tree);
 
         _tree.NodeActivated += OnNodeActivated;
+        _tree.NodeExpandCollapse += OnNodeExpandCollapse;
         _tree.MouseRightClick += OnTreeRightClick;
         BuildTree();
     }
@@ -85,6 +91,7 @@ public class ExplorerPanel
         var selectedTag = _tree.SelectedNode?.Tag as string;
 
         _tree.Clear();
+        _loadedDirs.Clear();
         BuildTree();
 
         // Restore expanded state
@@ -109,12 +116,12 @@ public class ExplorerPanel
         }
     }
 
-    private static void RestoreExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
+    private void RestoreExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
     {
         foreach (var node in nodes)
         {
             if (node.Tag is string path && tags.Contains(path))
-                node.IsExpanded = true;
+                ExpandNode(node);
             if (node.Children.Count > 0)
                 RestoreExpandedTags(node.Children, tags);
         }
@@ -158,13 +165,47 @@ public class ExplorerPanel
         return false;
     }
 
-    private void BuildTree()
+    /// <summary>
+    /// Expands the directory node for <paramref name="path"/>, loading its children if needed.
+    /// The parent must already be loaded, so callers expand ancestors first.
+    /// </summary>
+    public void ExpandPath(string path)
     {
-        var root = _projectService.BuildTree();
-        AddNode(root, null);
+        var node = _tree.FindNodeByTag(path);
+        if (node != null) ExpandNode(node);
     }
 
-    private void AddNode(FileNode fileNode, TreeNode? parent)
+    private void ExpandNode(TreeNode node)
+    {
+        EnsureChildrenLoaded(node);
+        node.IsExpanded = true;
+    }
+
+    private void BuildTree()
+    {
+        var rootPath = _projectService.RootPath;
+        var name = Path.GetFileName(rootPath) is { Length: > 0 } n ? n : rootPath;
+        var root = AddNode(new FileNode(name, rootPath, true, new List<FileNode>()), null);
+        EnsureChildrenLoaded(root);
+    }
+
+    private void OnNodeExpandCollapse(object? sender, TreeNodeEventArgs args)
+    {
+        if (args.Node is { IsExpanded: true } node)
+            EnsureChildrenLoaded(node);
+    }
+
+    private void EnsureChildrenLoaded(TreeNode node)
+    {
+        if (node.Tag is not string dirPath || !_loadedDirs.Add(node)) return;
+        if (!Directory.Exists(dirPath)) return;
+
+        node.ClearChildren();
+        foreach (var child in _projectService.ListDirectory(dirPath))
+            AddNode(child, node);
+    }
+
+    private TreeNode AddNode(FileNode fileNode, TreeNode? parent)
     {
         string label = fileNode.Name;
 
@@ -200,11 +241,10 @@ public class ExplorerPanel
             treeNode.TextColor = GetFileColor(fileNode.Name);
         }
 
-        if (fileNode.IsDirectory)
-        {
-            foreach (var child in fileNode.Children)
-                AddNode(child, treeNode);
-        }
+        if (fileNode.IsDirectory && parent != null && ProjectService.HasEntries(fileNode.FullPath))
+            treeNode.AddChild(PlaceholderLabel).TextColor = Color.Grey35;
+
+        return treeNode;
     }
 
     private bool IsIgnored(FileNode fileNode)

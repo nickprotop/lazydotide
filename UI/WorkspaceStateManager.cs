@@ -133,9 +133,7 @@ internal class WorkspaceStateManager
         // Explorer expanded paths
         foreach (var relativePath in state.ExpandedPaths)
         {
-            var absolutePath = _ctx.WorkspaceService.ToAbsolutePath(relativePath);
-            var node = _ctx.Explorer.Tree.FindNodeByTag(absolutePath);
-            if (node != null) node.IsExpanded = true;
+            _ctx.Explorer.ExpandPath(_ctx.WorkspaceService.ToAbsolutePath(relativePath));
         }
 
         // Explorer selected path

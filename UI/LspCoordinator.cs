@@ -75,9 +75,9 @@ internal class LspCoordinator : IAsyncDisposable
 
     // ── LSP Lifecycle ──────────────────────────────────────────────────
 
-    public async Task InitLspAsync(string projectPath, LspConfig? lspConfig, ConsoleWindowSystem ws)
+    public async Task InitLspAsync(string projectPath, LspConfig? lspConfig, ConsoleWindowSystem ws, bool startServer = true)
     {
-        var lspServer = LspDetector.Find(projectPath, lspConfig);
+        var lspServer = startServer ? LspDetector.Find(projectPath, lspConfig) : null;
         if (lspServer != null)
         {
             _detectedLspExe = lspServer.Exe;
@@ -106,7 +106,7 @@ internal class LspCoordinator : IAsyncDisposable
         LspInitCompleted?.Invoke();
     }
 
-    public async Task ReinitLspAsync(string projectPath, LspConfig? lspConfig)
+    public async Task ReinitLspAsync(string projectPath, LspConfig? lspConfig, bool startServer = true)
     {
         // Clear stale semantic highlighters from previous LSP session
         _semanticHighlighters.Clear();
@@ -118,6 +118,7 @@ internal class LspCoordinator : IAsyncDisposable
             await _lsp.ShutdownAsync();
             _lsp = null;
         }
+        if (!startServer) return;
         var lspServer = LspDetector.Find(projectPath, lspConfig);
         if (lspServer != null)
         {

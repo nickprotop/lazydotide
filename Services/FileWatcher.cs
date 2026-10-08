@@ -19,7 +19,7 @@ public class FileWatcher : IDisposable
     public event EventHandler? StructureChanged;
     public event EventHandler? GitChanged;
 
-    public void Watch(string rootPath)
+    public void Watch(string rootPath, bool recursive = true)
     {
         lock (_lock)
         {
@@ -30,7 +30,7 @@ public class FileWatcher : IDisposable
 
             _watcher = new FileSystemWatcher(rootPath)
             {
-                IncludeSubdirectories = true,
+                IncludeSubdirectories = recursive,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
                 EnableRaisingEvents = true
             };
