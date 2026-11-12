@@ -27,6 +27,7 @@ internal class SidePanel
     private readonly TabControl _tabControl;
     private readonly TreeControl _symbolsTree;
     private readonly ScrollablePanelControl _symbolsPanel;
+    private ButtonControl? _symbolsFilterButton;
     private TerminalControl? _shellTerminal;
     private int _shellTabIndex = -1;
 
@@ -76,6 +77,16 @@ internal class SidePanel
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
+        // Filter toggle, sticky at the top of the Symbols tab so it does not scroll away.
+        _symbolsFilterButton = Controls.Button(SymbolsFilterLabel())
+            .WithBorder(ButtonBorderStyle.None)
+            .WithBackgroundColor(Color.Transparent)
+            .WithBorderBackgroundColor(Color.Transparent)
+            .OnClick((_, _) => ToggleShowAllSymbols())
+            .Build();
+        _symbolsFilterButton.StickyPosition = StickyPosition.Top;
+        _symbolsPanel.AddControl(_symbolsFilterButton);
+
         _symbolsPanel.AddControl(_symbolsTree);
 
         // Git toolbar
@@ -340,12 +351,83 @@ internal class SidePanel
         _ => Color.White
     };
 
+    /// <summary>
+    /// Whether the symbol list shows fields, variables and constants as well as the types and
+    /// members. Off by default, toggled with the button in the Symbols tab.
+    /// </summary>
+    private bool _showAllSymbols;
+
+    private string? _lastSymbolsPath;
+    private List<DocumentSymbol>? _lastSymbols;
+
+    // SymbolKind values worth navigating to. Fields, variables and constants are deliberately
+    // absent: documentSymbol returns every private backing field, and a list that opens with
+    // _ws, _projectService, _buildService is a list nobody reads. The toggle brings them back.
+    private static readonly HashSet<int> NavigableKinds = new()
+    {
+        2,   // Module
+        3,   // Namespace
+        5,   // Class
+        6,   // Method
+        7,   // Property
+        9,   // Constructor
+        10,  // Enum
+        11,  // Interface
+        12,  // Function
+        22,  // Struct
+        23,  // Event
+        26,  // TypeParameter
+    };
+
     public void UpdateSymbols(string filePath, List<DocumentSymbol> symbols)
     {
-        _symbolsTree.Clear();
-        foreach (var sym in symbols)
-            AddSymbolNode(filePath, sym, null);
+        _lastSymbolsPath = filePath;
+        _lastSymbols = symbols;
+        RenderSymbols();
     }
+
+    private void RenderSymbols()
+    {
+        _symbolsTree.Clear();
+
+        // An empty pane cannot say WHY it is empty, and the three reasons want different
+        // actions from the user: install a server, open a file, or widen the filter.
+        if (_lastSymbolsPath == null || _lastSymbols == null)
+        {
+            _symbolsTree.AddRootNode("[dim]No symbols.[/]").TextColor = Color.Grey50;
+            _symbolsTree.AddRootNode("[dim]Open a C# file, or install a language[/]").TextColor = Color.Grey35;
+            _symbolsTree.AddRootNode("[dim]server from Help \u203a Install csharp-ls.[/]").TextColor = Color.Grey35;
+            return;
+        }
+
+        foreach (var sym in _lastSymbols)
+            AddSymbolNode(_lastSymbolsPath, sym, null);
+
+        if (_symbolsTree.RootNodes.Count == 0)
+        {
+            _symbolsTree.AddRootNode("[dim]Nothing to navigate to in this file.[/]").TextColor = Color.Grey50;
+            if (!_showAllSymbols)
+                _symbolsTree.AddRootNode("[dim]Switch to \u25bc all symbols to include fields.[/]").TextColor = Color.Grey35;
+        }
+    }
+
+    private void ToggleShowAllSymbols()
+    {
+        _showAllSymbols = !_showAllSymbols;
+        if (_symbolsFilterButton != null) _symbolsFilterButton.Text = SymbolsFilterLabel();
+        RenderSymbols();
+    }
+
+    private string SymbolsFilterLabel() => _showAllSymbols
+        ? "[grey70]\u25bc all symbols[/]"
+        : "[grey70]\u25b2 members only[/]";
+
+    /// <summary>
+    /// Whether a symbol is shown. A hidden symbol's CHILDREN are still considered: a class
+    /// nested inside a region-like container must not disappear because its parent was filtered.
+    /// </summary>
+    private bool IsSymbolShown(DocumentSymbol symbol)
+        => _showAllSymbols || NavigableKinds.Contains(symbol.Kind);
 
     public void ClearSymbols()
     {
@@ -394,11 +476,25 @@ internal class SidePanel
 
     private void AddSymbolNode(string filePath, DocumentSymbol symbol, TreeNode? parent)
     {
+        // A filtered-out symbol does not stop the walk: its children are hoisted to its parent,
+        // so nothing nested inside it is lost along with it.
+        if (!IsSymbolShown(symbol))
+        {
+            if (symbol.Children != null)
+            {
+                foreach (var child in symbol.Children)
+                    AddSymbolNode(filePath, child, parent);
+            }
+            return;
+        }
+
+        string label = $"{GetSymbolGlyph(symbol.Kind)} {symbol.Name}";
+
         TreeNode node;
         if (parent == null)
-            node = _symbolsTree.AddRootNode(symbol.Name);
+            node = _symbolsTree.AddRootNode(label);
         else
-            node = parent.AddChild(symbol.Name);
+            node = parent.AddChild(label);
 
         node.Tag = new LspLocationEntry(
             filePath,
@@ -415,6 +511,26 @@ internal class SidePanel
                 AddSymbolNode(filePath, child, node);
         }
     }
+
+    /// <summary>
+    /// A one-cell marker for the symbol kind, so a scan of the list reads structure before text.
+    /// </summary>
+    /// <remarks>
+    /// All narrow forms. The wide East Asian Ambiguous glyphs would shift the column on
+    /// terminals that render them 2-wide.
+    /// </remarks>
+    private static string GetSymbolGlyph(int kind) => kind switch
+    {
+        5 or 22 => "\u25c6",            // Class, Struct
+        11 => "\u25c7",                 // Interface
+        10 => "\u25eb",                 // Enum
+        6 or 9 or 12 => "\u0192",       // Method, Constructor, Function
+        7 => "\u25aa",                  // Property
+        8 or 13 or 14 => "\u25cf",      // Field, Variable, Constant
+        23 => "\u26a1",                 // Event
+        3 or 2 => "\u25b8",             // Namespace, Module
+        _ => "\u00b7"
+    };
 
     private static Color GetSymbolColor(int kind) => kind switch
     {

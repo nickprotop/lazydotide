@@ -38,6 +38,7 @@ public class IdeApp : IDisposable
     private MarkupControl? _cursorStatus;
     private MarkupControl? _syntaxStatus;
     private MarkupControl? _lspStatus;
+    private MarkupControl? _pathStatus;
     private string _errorMarkup = "";
     private bool _lspBusy;
     private int _lspSpinnerFrame;
@@ -495,8 +496,19 @@ public class IdeApp : IDisposable
         leftCol.AddContent(_statusLeft);
         statusBar.AddColumn(leftCol);
 
+        // Active file, so the status bar says WHICH file the cursor position belongs to. The
+        // editor tabs truncate once a few are open, and the gap in the middle of the bar was
+        // doing nothing.
+        var pathCol = new ColumnContainer(statusBar) { Width = 44 };
+        _pathStatus = new MarkupControl(new List<string> { "" })
+        {
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        pathCol.AddContent(_pathStatus);
+        statusBar.AddColumn(pathCol);
+
         // LSP activity indicator
-        var lspCol = new ColumnContainer(statusBar) { Width = 10 };
+        var lspCol = new ColumnContainer(statusBar) { Width = 14 };
         _lspStatus = new MarkupControl(new List<string> { "" })
         {
             HorizontalAlignment = HorizontalAlignment.Right
@@ -523,6 +535,52 @@ public class IdeApp : IDisposable
         statusBar.AddColumn(cursorCol);
 
         _mainWindow!.AddControl(statusBar);
+    }
+
+    /// <summary>
+    /// Shows the active file in the status bar, relative to the workspace root and truncated
+    /// from the LEFT so the filename always survives.
+    /// </summary>
+    private void UpdatePathStatus(string? filePath)
+    {
+        if (string.IsNullOrEmpty(filePath))
+        {
+            _pathStatus?.SetContent(new List<string> { "" });
+            return;
+        }
+
+        var root = _projectService.RootPath;
+        var shown = filePath.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            ? filePath[root.Length..].TrimStart('/', '\\')
+            : filePath;
+
+        const int max = 42;
+        if (shown.Length > max)
+            shown = "\u2026" + shown[^(max - 1)..];
+
+        _pathStatus?.SetContent(new List<string> { $"[dim]{MarkupParser.Escape(shown)}[/]" });
+    }
+
+    /// <summary>
+    /// The LSP indicator when nothing is in flight: a dot and the server name when it is
+    /// running, a dim note when it is not.
+    /// </summary>
+    /// <remarks>
+    /// This column was blank except during a request, so "no language server" and "server idle"
+    /// looked identical - and a user whose completions silently do nothing had no way to tell
+    /// which they were in.
+    /// </remarks>
+    private void UpdateLspStatusIdle()
+    {
+        if (_lspCoord?.LspStarted == true)
+        {
+            var exe = _lspCoord.DetectedLspExe ?? "lsp";
+            _lspStatus?.SetContent(new List<string> { $"[green]\u25cf[/][dim] {MarkupParser.Escape(exe)}[/]" });
+        }
+        else
+        {
+            _lspStatus?.SetContent(new List<string> { "[dim]\u25cb no lsp[/]" });
+        }
     }
 
     private void UpdateInlineStatus()
@@ -581,7 +639,7 @@ public class IdeApp : IDisposable
         {
             _lspBusy = busy;
             if (!busy)
-                _lspStatus?.SetContent(new List<string> { "" });
+                UpdateLspStatusIdle();
         };
         _debugCoord!.StateChanged += () =>
         {
@@ -725,6 +783,7 @@ public class IdeApp : IDisposable
 
         _editorManager.ActiveFileChanged += (_, filePath) =>
         {
+            UpdatePathStatus(filePath);
             _lspCoord?.DismissCompletionPortal();
             _lspCoord?.DismissTooltipPortal();
             _lspCoord?.DismissLocationPortal();
@@ -871,6 +930,7 @@ public class IdeApp : IDisposable
         await _gitOps!.RefreshGitStatusAsync();
         _debugCoord!.DetectDap();
         await _lspCoord!.InitLspAsync(projectPath, _config.Lsp, _ws, startServer: _isDotNetWorkspace);
+        _pendingUiActions.Enqueue(UpdateLspStatusIdle);
     }
 
     private void ShowNoProjectNotice()
@@ -1305,6 +1365,16 @@ public class IdeApp : IDisposable
             _editorManager.WrapMode = wm;
 
         _layout.ForceRebuildLayout();
+
+        // Focus the editor when a file came back from the workspace, so the first keystroke
+        // types rather than navigating the file tree. With nothing open the tree is the right
+        // place to be, because opening something is the only thing to do next.
+        var editor = _editorManager?.CurrentEditor;
+        if (editor != null)
+        {
+            _pendingUiActions.Enqueue(() => _mainWindow?.FocusControl(editor));
+            UpdatePathStatus(_editorManager?.CurrentFilePath);
+        }
     }
 
 

@@ -39,6 +39,10 @@ public class ExplorerPanel
         _tree = new TreeControl
         {
             Guide = TreeGuide.Line,
+            // Triangles rather than [+]/[-]. Same display width in each state, which is what
+            // the indent and the expander hit-test are measured against.
+            ExpandedIndicator = "\u25bc ",
+            CollapsedIndicator = "\u25b2 ",
             HighlightBackgroundColor = Color.SteelBlue,
             HighlightForegroundColor = Color.White,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -392,9 +396,10 @@ public class ExplorerPanel
         var relativePath = GetRelativePath(fileNode.FullPath);
         if (relativePath == null) return "";
 
-        // Show ignored badge
+        // An ignored entry is already drawn in grey (see ApplyNodeStyle), so a letter beside it
+        // adds nothing and reads like a typo. The colour is the marker.
         if (IsIgnored(fileNode))
-            return "[grey35] I[/]";
+            return "";
 
         if (_gitStatuses.Count == 0) return "";
 

@@ -35,6 +35,7 @@ internal class GitCoordinator
     {
         var branch = await _ctx.GitService.GetBranchAsync(_ctx.ProjectService.RootPath);
         var status = await _ctx.GitService.GetStatusSummaryAsync(_ctx.ProjectService.RootPath);
+        var (ahead, behind) = _ctx.GitService.GetAheadBehind(_ctx.ProjectService.RootPath);
 
         var bar = new IdeStatusBar();
 
@@ -61,6 +62,14 @@ internal class GitCoordinator
                                $"  {status}");
             }
         }
+
+        // Ahead/behind beside the branch. The side panel has shown this for a while; the status
+        // bar is where it is actually glanced at, and it is the difference between knowing a
+        // push is pending and having to go looking.
+        if (ahead > 0)
+            bar.AddSegment($"[green] \u2191{ahead}[/]", $" ^{ahead}");
+        if (behind > 0)
+            bar.AddSegment($"[yellow] \u2193{behind}[/]", $" v{behind}");
 
         _gitMarkup = bar.Render();
         GitStatusMarkupChanged?.Invoke(this, _gitMarkup);

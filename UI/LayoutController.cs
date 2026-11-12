@@ -564,6 +564,7 @@ internal class LayoutController
         {
             "",
             "[dim]  ────────────────────────────[/]",
+            "[cyan1]  Ctrl+P[/][dim]  Commands    [/][cyan1]Ctrl+Shift+F[/][dim]  Find in project[/]",
             "[dim]  F5  Debug     F6  Build    Ctrl+F5  Run[/]",
             "[dim]  F7  Test      F8  Shell    F9  Breakpoint[/]",
             "[dim]  F10  Step Over   F11  Step Into[/]",

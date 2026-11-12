@@ -81,7 +81,9 @@ public class OutputPanel
         // Search tab — toolbar + results list inside a scrollable panel
         _searchInput = new PromptControl { Prompt = "Search: ", InputWidth = 30 };
         _caseSensitiveBox = new CheckboxControl { Label = "Aa", Checked = false };
-        _searchStatus = new MarkupControl(new List<string> { "[dim]Ready[/]" });
+        // "Ready" said the control existed, not what to do with it.
+        _searchStatus = new MarkupControl(new List<string>
+            { "[dim]Type a term and press Enter to search the project[/]" });
         _searchResults = new ListControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
