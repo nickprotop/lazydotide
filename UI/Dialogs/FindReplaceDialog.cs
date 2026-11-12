@@ -148,6 +148,43 @@ public class FindReplaceDialog : DialogBase<bool>
             : "[yellow]Not found[/]");
     }
 
+    /// <summary>
+    /// Puts the caret in the Find box when the dialog opens.
+    /// </summary>
+    /// <remarks>
+    /// DialogBase calls SetInitialFocus, but it is an empty virtual and this dialog never
+    /// overrode it, so the window opened with nothing focused and the first thing typed went
+    /// nowhere until the user pressed Tab.
+    /// </remarks>
+    protected override void SetInitialFocus()
+    {
+        Modal.FocusManager.SetFocus(_findPrompt, FocusReason.Programmatic);
+    }
+
+    /// <summary>
+    /// Enter searches, Shift+Enter searches backwards.
+    /// </summary>
+    /// <remarks>
+    /// Without this the only way to run a search was to Tab to the button and press it, which is
+    /// not what anyone does in a find box. PromptControl raises Entered for its own Enter, but
+    /// only while it holds focus; handling it on the window covers the checkbox and the buttons
+    /// too, so Enter means "find" wherever the cursor happens to be in the dialog.
+    /// </remarks>
+    protected override void OnKeyPressed(object? sender, KeyPressedEventArgs e)
+    {
+        if (e.KeyInfo.Key == ConsoleKey.Enter)
+        {
+            if ((e.KeyInfo.Modifiers & ConsoleModifiers.Shift) != 0)
+                DoFindPrev();
+            else
+                DoFindNext();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnKeyPressed(sender, e);
+    }
+
     protected override void OnCleanup()
     {
         _editorManager.ClearSearch();

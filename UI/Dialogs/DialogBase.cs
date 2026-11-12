@@ -27,7 +27,6 @@ public abstract class DialogBase<TResult>
     protected virtual Window CreateDialog()
     {
         var builder = new WindowBuilder(WindowSystem)
-            .AsModal()
             .Resizable(GetResizable())
             .Movable(GetMovable())
             .Minimizable(false)
@@ -36,6 +35,10 @@ public abstract class DialogBase<TResult>
             .WithBorderStyle(GetBorderStyle())
             .WithBorderColor(GetBorderColor());
 
+        // IsModal was declared and overridden but never consulted: AsModal() was called
+        // unconditionally, so a dialog that asked to be modeless got a modal window anyway and
+        // blocked the editor underneath it.
+        if (IsModal) builder.AsModal();
         if (AlwaysOnTop) builder.WithAlwaysOnTop();
 
         var title = GetTitle();
