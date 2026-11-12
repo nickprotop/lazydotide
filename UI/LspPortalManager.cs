@@ -341,7 +341,16 @@ internal class LspPortalManager
             bool isArrowKey = key is ConsoleKey.UpArrow or ConsoleKey.DownArrow
                                   or ConsoleKey.LeftArrow or ConsoleKey.RightArrow;
             bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
-            if (!isModifierOnly && !isArrowKey && !isCtrlCombo)
+
+            // A comma or an opening paren re-triggers signature help for the argument the
+            // cursor just moved into, so dismissing on it hides the very tooltip that is about
+            // to be asked for. The request is asynchronous - a flush plus a server round trip -
+            // so the gap between this keystroke and the answer is long enough to be visible,
+            // and the user sees the signature blink out exactly when they type the separator.
+            // Leave it up and let the new answer replace it.
+            bool retriggersSignature = e.KeyInfo.KeyChar is ',' or '(';
+
+            if (!isModifierOnly && !isArrowKey && !isCtrlCombo && !retriggersSignature)
                 DismissTooltipPortal();
         }
 
