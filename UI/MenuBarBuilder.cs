@@ -215,6 +215,7 @@ internal class MenuBarBuilder
                 m.AddItem("Edit Config", "", () => _buildOps.OpenConfigFile());
             })
             .AddItem("Help", m => m
+                .AddItem("Install csharp-ls (LSP)\u2026", () => _layout.InstallLsp())
                 .AddItem("Install netcoredbg\u2026", () => _layout.InstallDebugger())
                 .AddSeparator()
                 .AddItem("About lazydotide\u2026", () => _layout.ShowAbout()))

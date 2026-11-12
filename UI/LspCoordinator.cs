@@ -75,6 +75,23 @@ internal class LspCoordinator : IAsyncDisposable
 
     // ── LSP Lifecycle ──────────────────────────────────────────────────
 
+    /// <summary>
+    /// Re-runs detection and starts the server, for use after installing one into a session that
+    /// began without it.
+    /// </summary>
+    /// <remarks>
+    /// The debugger's equivalent only re-runs detection, because a DAP server is launched per
+    /// debug session. An LSP server is long-lived and started once at init, so re-detecting
+    /// alone would find the new binary and never talk to it. This re-enters init instead, and is
+    /// a no-op when a server is already running so a stray call cannot start a second one.
+    /// </remarks>
+    public async Task ReDetectLspAsync(string projectPath, LspConfig? lspConfig, ConsoleWindowSystem ws)
+    {
+        if (_lspStarted) return;
+        _lspDetectionDone = false;
+        await InitLspAsync(projectPath, lspConfig, ws);
+    }
+
     public async Task InitLspAsync(string projectPath, LspConfig? lspConfig, ConsoleWindowSystem ws, bool startServer = true)
     {
         var lspServer = startServer ? LspDetector.Find(projectPath, lspConfig) : null;

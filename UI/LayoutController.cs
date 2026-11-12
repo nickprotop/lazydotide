@@ -405,8 +405,32 @@ internal class LayoutController
             DetectedDapExe: _debugCoord.DetectedDapExe,
             Tools: _ctx.Config.Tools,
             ProjectPath: _ctx.ProjectService.RootPath,
-            OnInstallDebugger: _debugCoord.HasDebugger ? null : () => InstallDebugger()),
+            OnInstallDebugger: _debugCoord.HasDebugger ? null : () => InstallDebugger(),
+            OnInstallLsp: _lspCoord.LspStarted ? null : () => InstallLsp()),
             () => { _aboutOpen = false; _aboutRefresh = null; });
+    }
+
+    /// <summary>
+    /// Runs the csharp-ls install flow, then starts the server if it was not already running.
+    /// </summary>
+    public void InstallLsp()
+    {
+        _ = InstallLspModal.ShowAsync(_ctx.WindowSystem).ContinueWith(async t =>
+        {
+            if (!t.Result) return;
+
+            // A freshly installed global tool lands in ~/.dotnet/tools, which is not on this
+            // process's PATH, so detection may still miss it. Try anyway: when it works the
+            // server comes up in this session, and when it does not the next run finds it.
+            await _lspCoord.ReDetectLspAsync(
+                _ctx.ProjectService.RootPath, _ctx.Config.Lsp, _ctx.WindowSystem);
+
+            _ctx.PendingUiActions.Enqueue(() =>
+            {
+                UpdateDashboard();
+                _aboutRefresh?.Invoke();
+            });
+        }, TaskScheduler.Default);
     }
 
     public void InstallDebugger()

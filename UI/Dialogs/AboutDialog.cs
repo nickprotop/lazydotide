@@ -16,7 +16,8 @@ public record AboutInfo(
     string? DetectedDapExe,
     IReadOnlyList<ToolEntry> Tools,
     string ProjectPath,
-    Action? OnInstallDebugger = null);
+    Action? OnInstallDebugger = null,
+    Action? OnInstallLsp = null);
 
 public static class AboutDialog
 {
@@ -112,6 +113,38 @@ public static class AboutDialog
             .Build());
         footerGrid.AddColumn(copyrightCol);
 
+        // The status text offers an Install button for whichever of the two is missing, so build
+        // one per offered action. They were promised in the text long before they existed.
+        if (info.OnInstallLsp != null)
+        {
+            var lspCol = new ColumnContainer(footerGrid) { Width = 16 };
+            var lspBtn = Controls.Button("[grey93]Install LSP[/]")
+                .WithBackgroundColor(Color.Grey30)
+                .WithForegroundColor(Color.Grey93)
+                .WithFocusedBackgroundColor(Color.Grey50)
+                .WithFocusedForegroundColor(Color.White)
+                .Build();
+            var installLsp = info.OnInstallLsp;
+            lspBtn.Click += (_, _) => { modal.Close(); installLsp(); };
+            lspCol.AddContent(lspBtn);
+            footerGrid.AddColumn(lspCol);
+        }
+
+        if (info.OnInstallDebugger != null)
+        {
+            var dapCol = new ColumnContainer(footerGrid) { Width = 20 };
+            var dapBtn = Controls.Button("[grey93]Install Debugger[/]")
+                .WithBackgroundColor(Color.Grey30)
+                .WithForegroundColor(Color.Grey93)
+                .WithFocusedBackgroundColor(Color.Grey50)
+                .WithFocusedForegroundColor(Color.White)
+                .Build();
+            var installDap = info.OnInstallDebugger;
+            dapBtn.Click += (_, _) => { modal.Close(); installDap(); };
+            dapCol.AddContent(dapBtn);
+            footerGrid.AddColumn(dapCol);
+        }
+
         var closeColContainer = new ColumnContainer(footerGrid) { Width = 12 };
         var closeBtn = Controls.Button("[grey93]Close[/]")
             .WithBackgroundColor(Color.Grey30)
@@ -194,6 +227,8 @@ public static class AboutDialog
                 break;
             default:
                 lspLines.Add($"  [{ColorScheme.MutedMarkup}]LSP          [/][dim]\u25cb not detected[/]");
+                if (info.OnInstallLsp != null)
+                    lspLines.Add($"[{ColorScheme.WarningMarkup}]               Use the Install LSP button below or install manually[/]");
                 lspLines.Add($"[{ColorScheme.WarningMarkup}]               Install:  [/][italic]dotnet tool install -g csharp-ls[/]");
                 lspLines.Add($"[dim]               Config:   {MarkupParser.Escape(ConfigService.GetConfigPath())}[/]");
                 break;

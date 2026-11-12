@@ -1224,6 +1224,7 @@ public class IdeApp : IDisposable
 
         // Help
         _commandRegistry.Register(new IdeCommand { Id = "help.about",           Category = "Help",  Label = "About lazydotide\u2026",                       Execute = () => _layout?.ShowAbout(),                                                          Priority = CommandPriority.Least });
+        _commandRegistry.Register(new IdeCommand { Id = "help.installLsp",      Category = "Help",  Label = "Install csharp-ls (LSP)\u2026",               Execute = () => _layout?.InstallLsp(),                                                         Priority = CommandPriority.Least });
         _commandRegistry.Register(new IdeCommand { Id = "help.installDebugger", Category = "Help",  Label = "Install netcoredbg\u2026",                     Execute = () => _layout?.InstallDebugger(),                                                    Priority = CommandPriority.Least });
 
         // Dynamic tool commands from config
