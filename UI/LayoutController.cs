@@ -14,18 +14,30 @@ internal class LayoutController
     private readonly DebugCoordinator _debugCoord;
 
     // Layout controls
-    private readonly ColumnContainer? _explorerCol;
-    private readonly SplitterControl? _explorerSplitter;
-    private readonly ColumnContainer? _sidePanelCol;
-    private readonly SplitterControl? _sidePanelSplitter;
-    private readonly HorizontalGridControl? _mainContent;
+    private readonly GridControl? _grid;
     private readonly MarkupControl? _dashboard;
 
     // Panel visibility state
     public bool ExplorerVisible { get; set; } = true;
     public bool OutputVisible { get; set; } = true;
     public bool SidePanelVisible { get; set; }
-    public int OutputPanelHeight { get; set; } = 12;
+    /// <summary>
+    /// The bottom panel's height in rows. This is a view over
+    /// RowDefinitions[OutputRow]: a row-splitter drag writes that definition
+    /// directly, so there is no separate field to keep in sync.
+    /// </summary>
+    public int OutputPanelHeight
+    {
+        get
+        {
+            if (!OutputVisible) return _outputHeight;
+            int h = _ctx.OutputPanel.TabControl.ActualHeight;
+            return h > 0 ? h : _outputHeight;
+        }
+    }
+
+    // Remembered height for collapse/restore, same reason as the column widths.
+    private int _outputHeight = IdeConstants.DefaultOutputHeight;
 
     // About dialog state
     private bool _aboutOpen;
@@ -38,136 +50,150 @@ internal class LayoutController
     // Side panel shell count
     private int _sidePanelShellCount;
 
-    // Minimum usable height for each panel (rows)
-    private const int MinMainHeight = 8;
-    private const int MinOutputHeight = 4;
-
-    // Minimum usable width for a side column (columns).
-    private const int MinSideColumnWidth = 10;
-    private const int MinEditorWidth = 20;
-
     public LayoutController(
         AppContext ctx,
         LspCoordinator lspCoord,
         DebugCoordinator debugCoord,
-        ColumnContainer? explorerCol,
-        SplitterControl? explorerSplitter,
-        ColumnContainer? sidePanelCol,
-        SplitterControl? sidePanelSplitter,
-        HorizontalGridControl? mainContent,
+        GridControl? grid,
         MarkupControl? dashboard)
     {
         _ctx = ctx;
         _lspCoord = lspCoord;
         _debugCoord = debugCoord;
-        _explorerCol = explorerCol;
-        _explorerSplitter = explorerSplitter;
-        _sidePanelCol = sidePanelCol;
-        _sidePanelSplitter = sidePanelSplitter;
-        _mainContent = mainContent;
+        _grid = grid;
         _dashboard = dashboard;
 
-        // Wire splitter moved event to track output panel height
-        _ctx.OutputSplitter.SplitterMoved += OnSplitterMoved;
-
-        // Track column widths from splitter drags (see ExplorerColumnWidth).
-        if (_explorerSplitter != null)
-            _explorerSplitter.SplitterMoved += OnExplorerSplitterMoved;
-        if (_sidePanelSplitter != null)
-            _sidePanelSplitter.SplitterMoved += OnSidePanelSplitterMoved;
+        // No splitter-moved wiring: a grid splitter drag writes the track
+        // definition itself (GridControl.ResizeSplitter -> RowDefinitions /
+        // ColumnDefinitions), so the definitions ARE the live sizes and there
+        // is nothing to mirror into application state.
     }
 
-    // Widths tracked from splitter drags. ColumnContainer.Width cannot be used:
-    // a drag stores a value derived from the combined space of both adjacent
-    // columns, so it can far exceed the column's real on-screen width. And
-    // ActualWidth is only set when a column is painted, which never happens for
-    // the side panel column, leaving it at 0. Tracking the drags ourselves is
-    // the only reliable source. 0 means "unknown" — keep the saved value.
-    private int _explorerWidth;
-    private int _sidePanelWidth;
+    // Remembered track sizes for collapse/restore. A collapsed track is set to
+    // Cells(0) with NO Min: GridTrackSizer clamps a Fixed track to its Min
+    // (sizes[i] = Clamp(def.Value, def.Min, def.Max)), so Cells(0, min: 10)
+    // would size to 10 and the panel would not collapse at all. The Min is
+    // reapplied on restore.
+    private int _explorerWidth = IdeConstants.DefaultExplorerWidth;
+    private int _sidePanelWidth = IdeConstants.DefaultSidePanelWidth;
 
+    /// <summary>
+    /// Whether the explorer and side panel run the full height of the working
+    /// area, past the bottom panel. When true the bottom panel occupies only
+    /// the editor column. Persisted; defaults off.
+    /// </summary>
+    public bool ExplorerFullHeight { get; private set; }
+
+    // Sizes are read from what the layout ARRANGED, not from the track
+    // definitions. A splitter drag rewrites a Star track's weight rather than a
+    // cell count, so the definition is no longer a row/column count once the
+    // user has dragged; the arranged size always is. These controls are painted
+    // whenever visible, so ActualWidth/ActualHeight are live.
+    //
+    // 0 means "unknown, keep what was saved": a collapsed panel is not painted.
     public int ExplorerColumnWidth =>
-        _explorerCol is { Visible: true }
-            ? (_explorerWidth > 0 ? _explorerWidth
-               : _explorerCol.ActualWidth > 0 ? _explorerCol.ActualWidth : 0)
-            : 0;
+        ExplorerVisible ? Math.Max(0, _ctx.Explorer.Control.ActualWidth) : 0;
 
     public int SidePanelColumnWidth =>
-        _sidePanelCol is { Visible: true } && _sidePanelWidth > 0 ? _sidePanelWidth : 0;
+        SidePanelVisible ? Math.Max(0, _ctx.SidePanel.TabControl.ActualWidth) : 0;
 
-    private void OnExplorerSplitterMoved(object? sender, SplitterMovedEventArgs e)
-    {
-        // The explorer is this splitter's left column.
-        if (e.LeftColumnWidth > 0) _explorerWidth = e.LeftColumnWidth;
-    }
-
-    private void OnSidePanelSplitterMoved(object? sender, SplitterMovedEventArgs e)
-    {
-        // The side panel is this splitter's right column.
-        if (e.RightColumnWidth > 0) _sidePanelWidth = e.RightColumnWidth;
-    }
-
+    // The side columns stay Fixed: they are the ones the user sets to a
+    // specific width and expects to keep. Only the editor column is Star, so a
+    // column-splitter drag runs the Star|Fixed path, which holds the fixed
+    // track and rescales the editor. That is the wrong way round for a drag ON
+    // the explorer boundary, so the drag is read back from the arranged width
+    // and written here as a new Fixed value (see OnLayoutSettled).
     public void SetExplorerColumnWidth(int width)
     {
-        if (_explorerCol == null) return;
+        if (_grid == null) return;
         int w = ClampSideColumnWidth(width);
-        _explorerCol.Width = w;
         _explorerWidth = w;
+        if (ExplorerVisible)
+            _grid.ColumnDefinitions[IdeConstants.ExplorerCol] =
+                GridLength.Cells(w, min: IdeConstants.MinSideColumnWidth);
     }
 
     public void SetSidePanelColumnWidth(int width)
     {
-        if (_sidePanelCol == null) return;
+        if (_grid == null) return;
         int w = ClampSideColumnWidth(width);
-        _sidePanelCol.Width = w;
         _sidePanelWidth = w;
+        if (SidePanelVisible)
+            _grid.ColumnDefinitions[IdeConstants.SidePanelCol] =
+                GridLength.Cells(w, min: IdeConstants.MinSideColumnWidth);
     }
 
     /// <summary>
-    /// Restores both side-column widths together, so the columns never
-    /// over-commit the grid. Setting one column's width alone leaves the centre
-    /// editor at its previous size: the widths then sum to more than the
-    /// desktop, the side panel is pushed off-screen, and splitter drags stop
-    /// working because they are computed from the over-committed widths.
+    /// Sets the bottom panel to <paramref name="rows"/> rows by weighting its
+    /// Star track against the columns row.
     /// </summary>
+    /// <remarks>
+    /// Both rows are Star so that a splitter drag moves the boundary at all
+    /// (Star over Fixed holds the fixed track by design). Expressing a row
+    /// count therefore means choosing weights whose ratio yields that count
+    /// over the working area, rather than writing the count directly.
+    /// </remarks>
+    private void SetOutputRowHeight(int rows)
+    {
+        if (_grid == null) return;
+
+        int available = _grid.ActualHeight;
+        if (available <= 0)
+            available = Math.Max(1, _ctx.WindowSystem.DesktopDimensions.Height - NonBodyRows);
+
+        int output = Math.Clamp(rows, IdeConstants.MinOutputHeight,
+            Math.Max(IdeConstants.MinOutputHeight, available - IdeConstants.MinMainHeight));
+        int main = Math.Max(IdeConstants.MinMainHeight, available - output);
+
+        _grid.RowDefinitions[IdeConstants.ColumnsRow] =
+            GridLength.Star(main, min: IdeConstants.MinMainHeight);
+        _grid.RowDefinitions[IdeConstants.OutputRow] =
+            GridLength.Star(output, min: IdeConstants.MinOutputHeight);
+    }
+
+    // Menu row + toolbar row + the window's own border and docked status bar.
+    private const int NonBodyRows = 6;
+
+    /// <summary>
+    /// Restores both side-column widths together, so the columns never
+    /// over-commit the grid.
+    /// </summary>
+    /// <remarks>
+    /// Per-track Min is necessary but not sufficient, which is why this method
+    /// survived the grid migration. Cells(26) + Cells(30) on a 50-column
+    /// terminal still over-commits, and GridTrackSizer hands the Star editor
+    /// track zero. The two side columns are therefore scaled TOGETHER against a
+    /// budget, deliberately rather than capped independently: a panel wider than
+    /// half the screen is a valid layout when the other column is narrow.
+    /// </remarks>
     public void RestoreColumnWidths(int explorerWidth, int sidePanelWidth)
     {
+        if (_grid == null) return;
+
         int desktopWidth = _ctx.WindowSystem.DesktopDimensions.Width;
 
-        int explorer = _explorerCol is { Visible: true } && explorerWidth > 0
-            ? ClampSideColumnWidth(explorerWidth) : 0;
-        int side = _sidePanelCol is { Visible: true } && sidePanelWidth > 0
-            ? ClampSideColumnWidth(sidePanelWidth) : 0;
+        int explorer = ExplorerVisible && explorerWidth > 0 ? ClampSideColumnWidth(explorerWidth) : 0;
+        int side = SidePanelVisible && sidePanelWidth > 0 ? ClampSideColumnWidth(sidePanelWidth) : 0;
 
         // Shrink the side columns proportionally if they leave no room for the
-        // editor once the splitters are accounted for.
+        // editor once the splitter gaps are accounted for.
         if (desktopWidth > 0)
         {
-            int splitters = (_explorerSplitter is { Visible: true } ? 1 : 0)
-                          + (_sidePanelSplitter is { Visible: true } ? 1 : 0);
-            int budget = desktopWidth - splitters - MinEditorWidth;
+            int gaps = (ExplorerVisible ? 1 : 0) + (SidePanelVisible ? 1 : 0);
+            int budget = desktopWidth - gaps - IdeConstants.MinEditorWidth;
             if (budget > 0 && explorer + side > budget)
             {
                 double scale = (double)budget / (explorer + side);
-                if (explorer > 0) explorer = Math.Max(MinSideColumnWidth, (int)(explorer * scale));
-                if (side > 0) side = Math.Max(MinSideColumnWidth, (int)(side * scale));
+                if (explorer > 0) explorer = Math.Max(IdeConstants.MinSideColumnWidth, (int)(explorer * scale));
+                if (side > 0) side = Math.Max(IdeConstants.MinSideColumnWidth, (int)(side * scale));
             }
         }
 
-        if (explorer > 0 && _explorerCol != null)
-        {
-            _explorerCol.Width = explorer;
-            _explorerWidth = explorer;
-        }
-        if (side > 0 && _sidePanelCol != null)
-        {
-            _sidePanelCol.Width = side;
-            _sidePanelWidth = side;
-        }
+        if (explorer > 0) SetExplorerColumnWidth(explorer);
+        if (side > 0) SetSidePanelColumnWidth(side);
 
-        // The centre editor column is left flexible so it absorbs the remaining
-        // space; SplitterControl handles flex columns and clamps drags against
-        // the grid width, so it must not be pinned to an explicit width here.
+        // The editor column is Star, so it absorbs whatever is left; it is
+        // never pinned to an explicit width here.
     }
 
     // Enforces only a lower bound. The upper bound is handled by
@@ -178,9 +204,9 @@ internal class LayoutController
     private int ClampSideColumnWidth(int width)
     {
         int desktopWidth = _ctx.WindowSystem.DesktopDimensions.Width;
-        if (desktopWidth <= 0) return Math.Max(width, MinSideColumnWidth);
-        int max = Math.Max(MinSideColumnWidth, desktopWidth - MinEditorWidth);
-        return Math.Clamp(width, MinSideColumnWidth, max);
+        if (desktopWidth <= 0) return Math.Max(width, IdeConstants.MinSideColumnWidth);
+        int max = Math.Max(IdeConstants.MinSideColumnWidth, desktopWidth - IdeConstants.MinEditorWidth);
+        return Math.Clamp(width, IdeConstants.MinSideColumnWidth, max);
     }
 
     public void OnScreenResized(object? sender, SharpConsoleUI.Helpers.Size size)
@@ -192,27 +218,94 @@ internal class LayoutController
         RestoreColumnWidths(_explorerWidth, _sidePanelWidth);
     }
 
-    private void OnSplitterMoved(object? sender, HorizontalSplitterMovedEventArgs e)
-    {
-        OutputPanelHeight = e.BelowControlHeight;
-    }
-
     public void ToggleExplorer()
     {
         ExplorerVisible = !ExplorerVisible;
-        if (_explorerCol != null)
-            _explorerCol.Visible = ExplorerVisible;
-        if (_explorerSplitter != null)
-            _explorerSplitter.Visible = ExplorerVisible;
-        _ctx.MainWindow?.ForceRebuildLayout();
+        if (!ExplorerVisible)
+            _explorerWidth = ExplorerColumnWidth > 0 ? ExplorerColumnWidth : _explorerWidth;
+        ApplyColumnVisibility(IdeConstants.ExplorerCol, IdeConstants.ExplorerCol,
+            ExplorerVisible, _explorerWidth);
+    }
+
+    // Collapsing a track to Cells(0) must drop the Min, or GridTrackSizer
+    // clamps it straight back open. Removing the splitter too keeps a dead
+    // handle out of the Tab order.
+    private void ApplyColumnVisibility(int col, int splitterAfter, bool visible, int width)
+    {
+        if (_grid == null) return;
+        _grid.ColumnDefinitions[col] = visible
+            ? GridLength.Cells(ClampSideColumnWidth(width), min: IdeConstants.MinSideColumnWidth)
+            : GridLength.Cells(0);
+        if (visible)
+            _grid.AddColumnSplitterAfter(splitterAfter);
+        else
+            _grid.RemoveColumnSplitterAfter(splitterAfter);
     }
 
     public void ToggleOutput()
     {
         OutputVisible = !OutputVisible;
-        _ctx.OutputSplitter.Visible = OutputVisible;
-        _ctx.OutputPanel.TabControl.Visible = OutputVisible;
-        _ctx.MainWindow?.ForceRebuildLayout();
+        if (_grid == null) return;
+
+        if (!OutputVisible)
+        {
+            // Remember the arranged height before collapsing; a hidden panel
+            // reports 0 and the saved value has to survive the round trip.
+            int h = _ctx.OutputPanel.TabControl.ActualHeight;
+            if (h > 0) _outputHeight = h;
+
+            // Collapse with NO Min: GridTrackSizer clamps a track to its Min
+            // (sizes[i] = Clamp(value, Min, Max)), so a zero track that kept
+            // min: 4 would size straight back to 4 and never collapse.
+            _grid.RowDefinitions[IdeConstants.OutputRow] = GridLength.Cells(0);
+            _grid.RowDefinitions[IdeConstants.ColumnsRow] =
+                GridLength.Star(1, min: IdeConstants.MinMainHeight);
+            _grid.RemoveRowSplitterAfter(IdeConstants.ColumnsRow);
+        }
+        else
+        {
+            SetOutputRowHeight(_outputHeight);
+            _grid.AddRowSplitterAfter(IdeConstants.ColumnsRow);
+        }
+    }
+
+    /// <summary>
+    /// Switches the explorer and side panel between occupying only the columns
+    /// row and running the full height past the bottom panel.
+    /// </summary>
+    /// <remarks>
+    /// Only the placements change. The splitter handles re-derive themselves
+    /// from the spans: GridControl blocks a row boundary at any column covered
+    /// by a row-spanning cell, so with the spans set the row splitter renders
+    /// and drags only across the editor column.
+    /// </remarks>
+    public void SetExplorerFullHeight(bool fullHeight)
+    {
+        if (_grid == null) return;
+        ExplorerFullHeight = fullHeight;
+        ApplyExplorerFullHeight();
+    }
+
+    public void ToggleExplorerFullHeight() => SetExplorerFullHeight(!ExplorerFullHeight);
+
+    private void ApplyExplorerFullHeight()
+    {
+        if (_grid == null) return;
+
+        int span = ExplorerFullHeight ? 2 : 1;
+
+        _grid.RemoveControl(_ctx.Explorer.Control);
+        _grid.RemoveControl(_ctx.SidePanel.TabControl);
+        _grid.RemoveControl(_ctx.OutputPanel.TabControl);
+
+        _grid.Place(_ctx.Explorer.Control, IdeConstants.ColumnsRow, IdeConstants.ExplorerCol, rowSpan: span);
+        _grid.Place(_ctx.SidePanel.TabControl, IdeConstants.ColumnsRow, IdeConstants.SidePanelCol, rowSpan: span);
+
+        if (ExplorerFullHeight)
+            _grid.Place(_ctx.OutputPanel.TabControl, IdeConstants.OutputRow, IdeConstants.EditorCol);
+        else
+            _grid.Place(_ctx.OutputPanel.TabControl, IdeConstants.OutputRow, IdeConstants.ExplorerCol,
+                colSpan: IdeConstants.GridColumnCount);
     }
 
     public void ShowSourceControl()
@@ -220,9 +313,8 @@ internal class LayoutController
         if (!SidePanelVisible)
         {
             SidePanelVisible = true;
-            if (_sidePanelCol != null) _sidePanelCol.Visible = true;
-            if (_sidePanelSplitter != null) _sidePanelSplitter.Visible = true;
-            _ctx.MainWindow?.ForceRebuildLayout();
+            ApplyColumnVisibility(IdeConstants.SidePanelCol, IdeConstants.EditorCol,
+                true, _sidePanelWidth);
         }
         _ctx.SidePanel.SwitchToGitTab();
     }
@@ -230,11 +322,10 @@ internal class LayoutController
     public void ToggleSidePanel()
     {
         SidePanelVisible = !SidePanelVisible;
-        if (_sidePanelCol != null)
-            _sidePanelCol.Visible = SidePanelVisible;
-        if (_sidePanelSplitter != null)
-            _sidePanelSplitter.Visible = SidePanelVisible;
-        _ctx.MainWindow?.ForceRebuildLayout();
+        if (!SidePanelVisible)
+            _sidePanelWidth = SidePanelColumnWidth > 0 ? SidePanelColumnWidth : _sidePanelWidth;
+        ApplyColumnVisibility(IdeConstants.SidePanelCol, IdeConstants.EditorCol,
+            SidePanelVisible, _sidePanelWidth);
         if (SidePanelVisible)
         {
             _ctx.SidePanel.SwitchToSymbolsTab();
@@ -394,9 +485,10 @@ internal class LayoutController
 
     public void ApplyRestoredOutputHeight(int height)
     {
-        OutputPanelHeight = height;
-        _ctx.OutputPanel.TabControl.Height = height;
-        _ctx.MainWindow?.ForceRebuildLayout();
+        if (_grid == null || height <= 0) return;
+        _outputHeight = Math.Max(IdeConstants.MinOutputHeight, height);
+        if (OutputVisible)
+            SetOutputRowHeight(_outputHeight);
     }
 
     public void ForceRebuildLayout()

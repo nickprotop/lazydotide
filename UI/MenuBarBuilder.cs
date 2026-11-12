@@ -44,11 +44,10 @@ internal class MenuBarBuilder
     public void AddMenuBar()
     {
         if (_menuControl != null)
-            _ctx.MainWindow!.RemoveContent(_menuControl);
+            _ctx.MainGrid.RemoveControl(_menuControl);
 
         var menu = Controls.Menu()
             .Horizontal()
-            .Sticky()
             .AddItem("File", m => m
                 .AddItem("Open Folder...", () => _ = OpenFolderAsync?.Invoke() ?? Task.CompletedTask)
                 .AddSeparator()
@@ -102,6 +101,7 @@ internal class MenuBarBuilder
                 m.AddItem("Toggle Explorer", "Ctrl+B", () => _layout.ToggleExplorer())
                  .AddItem("Toggle Output Panel", "Ctrl+J", () => _layout.ToggleOutput())
                  .AddItem("Toggle Side Panel", "Alt+;", () => _layout.ToggleSidePanel())
+                 .AddItem("Explorer Full Height", () => _layout.ToggleExplorerFullHeight())
                  .AddSeparator();
 
                 // Editor Tabs submenu (dynamic)
@@ -220,15 +220,14 @@ internal class MenuBarBuilder
                 .AddItem("About lazydotide\u2026", () => _layout.ShowAbout()))
             .Build();
 
-        menu.StickyPosition = StickyPosition.Top;
         _menuControl = menu;
-        _ctx.MainWindow!.InsertControl(0, menu);
+        _ctx.MainGrid.Place(menu, 0, 0, colSpan: 3);
     }
 
     public void AddToolbar()
     {
         if (_toolbarControl != null)
-            _ctx.MainWindow!.RemoveContent(_toolbarControl);
+            _ctx.MainGrid.RemoveControl(_toolbarControl);
 
         var toolbar = Controls.Toolbar()
             .AddButton("Debug F5", (_, _) => HandleF5?.Invoke())
@@ -241,10 +240,9 @@ internal class MenuBarBuilder
             .AddButton("Explorer", (_, _) => _layout.ToggleExplorer())
             .AddButton("Output", (_, _) => _layout.ToggleOutput())
             .AddButton("Side Panel", (_, _) => _layout.ToggleSidePanel())
-            .StickyTop()
             .Build();
 
         _toolbarControl = toolbar;
-        _ctx.MainWindow!.InsertControl(2, toolbar);
+        _ctx.MainGrid.Place(toolbar, 1, 0, colSpan: 3);
     }
 }

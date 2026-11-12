@@ -67,3 +67,7 @@ Thumbs.db
 CLAUDE.md
 .claude/
 .lazydotide.workspace
+
+## Superpowers planning corpus (local-only)
+docs/superpowers
+.superpowers/

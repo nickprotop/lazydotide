@@ -21,7 +21,6 @@ public class IdeApp : IDisposable
     private readonly GitService _gitService;
 
     private Window? _mainWindow;
-    private HorizontalSplitterControl? _outputSplitter;
     private ExplorerPanel? _explorer;
     private EditorManager? _editorManager;
     private OutputPanel? _outputPanel;
@@ -45,8 +44,6 @@ public class IdeApp : IDisposable
     private MarkupControl? _dashboard;
 
     // Layout controls (referenced during CreateLayout, owned by LayoutController after init)
-    private ColumnContainer? _explorerCol;
-    private SplitterControl? _explorerSplitter;
 
     // System bottom status bar
     private readonly IdeStatusBar _bottomBar = new();
@@ -84,9 +81,7 @@ public class IdeApp : IDisposable
 
     // Side panel (symbols browser)
     private SidePanel? _sidePanel;
-    private ColumnContainer? _sidePanelCol;
-    private SplitterControl? _sidePanelSplitter;
-    private HorizontalGridControl? _mainContent;
+    private GridControl? _mainContent;
 
     // Context menu
     private ContextMenuBuilder? _contextMenu;
@@ -160,7 +155,7 @@ public class IdeApp : IDisposable
             SidePanel = _sidePanel!,
             Config = _config,
             MainWindow = _mainWindow!,
-            OutputSplitter = _outputSplitter!,
+            MainGrid = _mainContent!,
             FileWatcher = _fileWatcher!,
             Pipeline = _pipeline!,
             WorkspaceService = new WorkspaceService(projectPath),
@@ -183,9 +178,7 @@ public class IdeApp : IDisposable
         _lspCoord = new LspCoordinator(appCtx);
         _debugCoord = new DebugCoordinator(appCtx);
 
-        _layout = new LayoutController(appCtx, _lspCoord, _debugCoord,
-            _explorerCol, _explorerSplitter,
-            _sidePanelCol, _sidePanelSplitter, _mainContent, _dashboard);
+        _layout = new LayoutController(appCtx, _lspCoord, _debugCoord, _mainContent, _dashboard);
         _layout.UpdateDashboard();
         WireHandlerEvents();
 
@@ -203,7 +196,7 @@ public class IdeApp : IDisposable
         _menuBar.HandleF5WithProfile = HandleF5WithProfile;
 
         // Menu/toolbar were no-ops during BuildMainWindow (_menuBar was null).
-        // Now that _menuBar is ready, insert them into their sticky-top slots.
+        // Now that _menuBar is ready, place them into grid rows 0 and 1.
         AddMenuBar();
         AddToolbar();
 
@@ -377,17 +370,11 @@ public class IdeApp : IDisposable
             .WithAsyncWindowThread(MainWindowThreadAsync)
             .Build();
 
-        AddMenuBar();
-        _mainWindow.AddControl(new RuleControl { StickyPosition = StickyPosition.Top });
-        AddToolbar();
-        _mainWindow.AddControl(new RuleControl { StickyPosition = StickyPosition.Top });
+        // One grid owns the whole working area: menu, toolbar, the three
+        // columns and the bottom panel. Panel sizes ARE track definitions, so
+        // there is no parallel layout state to keep in sync. The status bar
+        // stays docked below it (window chrome, never resized).
         AddMainContentArea();
-        _outputSplitter = Controls.HorizontalSplitter()
-            .WithMinHeights(8, 4)
-            .Build();
-        _mainWindow.AddControl(_outputSplitter);
-        _outputPanel!.TabControl.Height = 12;
-        _mainWindow.AddControl(_outputPanel!.TabControl);
         _mainWindow.AddControl(new RuleControl { StickyPosition = StickyPosition.Bottom });
         AddStatusBar();
     }
@@ -397,53 +384,86 @@ public class IdeApp : IDisposable
 
     private void AddMainContentArea()
     {
-        _mainContent = new HorizontalGridControl
+        // 4 rows x 3 columns. Row 0 menu, row 1 toolbar (both spanning all
+        // columns), row 2 the three resizable columns, row 3 the bottom panel.
+        //
+        // Every size below is a track definition, and every minimum is a track
+        // Min that GridSplitterResize clamps drags against. That is the whole
+        // point of the migration: OutputPanelHeight, TabControl.Height and the
+        // SplitterMoved handler used to carry this state by hand.
+        _mainContent = new GridControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
-        var mainContent = _mainContent;
+        var grid = _mainContent;
 
-        _explorerCol = new ColumnContainer(mainContent)
+        grid.ColumnDefinitions.Add(GridLength.Cells(IdeConstants.DefaultExplorerWidth, min: IdeConstants.MinSideColumnWidth));
+        grid.ColumnDefinitions.Add(GridLength.Star(1, min: IdeConstants.MinEditorWidth));
+        grid.ColumnDefinitions.Add(GridLength.Cells(IdeConstants.DefaultSidePanelWidth, min: IdeConstants.MinSideColumnWidth));
+
+        grid.RowDefinitions.Add(GridLength.Auto());                                                          // menu
+        grid.RowDefinitions.Add(GridLength.Auto());                                                          // toolbar
+        grid.RowDefinitions.Add(GridLength.Star(1, min: IdeConstants.MinMainHeight));                        // columns
+        // The bottom panel is Star, not Cells, BECAUSE of the splitter: with a
+        // Star above a Fixed track, GridSplitterResize deliberately holds the
+        // fixed one and only rescales the Star's weight, which changes nothing
+        // when it is the only Star (library test StarFixed_StarAbsorbs_FixedHeld).
+        // Star|Star conserves the weight sum, so the boundary actually moves.
+        // The weight is set from the desired row count in ApplyOutputHeight.
+        grid.RowDefinitions.Add(GridLength.Star(1, min: IdeConstants.MinOutputHeight));                      // bottom panel
+
+        // Explorer: row 2 col 0. Gains RowSpan 2 when full height, which also
+        // moves the bottom panel out of column 0 (see ApplyExplorerFullHeight).
+        grid.Place(_explorer!.Control, IdeConstants.ColumnsRow, IdeConstants.ExplorerCol);
+
+        // The editor cell holds a dashboard (shown until a file is opened) over
+        // the tab control. A nested single-column grid stacks them, which keeps
+        // the whole layout in one model rather than reaching back for a
+        // ColumnContainer (whose constructor only accepts HorizontalGridControl).
+        var editorCell = new GridControl
         {
-            Width = 26,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
-        _explorerCol.AddContent(_explorer!.Control);
-        mainContent.AddColumn(_explorerCol);
+        editorCell.ColumnDefinitions.Add(GridLength.Star(1));
+        editorCell.RowDefinitions.Add(GridLength.Star(1));
 
-        var editorCol = new ColumnContainer(mainContent)
-        {
-            VerticalAlignment = VerticalAlignment.Fill
-        };
-
+        // Both occupy the SAME cell on purpose. They are mutually exclusive
+        // (dashboard until a file is open, tabs after), so they never paint
+        // over each other, and sharing one row means the visible one gets the
+        // whole area. Separate rows would reserve space for the hidden one: a
+        // Star row holding an invisible control still claims its share, which
+        // left the tab control at half height starting halfway down the pane.
         _dashboard = new MarkupControl(new List<string> { "", "[bold]  lazydotide[/]  [dim]loading…[/]" })
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Fill
         };
-        editorCol.AddContent(_dashboard);
-        editorCol.AddContent(_editorManager!.TabControl);
-        _editorManager.TabControl.Visible = false;
+        _editorManager!.TabControl.Visible = false;
+        editorCell.Place(_dashboard, 0, 0);
+        editorCell.Place(_editorManager.TabControl, 0, 0);
+        grid.Place(editorCell, IdeConstants.ColumnsRow, IdeConstants.EditorCol);
 
-        mainContent.AddColumn(editorCol);
+        grid.Place(_sidePanel!.TabControl, IdeConstants.ColumnsRow, IdeConstants.SidePanelCol);
 
-        _sidePanelCol = new ColumnContainer(mainContent)
-        {
-            Width = 30,
-            VerticalAlignment = VerticalAlignment.Fill,
-            Visible = false
-        };
-        _sidePanelCol.AddContent(_sidePanel!.TabControl);
-        mainContent.AddColumn(_sidePanelCol);
+        grid.Place(_outputPanel!.TabControl, IdeConstants.OutputRow, IdeConstants.ExplorerCol,
+            colSpan: IdeConstants.GridColumnCount);
 
-        _explorerSplitter = new SplitterControl();
-        mainContent.AddSplitter(0, _explorerSplitter);
+        // Splitter geometry derives itself from the spans: a boundary blocked
+        // by a spanning cell draws no handle and is not a Tab stop.
+        grid.AddColumnSplitterAfter(IdeConstants.ExplorerCol);
+        grid.AddColumnSplitterAfter(IdeConstants.EditorCol);
+        grid.AddRowSplitterAfter(IdeConstants.ColumnsRow);
 
-        _sidePanelSplitter = new SplitterControl { Visible = false };
-        mainContent.AddSplitter(1, _sidePanelSplitter);
+        _mainWindow!.AddControl(grid);
 
-        _mainWindow!.AddControl(mainContent);
+        // Menu and toolbar occupy rows 0 and 1, placed by MenuBarBuilder once
+        // it exists (these calls are no-ops here, as they always were: _menuBar
+        // is still null during CreateLayout, and InitializeAsync calls them
+        // again once it is ready).
+        AddMenuBar();
+        AddToolbar();
     }
 
     private void AddStatusBar()
@@ -1237,6 +1257,7 @@ public class IdeApp : IDisposable
             OutputPanelHeight = _layout.OutputPanelHeight,
             ExplorerColumnWidth = _layout.ExplorerColumnWidth,
             SidePanelColumnWidth = _layout.SidePanelColumnWidth,
+            ExplorerFullHeight = _layout.ExplorerFullHeight,
         });
     }
 
@@ -1245,6 +1266,10 @@ public class IdeApp : IDisposable
         if (_workspaceState == null || _layout == null) return;
         var snapshot = _workspaceState.RestoreWorkspaceState(
             _layout.ExplorerVisible, _layout.OutputVisible, _layout.SidePanelVisible);
+
+        // Placement first: it rebuilds the cells, so doing it after the toggles
+        // would re-place the panels without their collapsed track state.
+        _layout.SetExplorerFullHeight(snapshot.ExplorerFullHeight);
 
         if (snapshot.NeedToggleExplorer) _layout.ToggleExplorer();
         if (snapshot.NeedToggleOutput) _layout.ToggleOutput();

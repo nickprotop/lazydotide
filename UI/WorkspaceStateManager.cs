@@ -32,6 +32,7 @@ internal class WorkspaceStateManager
             state.ExplorerColumnWidth = layout.ExplorerColumnWidth;
         if (layout.SidePanelColumnWidth > 0)
             state.SidePanelColumnWidth = layout.SidePanelColumnWidth;
+        state.ExplorerFullHeight = layout.ExplorerFullHeight;
 
         // Wrap mode
         state.WrapMode = _ctx.EditorManager.WrapMode.ToString();
@@ -90,6 +91,7 @@ internal class WorkspaceStateManager
 
         snapshot.ExplorerColumnWidth = state.ExplorerColumnWidth;
         snapshot.SidePanelColumnWidth = state.SidePanelColumnWidth;
+        snapshot.ExplorerFullHeight = state.ExplorerFullHeight;
         snapshot.WrapMode = state.WrapMode;
 
         // Compute output panel height: prefer OutputPanelHeight, fall back to SplitRatio
@@ -181,6 +183,7 @@ internal class LayoutSnapshot
     public bool OutputVisible { get; set; }
     public bool SidePanelVisible { get; set; }
     public int OutputPanelHeight { get; set; }
+    public bool ExplorerFullHeight { get; set; }
     public int ExplorerColumnWidth { get; set; }
     public int SidePanelColumnWidth { get; set; }
 

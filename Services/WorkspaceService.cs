@@ -20,6 +20,10 @@ public class WorkspaceState
     public int OutputPanelHeight { get; set; }
     public int ExplorerColumnWidth { get; set; } = 26;
     public int SidePanelColumnWidth { get; set; } = 30;
+    /// <summary>Explorer and side panel run full height, past the bottom panel.
+    /// Absent in files written before the grid layout, which restores the
+    /// previous look.</summary>
+    public bool ExplorerFullHeight { get; set; }
     public string WrapMode { get; set; } = "NoWrap";
     public int ActiveOutputTab { get; set; }
     public List<WorkspaceFile> OpenFiles { get; set; } = new();
