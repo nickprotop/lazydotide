@@ -21,6 +21,10 @@ internal class LspPortalManager
     private LspCompletionPortalContent? _completionPortal;
     private LayoutNode? _completionPortalNode;
     private LspTooltipPortalContent? _tooltipPortal;
+
+    // Whether the live tooltip is signature help (stays while the call is typed) or hover
+    // (stale as soon as anything is typed). Set by ShowTooltipPortal.
+    private bool _tooltipSurvivesTyping;
     private LayoutNode? _tooltipPortalNode;
     private LspLocationListPortalContent? _locationPortal;
     private LayoutNode? _locationPortalNode;
@@ -272,10 +276,21 @@ internal class LspPortalManager
         portal.DismissRequested += (_, _) => DismissCommandPalette();
     }
 
-    public void ShowTooltipPortal(List<string> lines, bool preferAbove = true)
+    /// <summary>
+    /// Shows the tooltip portal.
+    /// </summary>
+    /// <param name="lines">The content.</param>
+    /// <param name="preferAbove">Place it above the cursor when there is room.</param>
+    /// <param name="survivesTyping">
+    /// True for signature help, which describes the call the cursor is inside and stays relevant
+    /// while the arguments are typed. False for hover, which describes one symbol and is stale
+    /// the moment anything changes.
+    /// </param>
+    public void ShowTooltipPortal(List<string> lines, bool preferAbove = true, bool survivesTyping = false)
     {
         DismissTooltipPortal();
         ++_tooltipAutoDismissGeneration;
+        _tooltipSurvivesTyping = survivesTyping;
         var editor = _editorManager.CurrentEditor;
         if (editor == null || _mainWindow == null) return;
         var (cursorX, cursorY) = CursorScreenCell(editor);
@@ -342,15 +357,21 @@ internal class LspPortalManager
                                   or ConsoleKey.LeftArrow or ConsoleKey.RightArrow;
             bool isCtrlCombo = (mods & ConsoleModifiers.Control) != 0 && key != ConsoleKey.Escape;
 
-            // A comma or an opening paren re-triggers signature help for the argument the
-            // cursor just moved into, so dismissing on it hides the very tooltip that is about
-            // to be asked for. The request is asynchronous - a flush plus a server round trip -
-            // so the gap between this keystroke and the answer is long enough to be visible,
-            // and the user sees the signature blink out exactly when they type the separator.
-            // Leave it up and let the new answer replace it.
-            bool retriggersSignature = e.KeyInfo.KeyChar is ',' or '(';
+            // Signature help survives typing: it describes the call the cursor is inside, and
+            // that call is still the subject while the arguments are being written. Dismissing
+            // on every keystroke made it flicker on the separator and vanish on the space after
+            // it - the request is asynchronous (a flush plus a server round trip), so the
+            // teardown was instant and the replacement was not. Hover is the opposite: it
+            // describes one symbol and is stale the moment anything is typed.
+            //
+            // What still closes a signature: Escape, Enter, Tab, and leaving the call by typing
+            // the closing paren or the statement terminator.
+            bool closesSignature = key is ConsoleKey.Escape or ConsoleKey.Enter or ConsoleKey.Tab
+                                || e.KeyInfo.KeyChar is ')' or ';' or '}';
 
-            if (!isModifierOnly && !isArrowKey && !isCtrlCombo && !retriggersSignature)
+            bool keep = _tooltipSurvivesTyping && !closesSignature;
+
+            if (!isModifierOnly && !isArrowKey && !isCtrlCombo && !keep)
                 DismissTooltipPortal();
         }
 

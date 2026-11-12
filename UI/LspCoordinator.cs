@@ -288,8 +288,50 @@ internal class LspCoordinator : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(activeSig.Documentation))
                 lines.AddRange(LspMarkdownHelper.ConvertToSpectreMarkup(activeSig.Documentation!));
 
-            _portalManager.ShowTooltipPortal(lines);
+            _portalManager.ShowTooltipPortal(lines, survivesTyping: true);
         });
+    }
+
+    /// <summary>
+    /// Whether the cursor sits inside an unclosed argument list on its own line.
+    /// </summary>
+    /// <remarks>
+    /// Counting commas is not the same question: it returns 0 both outside a call and on the
+    /// FIRST argument, so using it as the guard would have left a space in the first argument
+    /// behaving exactly the way the bug did.
+    /// </remarks>
+    private static bool IsInsideArgumentList(MultilineEditControl editor)
+    {
+        var lines = (editor.Content ?? string.Empty).Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.Length) return false;
+
+        string line = lines[lineIdx];
+        int cursor = Math.Clamp(editor.CurrentColumn - 1, 0, line.Length);
+
+        int depth = 0;
+        bool inString = false;
+        char quote = '\0';
+
+        for (int i = cursor - 1; i >= 0; i--)
+        {
+            char c = line[i];
+            if (c is '"' or '\'')
+            {
+                if (inString && c == quote) inString = false;
+                else if (!inString) { inString = true; quote = c; }
+                continue;
+            }
+            if (inString) continue;
+
+            if (c == ')') depth++;
+            else if (c == '(')
+            {
+                if (depth == 0) return true;   // an unmatched '(' to our left: we are in a call
+                depth--;
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -630,8 +672,14 @@ internal class LspCoordinator : IAsyncDisposable
                 _ => _ctx.PendingUiActions.Enqueue(() => _ = ShowCompletionAsync(silent: true)),
                 null, DotTriggerMs, Timeout.Infinite);
         }
-        else if (lastChar is '(' or ',')
+        else if (lastChar is '(' or ','
+                 || (lastChar == ' ' && IsInsideArgumentList(editor)))
         {
+            // Space re-triggers too, when the cursor is inside an argument list. Without it the
+            // behaviour depended on typing speed: a space typed within the comma's debounce left
+            // that pending request alone and the signature appeared, while a space typed after it
+            // had already resolved dismissed the tooltip with nothing scheduled to bring it back.
+            // The same keystroke either worked or did not depending on how fast it arrived.
             _ = _lsp.FlushPendingChangeAsync();
             _dotTriggerDebounce?.Dispose();
             _dotTriggerDebounce = new Timer(
