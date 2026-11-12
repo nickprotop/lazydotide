@@ -138,9 +138,16 @@ internal class LayoutController
         if (available <= 0)
             available = Math.Max(1, _ctx.WindowSystem.DesktopDimensions.Width - 2);
 
+        // The star pool is the width MINUS the inter-track gaps: GridTrackSizer reserves
+        // (trackCount - 1) * gap before distributing anything. Weighting against the full width
+        // therefore scaled every track down by pool/available, which is where a saved 56 came
+        // back as 55. Weight against the pool the sizer will actually divide.
+        int gaps = Math.Max(0, IdeConstants.GridColumnCount - 1) * ColumnGapCells;
+        int pool = Math.Max(1, available - gaps);
+
         int explorer = ExplorerVisible ? _explorerWidth : 0;
         int side = SidePanelVisible ? _sidePanelWidth : 0;
-        int editor = Math.Max(IdeConstants.MinEditorWidth, available - explorer - side);
+        int editor = Math.Max(IdeConstants.MinEditorWidth, pool - explorer - side);
 
         _grid.ColumnDefinitions[IdeConstants.ExplorerCol] = ExplorerVisible
             ? GridLength.Star(explorer, min: IdeConstants.MinSideColumnWidth)
@@ -170,9 +177,19 @@ internal class LayoutController
         if (available <= 0)
             available = Math.Max(1, _ctx.WindowSystem.DesktopDimensions.Height - NonBodyRows);
 
+        // Weight against the pool the sizer divides, not the raw height. The menu and toolbar
+        // rows are Auto, so they are sized from content before any star gets a share, and the
+        // gaps are reserved too. Read their ARRANGED heights: an Auto definition carries no cell
+        // count, and the toolbar is one row or two depending on whether it wrapped.
+        // Fall back to the minimum the two rows can occupy (one line each) when nothing has been
+        // arranged yet, which is the case during workspace restore.
+        int menuToolbar = Math.Max(2, MenuToolbarRows());
+        int gaps = Math.Max(0, _grid.RowDefinitions.Count - 1) * RowGapCells;
+        int pool = Math.Max(1, available - menuToolbar - gaps);
+
         int output = Math.Clamp(rows, IdeConstants.MinOutputHeight,
-            Math.Max(IdeConstants.MinOutputHeight, available - IdeConstants.MinMainHeight));
-        int main = Math.Max(IdeConstants.MinMainHeight, available - output);
+            Math.Max(IdeConstants.MinOutputHeight, pool - IdeConstants.MinMainHeight));
+        int main = Math.Max(IdeConstants.MinMainHeight, pool - output);
 
         _grid.RowDefinitions[IdeConstants.ColumnsRow] =
             GridLength.Star(main, min: IdeConstants.MinMainHeight);
@@ -182,6 +199,26 @@ internal class LayoutController
 
     // Menu row + toolbar row + the window's own border and docked status bar.
     private const int NonBodyRows = 6;
+
+    /// <summary>
+    /// The arranged height of the menu and toolbar rows together, read from the controls rather
+    /// than their Auto definitions, which carry no cell count.
+    /// </summary>
+    private int MenuToolbarRows()
+    {
+        int rows = 0;
+        foreach (var c in _ctx.MainGrid.Children)
+        {
+            if (c is MenuControl or ToolbarControl)
+                rows += Math.Max(0, c.ActualHeight);
+        }
+        return rows;
+    }
+
+    // A splitter forces its gap to at least 1 (GridControl.EffectiveColumnGap/EffectiveRowGap),
+    // and the layout always has both splitters declared, so the gap is 1 on each axis.
+    private const int ColumnGapCells = 1;
+    private const int RowGapCells = 1;
 
     /// <summary>
     /// Restores both side-column widths together, so the columns never
