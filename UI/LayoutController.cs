@@ -78,6 +78,19 @@ internal class LayoutController
     private int _sidePanelWidth = IdeConstants.DefaultSidePanelWidth;
 
     /// <summary>
+    /// Raised when a panel's visibility changes, so chrome that reports panel state (the
+    /// toolbar's toggle glyphs) can refresh.
+    /// </summary>
+    /// <remarks>
+    /// The toggles are reachable three ways - toolbar button, Ctrl+B/Ctrl+J, and the View menu -
+    /// and the keyboard and menu routes call straight into the methods below. Refreshing from
+    /// the button handler alone left the toolbar showing stale state after a shortcut.
+    /// </remarks>
+    public event Action? PanelVisibilityChanged;
+
+    private void OnPanelVisibilityChanged() => PanelVisibilityChanged?.Invoke();
+
+    /// <summary>
     /// Whether the explorer and side panel run the full height of the working
     /// area, past the bottom panel. When true the bottom panel occupies only
     /// the editor column. Persisted; defaults off.
@@ -241,6 +254,7 @@ internal class LayoutController
             _explorerWidth = ExplorerColumnWidth > 0 ? ExplorerColumnWidth : _explorerWidth;
         ApplyColumnVisibility(IdeConstants.ExplorerCol, IdeConstants.ExplorerCol,
             ExplorerVisible, _explorerWidth);
+        OnPanelVisibilityChanged();
     }
 
     // Collapsing a track to Cells(0) must drop the Min, or GridTrackSizer
@@ -259,7 +273,7 @@ internal class LayoutController
     public void ToggleOutput()
     {
         OutputVisible = !OutputVisible;
-        if (_grid == null) return;
+        if (_grid == null) { OnPanelVisibilityChanged(); return; }
 
         if (!OutputVisible)
         {
@@ -281,6 +295,7 @@ internal class LayoutController
             SetOutputRowHeight(_outputHeight);
             _grid.AddRowSplitterAfter(IdeConstants.ColumnsRow);
         }
+        OnPanelVisibilityChanged();
     }
 
     /// <summary>
@@ -329,6 +344,7 @@ internal class LayoutController
             SidePanelVisible = true;
             ApplyColumnVisibility(IdeConstants.SidePanelCol, IdeConstants.EditorCol,
                 true, _sidePanelWidth);
+            OnPanelVisibilityChanged();
         }
         _ctx.SidePanel.SwitchToGitTab();
     }
@@ -340,6 +356,7 @@ internal class LayoutController
             _sidePanelWidth = SidePanelColumnWidth > 0 ? SidePanelColumnWidth : _sidePanelWidth;
         ApplyColumnVisibility(IdeConstants.SidePanelCol, IdeConstants.EditorCol,
             SidePanelVisible, _sidePanelWidth);
+        OnPanelVisibilityChanged();
         if (SidePanelVisible)
         {
             _ctx.SidePanel.SwitchToSymbolsTab();

@@ -183,6 +183,11 @@ public class IdeApp : IDisposable
         WireHandlerEvents();
 
         _menuBar = new MenuBarBuilder(appCtx, _gitOps, _buildOps, _lspCoord, _debugCoord, _layout);
+
+        // The toolbar reports panel state in its toggle glyphs, and the toggles are also reachable
+        // by shortcut and from the View menu, so it rebuilds on the state change rather than from
+        // its own button handlers.
+        _layout.PanelVisibilityChanged += () => _pendingUiActions.Enqueue(() => _menuBar?.AddToolbar());
         var fileOps = new FileOperationDelegates(
             HandleNewFileAsync, HandleNewFolderAsync,
             HandleRenameAsync, HandleDeleteAsync,

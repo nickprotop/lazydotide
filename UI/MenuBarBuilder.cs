@@ -1,6 +1,7 @@
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
+using SharpConsoleUI.Helpers;
 
 namespace DotNetIDE;
 
@@ -230,18 +231,67 @@ internal class MenuBarBuilder
         if (_toolbarControl != null)
             _ctx.MainGrid.RemoveControl(_toolbarControl);
 
+        // Ten identically-weighted labels in a row read as one undifferentiated strip, and the
+        // shortcut sat inside the label at the same brightness as the action. Three things fix
+        // that without adding chrome: space between buttons, separators between groups, and the
+        // shortcut dimmed so the eye lands on the verb.
+        //
+        // Grouped run/build, then tools, then panel toggles - the panel ones only change what is
+        // on screen, so they do not belong beside Build and Test.
         var toolbar = Controls.Toolbar()
-            .AddButton("Debug F5", (_, _) => HandleF5?.Invoke())
-            .AddButton("Build F6", (_, _) => _ = _buildOps.BuildProjectAsync())
-            .AddButton("Test F7", (_, _) => _ = _buildOps.TestProjectAsync())
-            .AddButton("Stop F4", (_, _) => _ctx.BuildService.Cancel())
-            .AddButton("Shell F8", (_, _) => _buildOps.OpenShell())
-            .AddButton("Shell Tab", (_, _) => { if (IdeConstants.IsDesktopOs) _buildOps.OpenShellTab(); })
-            .AddButton("LazyNuGet F9", (_, _) => { if (IdeConstants.IsDesktopOs) _buildOps.OpenLazyNuGetTab(); })
-            .AddButton("Explorer", (_, _) => _layout.ToggleExplorer())
-            .AddButton("Output", (_, _) => _layout.ToggleOutput())
-            .AddButton("Side Panel", (_, _) => _layout.ToggleSidePanel())
+            .WithSpacing(1)
+            .WithWrap()
+            .WithMargin(1, 0, 1, 0)
+            .WithBackgroundColor(Color.Transparent)
+            .WithBelowLineColor(ColorScheme.RuleColor)
             .Build();
+
+        // Raise each button a little off the bar instead of leaving it transparent: a surface
+        // one step lighter than the window reads as a key cap, which is what separates a row of
+        // buttons from a row of words. Derived with PaletteColors.Tint rather than hardcoded, so
+        // it tracks the theme - on a light theme Tint would wash out, hence Shade there.
+        var surface = _ctx.WindowSystem.Theme.WindowBackgroundColor;
+        var face = surface.IsDark() ? surface.Tint(0.10) : surface.Shade(0.06);
+        var faceFocused = surface.IsDark() ? surface.Tint(0.22) : surface.Shade(0.14);
+        var faceText = PaletteColors.ReadableOn(face);
+
+        void Btn(string glyph, string label, string? key, Action action) =>
+            toolbar.AddItem(Controls.Button()
+                .WithText(key == null
+                    ? $"{glyph} {label}"
+                    : $"{glyph} {label} [{ColorScheme.MutedMarkup}]{key}[/]")
+                .WithBorder(ButtonBorderStyle.None)
+                .WithBackgroundColor(face)
+                .WithForegroundColor(faceText)
+                .WithBorderBackgroundColor(face)
+                .WithFocusedBackgroundColor(faceFocused)
+                .WithFocusedForegroundColor(PaletteColors.ReadableOn(faceFocused))
+                .OnClick((_, _) => action())
+                .Build());
+
+        // Run and build.
+        Btn("\u25b8", "Debug", "F5", () => HandleF5?.Invoke());
+        Btn("\u2692", "Build", "F6", () => _ = _buildOps.BuildProjectAsync());
+        Btn("\u2697", "Test", "F7", () => _ = _buildOps.TestProjectAsync());
+        Btn("\u25a0", "Stop", "F4", () => _ctx.BuildService.Cancel());
+
+        toolbar.AddItem(new SeparatorControl());
+
+        // Tools.
+        Btn("\u2328", "Shell", "F8", () => _buildOps.OpenShell());
+        if (IdeConstants.IsDesktopOs)
+        {
+            Btn("\u2750", "Shell Tab", null, () => _buildOps.OpenShellTab());
+            Btn("\u229e", "LazyNuGet", "F9", () => _buildOps.OpenLazyNuGetTab());
+        }
+
+        toolbar.AddItem(new SeparatorControl());
+
+        // Panel toggles. A filled glyph means the panel is showing, so the toolbar reports state
+        // rather than only offering an action; AddToolbar is re-run on every toggle to refresh it.
+        Btn(_layout.ExplorerVisible ? "\u25e7" : "\u25a1", "Explorer", "^B", () => _layout.ToggleExplorer());
+        Btn(_layout.OutputVisible ? "\u25e9" : "\u25a1", "Output", "^J", () => _layout.ToggleOutput());
+        Btn(_layout.SidePanelVisible ? "\u25e8" : "\u25a1", "Side Panel", null, () => _layout.ToggleSidePanel());
 
         _toolbarControl = toolbar;
         _ctx.MainGrid.Place(toolbar, 1, 0, colSpan: 3);
