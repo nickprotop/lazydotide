@@ -24,7 +24,12 @@ public record TextEdit(LspRange Range, string NewText);
 public record SignatureHelp(
     List<SignatureInfo> Signatures,
     int ActiveSignature,
-    int ActiveParameter);
+    /// <summary>
+    /// The parameter the cursor is in, or null when the server did not report one. Null is not
+    /// zero: csharp-ls omits the field past the second parameter, so a caller that reads null as
+    /// zero pins the highlight to the first parameter.
+    /// </summary>
+    int? ActiveParameter);
 
 public record SignatureInfo(
     string Label,

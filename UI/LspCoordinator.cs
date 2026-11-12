@@ -17,6 +17,9 @@ internal class LspCoordinator : IAsyncDisposable
     private const int DotTriggerMs = 350;
     private const int SignatureTriggerMs = 250;
     private const int WordCompletionMs = 300;
+
+    /// <summary>Identifier characters typed before completion is offered unprompted.</summary>
+    private const int MinWordCompletionChars = 1;
     private const int SemanticTokenRefreshMs = 800;
 
     private static void LogError(string context, Exception ex) =>
@@ -203,6 +206,11 @@ internal class LspCoordinator : IAsyncDisposable
     public async Task ShowCompletionAsync(bool silent = false)
     {
         if (_lsp == null) return;
+        // Edits are batched and sent on a debounce, so a request fired straight after typing
+        // asks the server about text it has not been told about yet: it answers for the stale
+        // document, which surfaces as an empty or wrong list. The auto-trigger path already
+        // flushed; the explicit one did not.
+        await _lsp.FlushPendingChangeAsync();
         await _portalManager.ShowCompletionAsync(_lsp, silent);
     }
 
@@ -241,6 +249,11 @@ internal class LspCoordinator : IAsyncDisposable
         var path = _ctx.EditorManager.CurrentFilePath;
         if (path == null) return;
 
+        // Same reason as ShowCompletionAsync: without this, pressing F2 right after typing the
+        // opening paren asked about a document the server had not received, and the answer was
+        // nothing at all - the "F2 sometimes shows nothing" case.
+        await _lsp.FlushPendingChangeAsync();
+
         var sig = await _lsp.SignatureHelpAsync(path, editor.CurrentLine - 1, editor.CurrentColumn - 1);
         _ctx.PendingUiActions.Enqueue(() =>
         {
@@ -253,10 +266,14 @@ internal class LspCoordinator : IAsyncDisposable
             var activeSig = sig.Signatures[Math.Min(sig.ActiveSignature, sig.Signatures.Count - 1)];
             string sigLabel = activeSig.Label;
 
+            // csharp-ls reports activeParameter for the first two parameters and then stops
+            // sending the field, so fall back to counting the commas the cursor has passed.
+            int activeParam = sig.ActiveParameter ?? CountArgumentSeparators(editor);
+
             string line1;
-            if (sig.ActiveParameter >= 0 && sig.ActiveParameter < activeSig.Parameters.Count)
+            if (activeParam >= 0 && activeParam < activeSig.Parameters.Count)
             {
-                var paramLabel = activeSig.Parameters[sig.ActiveParameter].Label;
+                var paramLabel = activeSig.Parameters[activeParam].Label;
                 int idx = sigLabel.IndexOf(paramLabel, StringComparison.Ordinal);
                 line1 = idx >= 0
                     ? MarkupParser.Escape(sigLabel[..idx]) + $"[bold yellow]{MarkupParser.Escape(paramLabel)}[/]" + MarkupParser.Escape(sigLabel[(idx + paramLabel.Length)..])
@@ -273,6 +290,70 @@ internal class LspCoordinator : IAsyncDisposable
 
             _portalManager.ShowTooltipPortal(lines);
         });
+    }
+
+    /// <summary>
+    /// Which argument the cursor sits in, counted from the commas between the opening
+    /// parenthesis of the call and the cursor.
+    /// </summary>
+    /// <remarks>
+    /// Only used when the server does not report activeParameter. Scans left from the cursor to
+    /// the unmatched '(' that opens the current argument list, skipping anything nested inside
+    /// brackets or a string, so a comma inside a nested call or a literal does not advance the
+    /// count. Returns 0 when no open call is found, which is the same answer as before and
+    /// leaves the first parameter highlighted.
+    /// </remarks>
+    private static int CountArgumentSeparators(MultilineEditControl editor)
+    {
+        var lines = (editor.Content ?? string.Empty).Split('\n');
+        int lineIdx = editor.CurrentLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.Length) return 0;
+
+        string line = lines[lineIdx];
+        int cursor = Math.Clamp(editor.CurrentColumn - 1, 0, line.Length);
+
+        int commas = 0;
+        int depth = 0;          // nesting inside (), [] or <> to the RIGHT of where we are
+        bool inString = false;
+        char quote = '\0';
+
+        for (int i = cursor - 1; i >= 0; i--)
+        {
+            char c = line[i];
+
+            // Walking backwards, a quote toggles string state. An escaped quote is left alone:
+            // getting that exactly right needs the lexer, and the cost of a miss here is one
+            // wrong highlight, not a wrong edit.
+            if (c is '"' or '\'')
+            {
+                if (inString && c == quote) inString = false;
+                else if (!inString) { inString = true; quote = c; }
+                continue;
+            }
+            if (inString) continue;
+
+            switch (c)
+            {
+                case ')':
+                case ']':
+                case '>':
+                    depth++;
+                    break;
+                case '(':
+                    if (depth == 0) return commas;   // the paren that opens this call
+                    depth--;
+                    break;
+                case '[':
+                case '<':
+                    if (depth > 0) depth--;
+                    break;
+                case ',':
+                    if (depth == 0) commas++;
+                    break;
+            }
+        }
+
+        return 0;
     }
 
     // ── Rename ──────────────────────────────────────────────────────────
@@ -565,7 +646,11 @@ internal class LspCoordinator : IAsyncDisposable
 
             bool afterDot = i >= 0 && currentLine[i] == '.';
 
-            if (wordLen >= 3 && !afterDot)
+            // One character is enough to ask. The old floor of three was presumably there to
+            // spare the server, but it made the editor feel unresponsive: nothing appeared until
+            // the third keystroke, by which point the useful suggestion was often already typed.
+            // The debounce below is what actually protects the server.
+            if (wordLen >= MinWordCompletionChars && !afterDot)
             {
                 _dotTriggerDebounce?.Dispose();
                 _dotTriggerDebounce = new Timer(

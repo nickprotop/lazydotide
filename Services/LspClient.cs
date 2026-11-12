@@ -363,7 +363,20 @@ public class LspClient : IAsyncDisposable
             if (response.Value.ValueKind != JsonValueKind.Object) return null;
 
             var activeSignature = response.Value.TryGetProperty("activeSignature", out var as_) ? as_.GetInt32() : 0;
-            var activeParameter = response.Value.TryGetProperty("activeParameter", out var ap) ? ap.GetInt32() : 0;
+
+            // activeParameter lives in two places in the protocol: on the response, and (since
+            // 3.16, and preferred when present) on the signature itself. Reading only the
+            // response left the highlight stuck on the first parameter with any server that
+            // reports it per-signature, which is what typing a comma looked like doing nothing.
+            // Resolved per signature below; this is the response-level fallback. Null, not 0,
+            // because ABSENT and ZERO mean different things and csharp-ls uses the difference:
+            // it reports activeParameter for the first two parameters and then omits the field
+            // entirely. Defaulting a missing field to 0 snapped the highlight back to the first
+            // parameter from the second comma on, which is the "comma does not move the
+            // highlight" report. A null here means "the server did not say", and the caller
+            // counts commas instead.
+            int? activeParameter = response.Value.TryGetProperty("activeParameter", out var ap)
+                && ap.ValueKind == JsonValueKind.Number ? ap.GetInt32() : null;
 
             var signatures = new List<SignatureInfo>();
             if (response.Value.TryGetProperty("signatures", out var sigsEl))
@@ -376,12 +389,42 @@ public class LspClient : IAsyncDisposable
                           : d.TryGetProperty("value", out var dv) ? dv.GetString() : null
                         : null;
 
+                    // Per-signature activeParameter wins over the response-level one.
+                    if (sig.TryGetProperty("activeParameter", out var sigAp)
+                        && sigAp.ValueKind == JsonValueKind.Number)
+                        activeParameter = sigAp.GetInt32();
+
                     var parameters = new List<ParameterInfo>();
                     if (sig.TryGetProperty("parameters", out var paramsEl))
                     {
                         foreach (var p in paramsEl.EnumerateArray())
                         {
-                            var pLabel = p.TryGetProperty("label", out var pl) ? pl.GetString() ?? "" : "";
+                            // A parameter label is EITHER a string or a [start, end] offset pair
+                            // into the signature label. Only the string form was handled, so an
+                            // offset-pair server produced an empty label - and IndexOf("") returns
+                            // 0, which highlighted the start of the signature instead of the
+                            // parameter. Resolve the pair against the label here.
+                            string pLabel = "";
+                            if (p.TryGetProperty("label", out var pl))
+                            {
+                                if (pl.ValueKind == JsonValueKind.String)
+                                {
+                                    pLabel = pl.GetString() ?? "";
+                                }
+                                else if (pl.ValueKind == JsonValueKind.Array)
+                                {
+                                    var bounds = pl.EnumerateArray().ToList();
+                                    if (bounds.Count == 2
+                                        && bounds[0].ValueKind == JsonValueKind.Number
+                                        && bounds[1].ValueKind == JsonValueKind.Number)
+                                    {
+                                        int start = bounds[0].GetInt32();
+                                        int end = bounds[1].GetInt32();
+                                        if (start >= 0 && end <= label.Length && end > start)
+                                            pLabel = label[start..end];
+                                    }
+                                }
+                            }
                             var pDoc = p.TryGetProperty("documentation", out var pd)
                                 ? pd.ValueKind == JsonValueKind.String ? pd.GetString()
                                   : pd.TryGetProperty("value", out var pdv) ? pdv.GetString() : null
