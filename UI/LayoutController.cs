@@ -97,30 +97,46 @@ internal class LayoutController
     public int SidePanelColumnWidth =>
         SidePanelVisible ? Math.Max(0, _ctx.SidePanel.TabControl.ActualWidth) : 0;
 
-    // The side columns stay Fixed: they are the ones the user sets to a
-    // specific width and expects to keep. Only the editor column is Star, so a
-    // column-splitter drag runs the Star|Fixed path, which holds the fixed
-    // track and rescales the editor. That is the wrong way round for a drag ON
-    // the explorer boundary, so the drag is read back from the arranged width
-    // and written here as a new Fixed value (see OnLayoutSettled).
+    // Every column is Star, so a width is expressed as a weight. Weights are
+    // kept in column units (a weight of 26 next to weights summing to W means
+    // 26/W of the width), which makes the numbers readable and makes restoring
+    // a saved width a matter of setting all three together.
     public void SetExplorerColumnWidth(int width)
     {
-        if (_grid == null) return;
-        int w = ClampSideColumnWidth(width);
-        _explorerWidth = w;
-        if (ExplorerVisible)
-            _grid.ColumnDefinitions[IdeConstants.ExplorerCol] =
-                GridLength.Cells(w, min: IdeConstants.MinSideColumnWidth);
+        _explorerWidth = ClampSideColumnWidth(width);
+        ApplyColumnWeights();
     }
 
     public void SetSidePanelColumnWidth(int width)
     {
+        _sidePanelWidth = ClampSideColumnWidth(width);
+        ApplyColumnWeights();
+    }
+
+    /// <summary>
+    /// Writes the three column tracks from the remembered side widths, giving
+    /// the editor whatever is left of the working width.
+    /// </summary>
+    private void ApplyColumnWeights()
+    {
         if (_grid == null) return;
-        int w = ClampSideColumnWidth(width);
-        _sidePanelWidth = w;
-        if (SidePanelVisible)
-            _grid.ColumnDefinitions[IdeConstants.SidePanelCol] =
-                GridLength.Cells(w, min: IdeConstants.MinSideColumnWidth);
+
+        int available = _grid.ActualWidth;
+        if (available <= 0)
+            available = Math.Max(1, _ctx.WindowSystem.DesktopDimensions.Width - 2);
+
+        int explorer = ExplorerVisible ? _explorerWidth : 0;
+        int side = SidePanelVisible ? _sidePanelWidth : 0;
+        int editor = Math.Max(IdeConstants.MinEditorWidth, available - explorer - side);
+
+        _grid.ColumnDefinitions[IdeConstants.ExplorerCol] = ExplorerVisible
+            ? GridLength.Star(explorer, min: IdeConstants.MinSideColumnWidth)
+            : GridLength.Cells(0);
+        _grid.ColumnDefinitions[IdeConstants.EditorCol] =
+            GridLength.Star(editor, min: IdeConstants.MinEditorWidth);
+        _grid.ColumnDefinitions[IdeConstants.SidePanelCol] = SidePanelVisible
+            ? GridLength.Star(side, min: IdeConstants.MinSideColumnWidth)
+            : GridLength.Cells(0);
     }
 
     /// <summary>
@@ -233,9 +249,7 @@ internal class LayoutController
     private void ApplyColumnVisibility(int col, int splitterAfter, bool visible, int width)
     {
         if (_grid == null) return;
-        _grid.ColumnDefinitions[col] = visible
-            ? GridLength.Cells(ClampSideColumnWidth(width), min: IdeConstants.MinSideColumnWidth)
-            : GridLength.Cells(0);
+        ApplyColumnWeights();
         if (visible)
             _grid.AddColumnSplitterAfter(splitterAfter);
         else

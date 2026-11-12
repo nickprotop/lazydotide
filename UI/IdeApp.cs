@@ -291,7 +291,6 @@ public class IdeApp : IDisposable
         _searchCts?.Dispose();
         _fileWatcher?.Dispose();
         _contextMenu?.DismissContextMenu();
-        _ws.ConsoleDriver.KeyPressed   -= OnGlobalDriverKeyPressed;
 
         // Block on LSP shutdown so the server receives the shutdown+exit sequence.
         // Timeout after 3 seconds to avoid hanging on a dead server.
@@ -359,7 +358,12 @@ public class IdeApp : IDisposable
     {
         _mainWindow = new WindowBuilder(_ws)
             .HideTitle()
-            .WithBorderStyle(BorderStyle.Single)
+            // Frameless, not Borderless: Borderless keeps the 1-cell frame
+            // reserved and merely paints it invisibly, while Frameless reclaims
+            // it so the grid fills the whole window rect. The IDE owns the
+            // entire terminal and has its own menu, status bar and splitters,
+            // so a window frame is two rows and two columns spent on nothing.
+            .Frameless()
             .HideTitleButtons()
             .WithSize(width, height)
             .AtPosition(0, 0)
@@ -398,9 +402,15 @@ public class IdeApp : IDisposable
         };
         var grid = _mainContent;
 
-        grid.ColumnDefinitions.Add(GridLength.Cells(IdeConstants.DefaultExplorerWidth, min: IdeConstants.MinSideColumnWidth));
-        grid.ColumnDefinitions.Add(GridLength.Star(1, min: IdeConstants.MinEditorWidth));
-        grid.ColumnDefinitions.Add(GridLength.Cells(IdeConstants.DefaultSidePanelWidth, min: IdeConstants.MinSideColumnWidth));
+        // All three columns are Star for the same reason both split rows are:
+        // GridSplitterResize holds a Fixed track and only rescales the Star one
+        // (library test StarFixed_StarAbsorbs_FixedHeld), so a Fixed side column
+        // simply could not be dragged. Star|Star conserves the weight sum, so
+        // the boundary moves. Weights are column counts, set from the saved
+        // widths by RestoreColumnWidths.
+        grid.ColumnDefinitions.Add(GridLength.Star(IdeConstants.DefaultExplorerWidth, min: IdeConstants.MinSideColumnWidth));
+        grid.ColumnDefinitions.Add(GridLength.Star(100, min: IdeConstants.MinEditorWidth));
+        grid.ColumnDefinitions.Add(GridLength.Star(IdeConstants.DefaultSidePanelWidth, min: IdeConstants.MinSideColumnWidth));
 
         grid.RowDefinitions.Add(GridLength.Auto());                                                          // menu
         grid.RowDefinitions.Add(GridLength.Auto());                                                          // toolbar
@@ -729,7 +739,17 @@ public class IdeApp : IDisposable
 
         _mainWindow!.PreviewKeyPressed += OnMainWindowPreviewKey;
         _mainWindow!.KeyPressed        += OnMainWindowKeyPressed;
-        _ws.ConsoleDriver.KeyPressed   += OnGlobalDriverKeyPressed;
+
+        // Ctrl+P goes through the framework's global-shortcut registry rather
+        // than ConsoleDriver.KeyPressed. The driver event is upstream of the
+        // whole dispatch pipeline, so a key that did not come from the real
+        // terminal never raises it: injected input (the diagnostics socket,
+        // and so cxdbg) was invisible to this shortcut, which made the command
+        // palette undrivable from a debugger. RegisterGlobalShortcut runs
+        // inside InputCoordinator, where every key arrives however it got
+        // there.
+        _ws.RegisterGlobalShortcut(ConsoleModifiers.Control, ConsoleKey.P, () =>
+            _pendingUiActions.Enqueue(ShowCommandPalette));
 
         // Rebuild menu when tabs change (for dynamic View > Editor Tabs / Side Panel submenus)
         _editorManager!.TabControl.TabAdded   += (_, _) => _pendingUiActions.Enqueue(AddMenuBar);
@@ -760,12 +780,6 @@ public class IdeApp : IDisposable
 
     // Fires from the input thread for every keystroke, regardless of which window is active.
     // Only enqueue work — never touch UI directly from this handler.
-    private void OnGlobalDriverKeyPressed(object? sender, ConsoleKeyInfo key)
-    {
-        if (key.Key == ConsoleKey.P && (key.Modifiers & ConsoleModifiers.Control) != 0)
-            _pendingUiActions.Enqueue(ShowCommandPalette);
-    }
-
     private void OnMainWindowPreviewKey(object? sender, KeyPressedEventArgs e)
     {
         // Context menu portal handles all keys
