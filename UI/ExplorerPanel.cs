@@ -83,75 +83,159 @@ public class ExplorerPanel
         Refresh();
     }
 
+    /// <summary>
+    /// Brings the tree back in line with the filesystem and the current git statuses, in place.
+    /// </summary>
+    /// <remarks>
+    /// This runs far more often than a user-initiated refresh: the file watcher calls it on every
+    /// structure change AND every git change, so an ordinary save used to tear the whole tree
+    /// down and rebuild it. That lost the scroll offset, briefly emptied the control, and made
+    /// every open directory reload from disk.
+    ///
+    /// Now only what actually differs is touched. Nodes keep their identity, so expansion,
+    /// selection and scroll position survive by construction rather than by being captured and
+    /// restored around a rebuild. A directory nobody has opened is not read at all.
+    /// </remarks>
     public void Refresh()
     {
-        // Capture expanded paths and selection before rebuilding
-        var expandedTags = new HashSet<string>();
-        CollectExpandedTags(_tree.RootNodes, expandedTags);
-        var selectedTag = _tree.SelectedNode?.Tag as string;
+        var roots = _tree.RootNodes.ToList();
+        if (roots.Count == 0 || roots[0].Tag as string != _projectService.RootPath)
+        {
+            // First build, or the workspace root changed: nothing to reconcile against.
+            Rebuild();
+            return;
+        }
 
+        SyncNode(roots[0]);
+    }
+
+    /// <summary>Full teardown and rebuild. Only for a genuinely different tree.</summary>
+    private void Rebuild()
+    {
         _tree.Clear();
         _loadedDirs.Clear();
         BuildTree();
-
-        // Restore expanded state
-        RestoreExpandedTags(_tree.RootNodes, expandedTags);
-
-        // Restore selection, and bring it back into view: the rebuild resets the scroll offset,
-        // so without this a refresh with the selection below the fold jumped the tree back to
-        // the top and the selected row vanished.
-        if (selectedTag != null)
-        {
-            var node = _tree.FindNodeByTag(selectedTag);
-            if (node != null)
-            {
-                _tree.SelectNode(node);
-                _tree.EnsureNodeVisible(node);
-            }
-        }
-    }
-
-    private static void CollectExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
-    {
-        // Snapshot: TreeNode.Children is AsReadOnly(), a LIVE view of the backing list rather
-        // than a copy, so anything that mutates children mid-walk corrupts the enumeration.
-        foreach (var node in nodes.ToList())
-        {
-            if (node.IsExpanded && node.Tag is string path)
-                tags.Add(path);
-            if (node.Children.Count > 0)
-                CollectExpandedTags(node.Children.ToList(), tags);
-        }
     }
 
     /// <summary>
-    /// Re-expands the directories that were open before the rebuild.
+    /// Reconciles one directory node against the filesystem, then recurses into the children
+    /// that are loaded.
     /// </summary>
     /// <remarks>
-    /// Expanding a node LOADS its children, which clears and refills the very collection a
-    /// recursive walk would be enumerating. The old version expanded a node and then immediately
-    /// recursed into node.Children - a live view of the list it had just replaced - so a refresh
-    /// could skip subtrees, double-visit them, or throw, which is what made the tree unstable.
-    ///
-    /// Done breadth-first off an explicit queue instead: expand a node, then snapshot whatever
-    /// children that produced and queue them. Nothing is enumerated while it is being mutated.
+    /// An unloaded directory is left alone: its contents are unknown to the user, so reading
+    /// them here would be work nobody asked for. Its placeholder is kept in step with whether
+    /// the directory still has entries, so the expander does not lie.
     /// </remarks>
-    private void RestoreExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
+    private void SyncNode(TreeNode node)
     {
-        var queue = new Queue<SharpConsoleUI.Controls.TreeNode>(nodes.ToList());
+        if (node.Tag is not string dirPath) return;
 
-        while (queue.Count > 0)
+        // A node whose children were never read keeps its placeholder; just refresh the label
+        // in case its own git badge changed.
+        if (!_loadedDirs.Contains(node))
         {
-            var node = queue.Dequeue();
-
-            // Expand FIRST, so the children queued below are the ones this node actually has
-            // after loading, not the placeholder set it had before.
-            if (node.Tag is string path && tags.Contains(path))
-                ExpandNode(node);
-
-            foreach (var child in node.Children.ToList())
-                queue.Enqueue(child);
+            SyncPlaceholder(node, dirPath);
+            return;
         }
+
+        if (!Directory.Exists(dirPath))
+        {
+            node.ClearChildren();
+            _loadedDirs.Remove(node);
+            return;
+        }
+
+        var wanted = _projectService.ListDirectory(dirPath);
+
+        // Snapshot before mutating: TreeNode.Children is AsReadOnly(), a LIVE view of the
+        // backing list, so enumerating it while adding or removing corrupts the walk.
+        var existing = node.Children.ToList();
+        var byPath = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var child in existing)
+        {
+            if (child.Tag is string p && !byPath.ContainsKey(p))
+                byPath[p] = child;
+        }
+
+        var wantedPaths = new HashSet<string>(wanted.Select(w => w.FullPath), StringComparer.OrdinalIgnoreCase);
+
+        // Gone from disk.
+        foreach (var child in existing)
+        {
+            if (child.Tag is not string p)
+            {
+                // The placeholder of a directory that has since been loaded.
+                node.RemoveChild(child);
+                continue;
+            }
+            if (!wantedPaths.Contains(p))
+            {
+                Forget(child);
+                node.RemoveChild(child);
+            }
+        }
+
+        // Added, or still present and possibly restyled. Rebuilt in the order ListDirectory
+        // returns (directories then files, each sorted) so insertion order stays correct
+        // without needing to compute a minimal edit script.
+        var ordered = new List<TreeNode>(wanted.Count);
+        foreach (var fileNode in wanted)
+        {
+            if (byPath.TryGetValue(fileNode.FullPath, out var child))
+            {
+                ApplyNodeStyle(child, fileNode);
+                ordered.Add(child);
+            }
+            else
+            {
+                ordered.Add(CreateNode(fileNode));
+            }
+        }
+
+        // Re-seat the children only when the order actually changed, because ClearChildren plus
+        // AddChild is what loses expansion state on the nodes being re-added.
+        if (!SameOrder(node.Children.ToList(), ordered))
+        {
+            node.ClearChildren();
+            foreach (var child in ordered)
+                node.AddChild(child);
+        }
+
+        foreach (var child in ordered)
+        {
+            if (child.Tag is string p && Directory.Exists(p))
+                SyncNode(child);
+        }
+    }
+
+    private static bool SameOrder(List<TreeNode> a, List<TreeNode> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (!ReferenceEquals(a[i], b[i])) return false;
+        return true;
+    }
+
+    /// <summary>Drops a subtree from the loaded set, so a directory that comes back is re-read.</summary>
+    private void Forget(TreeNode node)
+    {
+        _loadedDirs.Remove(node);
+        foreach (var child in node.Children.ToList())
+            Forget(child);
+    }
+
+    /// <summary>
+    /// Keeps an unloaded directory's placeholder in step with whether it still has entries.
+    /// </summary>
+    private void SyncPlaceholder(TreeNode node, string dirPath)
+    {
+        bool hasEntries = Directory.Exists(dirPath) && ProjectService.HasEntries(dirPath);
+        var children = node.Children.ToList();
+
+        if (hasEntries && children.Count == 0)
+            node.AddChild(PlaceholderLabel).TextColor = Color.Grey35;
+        else if (!hasEntries && children.Count > 0)
+            node.ClearChildren();
     }
 
     public bool HandleKey(ConsoleKey key, ConsoleModifiers mods)
@@ -234,44 +318,65 @@ public class ExplorerPanel
 
     private TreeNode AddNode(FileNode fileNode, TreeNode? parent)
     {
-        string label = fileNode.Name;
-
-        // Append git status badge
-        string badge = GetGitBadge(fileNode);
-        if (!string.IsNullOrEmpty(badge))
-            label += badge;
-
         TreeNode treeNode;
         if (parent == null)
         {
-            treeNode = _tree.AddRootNode(label);
+            treeNode = _tree.AddRootNode(fileNode.Name);
             treeNode.IsExpanded = true;
         }
         else
         {
-            treeNode = parent.AddChild(label);
+            treeNode = parent.AddChild(fileNode.Name);
             treeNode.IsExpanded = false;
         }
 
-        treeNode.Tag = fileNode.FullPath;
-
-        if (IsIgnored(fileNode))
-        {
-            treeNode.TextColor = Color.Grey35;
-        }
-        else if (fileNode.IsDirectory)
-        {
-            treeNode.TextColor = Color.Cyan1;
-        }
-        else
-        {
-            treeNode.TextColor = GetFileColor(fileNode.Name);
-        }
+        ApplyNodeStyle(treeNode, fileNode);
 
         if (fileNode.IsDirectory && parent != null && ProjectService.HasEntries(fileNode.FullPath))
             treeNode.AddChild(PlaceholderLabel).TextColor = Color.Grey35;
 
         return treeNode;
+    }
+
+    /// <summary>
+    /// Builds a detached node for <paramref name="fileNode"/>, for the caller to seat.
+    /// </summary>
+    private TreeNode CreateNode(FileNode fileNode)
+    {
+        var treeNode = new TreeNode(fileNode.Name) { IsExpanded = false };
+        ApplyNodeStyle(treeNode, fileNode);
+
+        if (fileNode.IsDirectory && ProjectService.HasEntries(fileNode.FullPath))
+            treeNode.AddChild(PlaceholderLabel).TextColor = Color.Grey35;
+
+        return treeNode;
+    }
+
+    /// <summary>
+    /// Writes the label (name plus git badge), tag and colour onto an existing node.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="AddNode"/> so a reconcile can restyle a node it is keeping. The
+    /// badge is part of the label, so a file whose git status changed needs its text rewritten
+    /// even though nothing about the file itself moved.
+    /// </remarks>
+    private void ApplyNodeStyle(TreeNode treeNode, FileNode fileNode)
+    {
+        string label = fileNode.Name;
+        string badge = GetGitBadge(fileNode);
+        if (!string.IsNullOrEmpty(badge))
+            label += badge;
+
+        if (treeNode.Text != label)
+            treeNode.Text = label;
+
+        treeNode.Tag = fileNode.FullPath;
+
+        treeNode.TextColor = IsIgnored(fileNode)
+            ? Color.Grey35
+            : fileNode.IsDirectory
+                ? Color.Cyan1
+                : GetFileColor(fileNode.Name);
     }
 
     private bool IsIgnored(FileNode fileNode)
