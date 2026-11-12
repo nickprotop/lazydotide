@@ -97,33 +97,60 @@ public class ExplorerPanel
         // Restore expanded state
         RestoreExpandedTags(_tree.RootNodes, expandedTags);
 
-        // Restore selection
+        // Restore selection, and bring it back into view: the rebuild resets the scroll offset,
+        // so without this a refresh with the selection below the fold jumped the tree back to
+        // the top and the selected row vanished.
         if (selectedTag != null)
         {
             var node = _tree.FindNodeByTag(selectedTag);
-            if (node != null) _tree.SelectNode(node);
+            if (node != null)
+            {
+                _tree.SelectNode(node);
+                _tree.EnsureNodeVisible(node);
+            }
         }
     }
 
     private static void CollectExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
     {
-        foreach (var node in nodes)
+        // Snapshot: TreeNode.Children is AsReadOnly(), a LIVE view of the backing list rather
+        // than a copy, so anything that mutates children mid-walk corrupts the enumeration.
+        foreach (var node in nodes.ToList())
         {
             if (node.IsExpanded && node.Tag is string path)
                 tags.Add(path);
             if (node.Children.Count > 0)
-                CollectExpandedTags(node.Children, tags);
+                CollectExpandedTags(node.Children.ToList(), tags);
         }
     }
 
+    /// <summary>
+    /// Re-expands the directories that were open before the rebuild.
+    /// </summary>
+    /// <remarks>
+    /// Expanding a node LOADS its children, which clears and refills the very collection a
+    /// recursive walk would be enumerating. The old version expanded a node and then immediately
+    /// recursed into node.Children - a live view of the list it had just replaced - so a refresh
+    /// could skip subtrees, double-visit them, or throw, which is what made the tree unstable.
+    ///
+    /// Done breadth-first off an explicit queue instead: expand a node, then snapshot whatever
+    /// children that produced and queue them. Nothing is enumerated while it is being mutated.
+    /// </remarks>
     private void RestoreExpandedTags(IEnumerable<SharpConsoleUI.Controls.TreeNode> nodes, HashSet<string> tags)
     {
-        foreach (var node in nodes)
+        var queue = new Queue<SharpConsoleUI.Controls.TreeNode>(nodes.ToList());
+
+        while (queue.Count > 0)
         {
+            var node = queue.Dequeue();
+
+            // Expand FIRST, so the children queued below are the ones this node actually has
+            // after loading, not the placeholder set it had before.
             if (node.Tag is string path && tags.Contains(path))
                 ExpandNode(node);
-            if (node.Children.Count > 0)
-                RestoreExpandedTags(node.Children, tags);
+
+            foreach (var child in node.Children.ToList())
+                queue.Enqueue(child);
         }
     }
 
